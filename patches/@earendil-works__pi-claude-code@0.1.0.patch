@@ -225,10 +225,11 @@ index b516241c794b5dd7054822921d445a2169c6b70e..00ccb6aa5ddec60e64ccc4d339942be8
          timeoutMs: options?.timeoutMs,
          env: options?.env,
 diff --git a/src/transcript.ts b/src/transcript.ts
-index e0a824be43db62a92a0329ff7c63fc0f14f3af65..3d1ce16fbcba0e880a73a9059e3da7d60c05631f 100644
+index e0a824be43db62a92a0329ff7c63fc0f14f3af65..3ccfaceb1787c518c0aec5c655908234883a8bf9 100644
 --- a/src/transcript.ts
 +++ b/src/transcript.ts
-@@ -1,7 +1,5 @@
+@@ -1,7 +1,6 @@
++import { createHash } from "node:crypto";
  import {
 -  getDeclaredTools,
    getInitialSystemMessage,
@@ -236,7 +237,7 @@ index e0a824be43db62a92a0329ff7c63fc0f14f3af65..3d1ce16fbcba0e880a73a9059e3da7d6
    renderSystemMessageUpdate,
    type AssistantMessage,
    type ImageContent,
-@@ -17,7 +15,7 @@ import type { NativeContentBlock, NativeFrame, NativeMessage } from "./native-ty
+@@ -17,7 +16,7 @@ import type { NativeContentBlock, NativeFrame, NativeMessage } from "./native-ty
  
  export const TOOL_PREFIX = "mcp__pi__";
  export const NATIVE_REPLAY_DIAGNOSTIC = "claude-code.native-assistant.v1";
@@ -245,7 +246,50 @@ index e0a824be43db62a92a0329ff7c63fc0f14f3af65..3d1ce16fbcba0e880a73a9059e3da7d6
  
  const DEFERRED_TOOL_PLACEHOLDER = {
    name: "__pi_deferred_placeholder__",
-@@ -292,28 +290,35 @@ export function prepareTools(tools: Tool[]): {
+@@ -50,6 +49,13 @@ interface AssistantProjection {
+   toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
+ }
+ 
++/** Anthropic only accepts [a-zA-Z0-9_-]+ tool IDs; other providers' IDs (`call_x|fc_y`) get a stable hashed form. */
++function toolId(id: string): string {
++  if (/^[a-zA-Z0-9_-]+$/.test(id)) return id;
++  const hash = createHash("sha256").update(id).digest("hex").slice(0, 8);
++  return `${id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 55)}_${hash}`;
++}
++
+ function sanitizeSurrogates(text: string): string {
+   return text.replace(/[\uD800-\uDFFF]/gu, "\uFFFD");
+ }
+@@ -151,7 +157,7 @@ function canonicalAssistantContent(message: AssistantMessage): NativeContentBloc
+     } else if (block.type === "toolCall") {
+       blocks.push({
+         type: "tool_use",
+-        id: block.id,
++        id: toolId(block.id),
+         name: `${TOOL_PREFIX}${block.name}`,
+         input: clone(block.arguments) as Record<string, unknown>,
+       });
+@@ -163,7 +169,9 @@ function canonicalAssistantContent(message: AssistantMessage): NativeContentBloc
+ function assistantContent(message: AssistantMessage): NativeContentBlock[] {
+   const carrier = replayCarrier(message);
+   if (carrier && projectionsEqual(assistantProjection(message), carrier.projection)) {
+-    return clone(carrier.message.content);
++    return clone(carrier.message.content).map((block) =>
++      block.type === "tool_use" && typeof block.id === "string" ? { ...block, id: toolId(block.id) } : block,
++    );
+   }
+ 
+   // A changed projection must not restore stale signed thinking. For messages
+@@ -198,7 +206,7 @@ export function prepareFrames(messages: Message[]): NativeFrame[] {
+       blocks = [
+         {
+           type: "tool_result",
+-          tool_use_id: message.toolCallId,
++          tool_use_id: toolId(message.toolCallId),
+           content: toolResultContent(message),
+           is_error: message.isError,
+         },
+@@ -292,28 +300,35 @@ export function prepareTools(tools: Tool[]): {
    return { manifest, nativeTools, names };
  }
  
@@ -287,7 +331,7 @@ index e0a824be43db62a92a0329ff7c63fc0f14f3af65..3d1ce16fbcba0e880a73a9059e3da7d6
   */
  export function prepareNativeTranscript(
    messages: Message[],
-@@ -321,19 +326,10 @@ export function prepareNativeTranscript(
+@@ -321,19 +336,10 @@ export function prepareNativeTranscript(
  ): NativeTranscriptPlan | undefined {
    const initial = getInitialSystemMessage(messages);
    const initialTools = initial?.toolsAdded ?? [];
@@ -309,7 +353,7 @@ index e0a824be43db62a92a0329ff7c63fc0f14f3af65..3d1ce16fbcba0e880a73a9059e3da7d6
  
    const systemInjections: NativeSystemInjection[] = [];
    let pending: Array<Array<Record<string, unknown>>> = [];
-@@ -356,7 +352,7 @@ export function prepareNativeTranscript(
+@@ -356,7 +362,7 @@ export function prepareNativeTranscript(
    flush(null);
  
    return {
