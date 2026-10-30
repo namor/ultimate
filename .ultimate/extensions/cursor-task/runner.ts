@@ -290,6 +290,7 @@ export async function run(request: CursorRequest, command = 'cursor-agent') {
       } catch {
         verified = false
       } finally {
+        if (!verified && target) job.processEvidence = target.evidence()
         if (!verified)
           failure = [failure, 'Local process cleanup could not be verified.']
             .filter(Boolean)

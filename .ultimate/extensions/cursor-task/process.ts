@@ -1,23 +1,43 @@
 import { execFileSync, spawn } from 'node:child_process'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { setImmediate as yieldToLoop } from 'node:timers/promises'
+import type { ProcessEvidence, ProcessIdentity as Entry } from './types.d.ts'
 
-type Entry = { pid: number; ppid: number; pgid: number; birth: string }
+type Failure = NonNullable<ProcessEvidence['failure']>
+class InventoryError extends Error {
+  category: Failure['category']
+  constructor(category: Failure['category']) {
+    super('Process inventory unavailable')
+    this.category = category
+  }
+}
 const same = (a?: Entry, b?: Entry) => !!a && !!b && a.pid === b.pid && a.birth === b.birth
 function snapshot() {
-  const output = execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,pgid=,lstart='], {
-    encoding: 'utf8',
-    maxBuffer: 8 * 1024 * 1024,
-    timeout: 1000,
-  })
+  let output: string
+  try {
+    output = execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,pgid=,lstart='], {
+      encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: 1000,
+    })
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    throw new InventoryError(
+      code === 'ETIMEDOUT' ? 'timeout' : code === 'ENOBUFS' ? 'buffer_limit' : 'execution',
+    )
+  }
   return new Map(
     output
       .trim()
       .split('\n')
       .map((line): [number, Entry] => {
         const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)
-        if (!match) throw new Error('Process inventory unavailable')
+        if (!match) throw new InventoryError('malformed_row')
         const [, pid, ppid, pgid, birth] = match
+        if ([pid, ppid, pgid].some((value) => !Number.isSafeInteger(+value)))
+          throw new InventoryError('malformed_row')
+        if (birth.length > 64 || !Number.isFinite(Date.parse(birth)))
+          throw new InventoryError('invalid_birth')
         return [+pid, { pid: +pid, ppid: +ppid, pgid: +pgid, birth }]
       }),
   )
@@ -42,6 +62,12 @@ export function ownedProcess(
     reaped = false,
     trackingFailed = false
   let cleanup: Promise<boolean> | undefined
+  let failure: Failure | undefined
+  let lastObserved: ProcessEvidence['lastObserved'], remaining: ProcessEvidence['remaining']
+  const markFailure = (phase: Failure['phase'], category: Failure['category']) => {
+    trackingFailed = true
+    failure ??= { at: Date.now(), phase, category }
+  }
   const discover = (table: Map<number, Entry>) => {
     if (!root && child.pid) {
       root = table.get(child.pid)
@@ -69,7 +95,7 @@ export function ownedProcess(
     } catch (error) {
       // Darwin may return EPERM for an exiting zombie. Only later verified absence counts.
       if (!['ESRCH', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? ''))
-        trackingFailed = true
+        markFailure('cleanup', 'signal')
     }
   }
   const signalOwned = (table: Map<number, Entry>, signal: NodeJS.Signals) => {
@@ -85,11 +111,30 @@ export function ownedProcess(
     }
     for (const entry of alive.toReversed()) send(entry.pid, signal)
   }
+  const capture = (phase: Failure['phase']) => {
+    try {
+      const table = snapshot()
+      discover(table)
+      const known = [...owned.values()]
+      const alive = known.filter((entry) => same(entry, table.get(entry.pid)))
+      const at = Date.now()
+      // Bound durable evidence, not runtime ownership: never discard identities used for cleanup.
+      if (known.length > 4096) {
+        markFailure(phase, 'capacity')
+        failed('Process inventory unavailable.')
+      } else if (!trackingFailed) lastObserved = { at, owned: known }
+      if (alive.length <= 4096) remaining = { at, owned: alive }
+      return table
+    } catch (error) {
+      markFailure(phase, error instanceof InventoryError ? error.category : 'execution')
+      throw error
+    }
+  }
   const sample = () => {
     try {
-      discover(snapshot())
+      capture('sampling')
     } catch {
-      trackingFailed = true
+      // Only fixed failure categories escape; raw OS errors and inventory output are never retained.
       failed('Process inventory unavailable.')
     }
   }
@@ -104,22 +149,30 @@ export function ownedProcess(
   const timer = setInterval(sample, 50)
   return {
     child,
+    evidence(): ProcessEvidence {
+      return {
+        root,
+        lastObserved,
+        remaining,
+        observedCount: owned.size,
+        reaped,
+        trackingFailed,
+        failure,
+      }
+    },
     stop() {
       return (cleanup ??= (async () => {
         clearInterval(timer)
         let verified = false
         try {
-          let table = snapshot()
-          discover(table) // Capture ancestry before killing parents, including separate PGIDs.
+          let table = capture('cleanup') // Capture ancestry before killing parents, including separate PGIDs.
           signalOwned(table, 'SIGSTOP')
-          table = snapshot()
-          discover(table)
+          table = capture('cleanup')
           signalOwned(table, 'SIGKILL')
           const deadline = Date.now() + 5000
           do {
             await yieldToLoop()
-            table = snapshot()
-            discover(table)
+            table = capture('cleanup')
             if (reaped && ![...owned.values()].some((entry) => same(entry, table.get(entry.pid)))) {
               verified = !!root && !trackingFailed
               break
