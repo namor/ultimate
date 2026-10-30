@@ -5,6 +5,7 @@ import type { TestContext } from 'node:test'
 import publicDocs from './server.ts'
 
 const exa = 'https://mcp.exa.ai/mcp?tools=web_search_exa,web_fetch_exa'
+const context7 = 'https://mcp.context7.com/mcp'
 const tools = publicDocs().tools!
 const failed = {
   isError: true,
@@ -59,10 +60,15 @@ async function run(index: number, args: Record<string, unknown>, signal?: AbortS
   return tools[index].execute(args as never, {} as never, { abortSignal: signal } as never)
 }
 
-await test('two native tools use real Pi HTTP with exact endpoints/payloads and bounded text conversion', async (t) => {
+await test('four native tools use real Pi HTTP with exact endpoints/payloads and bounded text conversion', async (t) => {
   assert.deepEqual(
     tools.map((tool) => tool.name),
-    ['mcp__exa__web_search_exa', 'mcp__exa__web_fetch_exa'],
+    [
+      'mcp__exa__web_search_exa',
+      'mcp__exa__web_fetch_exa',
+      'mcp__context7__resolve_library_id',
+      'mcp__context7__query_docs',
+    ],
   )
   const cases = [
     {
@@ -88,6 +94,32 @@ await test('two native tools use real Pi HTTP with exact endpoints/payloads and 
         content: [{ type: 'resource', resource: { uri: 'docs://page', text: 'Handbook' } }],
       },
       expected: 'Handbook',
+    },
+    {
+      index: 2,
+      endpoint: context7,
+      name: 'resolve-library-id',
+      args: { query: 'Public TypeScript handbook', libraryName: 'TypeScript' },
+      sent: { query: 'Public TypeScript handbook', libraryName: 'TypeScript' },
+      result: { structuredContent: { libraryId: '/microsoft/typescript' } },
+      expected: '{\n  "libraryId": "/microsoft/typescript"\n}',
+    },
+    {
+      index: 3,
+      endpoint: context7,
+      name: 'query-docs',
+      args: {
+        libraryId: '/microsoft/typescript',
+        query: 'Explain public compiler options',
+        language: 'en',
+      },
+      sent: {
+        libraryId: '/microsoft/typescript',
+        query: 'Explain public compiler options',
+        language: 'en',
+      },
+      result: { content: [{ type: 'text', text: 'Compiler options' }] },
+      expected: 'Compiler options',
     },
   ]
   for (const item of cases) {
