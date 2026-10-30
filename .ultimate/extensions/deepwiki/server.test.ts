@@ -100,3 +100,87 @@ await test('canceling a read preserves the independent bounded session cleanup',
   assert.equal(requests.at(-1)?.method, 'DELETE')
   assert.equal(cleanupCompleted, true)
 })
+
+await test('abort during pending initialize after a mismatched-id reply cleans up once', async (t) => {
+  const rejections: unknown[] = []
+  const onUnhandled = (reason: unknown) => {
+    rejections.push(reason)
+  }
+  process.on('unhandledRejection', onUnhandled)
+  t.after(() => process.off('unhandledRejection', onUnhandled))
+
+  const controller = new AbortController()
+  const requests: { method?: string; rpc?: string }[] = []
+  let initializeSeen!: () => void
+  const initialized = new Promise<void>((resolve) => {
+    initializeSeen = resolve
+  })
+  let releaseDelete!: () => void
+  const deleteHold = new Promise<void>((resolve) => {
+    releaseDelete = resolve
+  })
+
+  t.mock.method(globalThis, 'fetch', async (input: string | URL, init: RequestInit) => {
+    assert.equal(String(input), 'https://mcp.deepwiki.com/mcp')
+    assert.equal(init.redirect, 'error')
+    assert.ok(init.signal)
+    assert.equal(new Headers(init.headers).has('authorization'), false)
+    const rpc = typeof init.body === 'string' ? JSON.parse(init.body) : undefined
+    requests.push({ method: init.method, rpc: rpc?.method })
+    if (init.method === 'DELETE') {
+      assert.equal(controller.signal.aborted, true)
+      assert.equal(init.signal.aborted, false)
+      await deleteHold
+      return new Response(null, { status: 202 })
+    }
+    if (rpc?.method === 'initialize') {
+      initializeSeen()
+      setImmediate(() => controller.abort())
+      return Response.json(
+        {
+          jsonrpc: '2.0',
+          id: 'wrong-id',
+          result: {
+            protocolVersion: '2025-11-25',
+            capabilities: { tools: {} },
+            serverInfo: { name: 'fixture', version: '1' },
+          },
+        },
+        { headers: { 'mcp-session-id': 'fixture-session' } },
+      )
+    }
+    throw new Error(`unexpected ${init.method} ${rpc?.method}`)
+  })
+
+  const done = run(0, controller.signal)
+  let finished = false
+  const observed = done.then(
+    (result) => {
+      finished = true
+      return result
+    },
+    (error: unknown) => {
+      finished = true
+      throw error
+    },
+  )
+  await initialized
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  assert.equal(requests.filter((request) => request.method === 'DELETE').length, 1)
+  assert.equal(finished, false)
+  assert.equal(
+    requests.some((request) => request.rpc === 'tools/call'),
+    false,
+  )
+  releaseDelete()
+  assert.deepEqual(await observed, {
+    isError: true,
+    output: [{ type: 'text', text: 'DeepWiki public repository read failed.' }],
+  })
+  assert.equal(finished, true)
+  assert.deepEqual(
+    requests.map((request) => request.rpc ?? request.method),
+    ['initialize', 'DELETE'],
+  )
+  assert.equal(rejections.length, 0)
+})
