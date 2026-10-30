@@ -46,7 +46,7 @@ Implementation coordinator identifies:
 - `#21909/25273`: affected subagent/skills/families suites 51/51 passed.
 - Pending: disposable actual loader/faux harness fixture; four prompt clarifications; temporary input removal; final immutable-range Astra review; actual workflow rollout and zero-reader small-fix control.
 
-These remain reported evidence until transcript output and source are inspected. Static parsing, existing-suite pass, a faux harness, and paper dry runs are each different from model adherence and usefulness on a real feature.
+The coordinator subsequently inspected the actual tool outputs at all three cited entries, confirming the recorded results. They were not rerun in the research checkout. Static parsing, existing-suite pass, a faux harness, and paper dry runs are each different from model adherence and usefulness on a real feature. The pending list above describes the frozen draft; the later four prompt clarifications are separately inspected and versioned in the main report.
 
 ## Further inspected boundaries
 
