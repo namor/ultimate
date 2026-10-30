@@ -21,6 +21,7 @@ export type SlotName =
   | 'transcript.start'
   | 'transcript.end'
   | 'overlay'
+  | 'shell.rail'
 
 /**
  * A slot component, optionally with an `order` (default 0; ties keep folder-name order). In the status line, `phone`
@@ -103,6 +104,17 @@ export type EntryRenderer = ComponentType<{
  * with the default link that asks before opening in a new tab. Return `core` for links you leave alone.
  */
 export type LinkRenderer = ComponentType<{ href: string; children: ReactNode; core: ReactNode }>
+
+/**
+ * A fenced code block in Markdown, by its language: `code`, `language`, `incomplete` while the fence still streams, and
+ * `core`, the rendering so far, starting with the highlighted block with its copy button.
+ */
+export type CodeBlockRenderer = ComponentType<{
+  code: string
+  language: string
+  incomplete: boolean
+  core: ReactNode
+}>
 
 export type InboxRenderer = ComponentType<{ item: InboxItem; core: ReactNode; cancel: ReactNode }>
 
@@ -193,6 +205,11 @@ export interface CompactContribution {
   quiet?: CompactQuietTest
   /** The line a folded group of quiet rows shows; the first matching facet's wins, a step count otherwise. */
   summary?: ComponentType<CompactSummaryProps>
+  /**
+   * Rows that are the conversation the reader follows, such as @ultimate's messages to the user: everything between two of
+   * them recedes into one faded stretch.
+   */
+  thread?: (row: CompactRow, docs: CompactDocs) => boolean
 }
 /** A compact transcript row: an entry, and the visible tool calls it shows when it shows only some of its blocks. */
 export interface CompactRow {
@@ -208,6 +225,8 @@ export interface CompactSummaryProps {
   steps: number
   /** Whether the agent still works in it. */
   working: boolean
+  /** Whether it sums up a whole stretch between thread rows (`thread`), landings and notes included, not one quiet group. */
+  between?: boolean
 }
 /** The root conversation's documents of the contributions' `docs` kinds, by kind, as `useDocOf(1, kind)` reads them. */
 export type CompactDocs = Readonly<Record<string, Readonly<JsonObject> | null | undefined>>
@@ -293,6 +312,8 @@ export interface WebExtension {
   composer?: ComposerRenderer
   /** Renders links in Markdown; renderers compose in discovery order, each wrapping the one before it. */
   link?: LinkRenderer
+  /** Fenced code block renderers by language; they compose in discovery order, each wrapping the one before it. */
+  codeBlocks?: Readonly<Record<string, CodeBlockRenderer>>
   /** Contributions to the hover action row on stored messages, in discovery order. */
   messageActions?: readonly ComponentType<{ entry: EntryRecord }>[]
   /** Readouts on the hover action row on stored messages, before its time, in discovery order. */

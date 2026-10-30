@@ -53,6 +53,11 @@ replaces the whole extension, both facets:
 | `user`    | `~/.ultimate/extensions/`         | Your additions, in every project                                   |
 | `project` | `<project>/.ultimate/extensions/` | One project's tools and apps, committed with the project; wins all |
 
+A tool name follows the same layering: a project or user extension may override a built-in's tool (a project `bash`
+replaces coding-tools'). Two extensions of the same source may not share one: the one that loaded second fails with
+a load error such as `web_search is already provided by parallel`, and takes the name on its next reload once the
+other is disabled or removed.
+
 Every extension folder is on by default, built-in, user or project: adding the folder is the opt-in. The exception is
 the built-ins listed in `defaultOff` (`shared/extension-api.ts`; see [settings](../docs/settings.md)), which need
 something of their own and ship off until `extensions.enable` names them (including `voice-live`, the live voice relay). Turn one off
@@ -66,7 +71,7 @@ optional extension plugs into it through a point or an event, never the other wa
 
 The `parallel` web tools read their key from `secrets`. Secrets are user-global, not project state.
 
-A server facet may export `secrets: { name: string; description: string; url?: string }[]`. Names must match `^[A-Z][A-Z0-9_]*$`, descriptions must be non-empty, and optional URLs must use http(s). Installed declarations appear in `ExtensionInfo.server.secrets` and the Secrets panel; values never appear in extension info. Other server facets read values with `readSecret(userHome, name)` from `lib/secrets.ts`; only the secrets extension writes them.
+A server facet may export `secrets: { name: string; description: string; url?: string; provider?: string }[]`. Names must match `^[A-Z][A-Z0-9_]*$`, descriptions must be non-empty, and optional URLs must use http(s). `provider` names a model provider whose configured auth stands in for the secret: the setup check stops reporting it missing once that provider has auth. Installed declarations appear in `ExtensionInfo.server.secrets` and the Secrets panel; values never appear in extension info. Other server facets read values with `readSecret(userHome, name)` from `lib/secrets.ts`; only the secrets extension writes them.
 
 The `tailscale` built-in, once enabled, exposes Ultimate to your own Tailscale login; only user settings set its allowlist. See [tailscale](tailscale/README.md) for stable project URLs and owner-login admission.
 
@@ -323,6 +328,7 @@ title bar the host shows above every surface.
 | `transcript.start`     | Above a transcript's first row once its whole history is loaded; `useTranscript()` inside                    |
 | `transcript.end`       | After a transcript's last row, before the working line: a turn still forming, such as live speech            |
 | `overlay`              | Always mounted at the root, above every surface: dialogs, toasts, global effects                             |
+| `shell.rail`           | Full-height column at the window's left edge, beside the title bar and every surface; not in a frame         |
 
 ```tsx
 slots: { 'header.right': [Badge], sidebar: { component: Conversations, order: -1 } }
@@ -401,6 +407,19 @@ code and links) into `#conversation-<id>[-<entry>]` links, and `MentionText` doe
 ```tsx
 link: ({ href, children, core }) =>
   href.startsWith('https://docs.example.com/') ? <a href={href}>{children}</a> : core
+```
+
+### Code block renderers
+
+`codeBlocks` renders the fenced code blocks of one language in Markdown that `MessageResponse` shows, keyed by the
+fence's language. Each receives `{ code, language, incomplete, core }`; `core` starts as the highlighted block with its
+copy button, and `incomplete` is true while the fence still streams. They compose in discovery order behind error
+boundaries that fall back to `core`. Return `core` while `incomplete`, so a half-written block never renders.
+
+```tsx
+codeBlocks: {
+  dot: ({ code, incomplete, core }) => (incomplete ? core : <Graph source={code} />),
+}
 ```
 
 ### Message actions
@@ -909,8 +928,9 @@ Keep in mind:
 
 `@/sdk/*` deep imports are core internals, not extension API. Import only from `@/sdk`, `@/components/ui/*`, `@/components/ai/*`, `@/components/json-tree`, `react`, and `lucide-react`. Never call `fetch` or
 open an `EventSource` yourself (`ultimate/no-raw-stream` fails lint on it in `extensions/**/*.tsx`): the SDK keeps one
-live stream for the shown conversation plus one for each conversation whose documents are watched with `useDocOf`
-(the shown one included), replays their changes, and your server code is reached through [actions](#actions). The surface primitives are in [Surfaces](#primitives).
+live stream per tab, carrying a subscription for the shown conversation plus one for each conversation whose documents
+are watched with `useDocOf` (the shown one included), replays their changes, and your server code is reached through
+[actions](#actions). Browsers allow about six connections per host, so every further stream would hold back requests. The surface primitives are in [Surfaces](#primitives).
 
 | Hook                                                                      | Returns                                                                                                                                                                                                                  |
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
