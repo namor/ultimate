@@ -597,25 +597,57 @@ const nested = (parent: number, parentCallId: string, id: string) => ({
   call: { type: 'toolCall', id, name: 'inner', arguments: {} },
 })
 
-it('records a tool that returns an error result as failed, with its text', async () => {
+it('records a returned tool failure without its private payload, preserving the result', async () => {
+  const canary = 'synthetic-private-tool-payload'
+  const result = {
+    isError: true,
+    output: [{ type: 'text', text: canary }],
+    diagnostics: [{ severity: 'error', message: canary }],
+    structuredOutput: { output: canary },
+  }
   const { trace, execute } = await tracedTools({
-    broken: async () => ({ isError: true, output: [{ type: 'text', text: 'page did not load' }] }),
+    broken: async () => result,
     fine: async () => ({ output: [{ type: 'text', text: 'done' }] }),
   })
-  const api = { conversationId: 1, taskId: 1, callId: 'call' }
-  expect(await execute('broken', api, model('call'))).toMatchObject({ isError: true })
-  await execute('fine', api, model('call'))
-  const rows = trace.reader.query()
-  expect(rows.find((row) => row.name === 'broken')).toMatchObject({
-    ok: false,
-    error: 'page did not load',
-  })
-  expect(rows.find((row) => row.name === 'fine')).toMatchObject({ ok: true })
-  expect(rows.find((row) => row.name === 'fine')).not.toHaveProperty('error')
-  trace.close()
+  try {
+    const api = { conversationId: 1, taskId: 1, callId: 'call' }
+    expect(await execute('broken', api, model('call'))).toBe(result)
+    await execute('fine', api, model('call'))
+    const rows = trace.reader.query()
+    expect(rows.find((row) => row.name === 'broken')).toMatchObject({
+      ok: false,
+      error: 'Tool failed',
+    })
+    expect(JSON.stringify(rows)).not.toContain(canary)
+    expect(rows.find((row) => row.name === 'fine')).toMatchObject({ ok: true })
+    expect(rows.find((row) => row.name === 'fine')).not.toHaveProperty('error')
+  } finally {
+    trace.close()
+  }
 })
 
-it('names a failed shell command by its exit code, from the error diagnostic', async () => {
+it('records a thrown tool failure without private error text, preserving the exception', async () => {
+  const canary = 'synthetic-private-tool-exception'
+  const error = new Error(canary)
+  error.name = canary
+  const { trace, execute } = await tracedTools({
+    broken: async () => {
+      throw error
+    },
+  })
+  try {
+    const api = { conversationId: 1, taskId: 1, callId: 'call' }
+    await expect(execute('broken', api, model('call'))).rejects.toBe(error)
+    const rows = trace.reader.query()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ ok: false, error: 'Tool failed' })
+    expect(JSON.stringify(rows)).not.toContain(canary)
+  } finally {
+    trace.close()
+  }
+})
+
+it('records a failed shell command without its diagnostic or output', async () => {
   // Pi's bash returns a nonzero exit as an error result with no text parts: the exit code is its error diagnostic.
   const exited = {
     isError: true,
@@ -642,8 +674,9 @@ it('names a failed shell command by its exit code, from the error diagnostic', a
     {} as never,
   )
   const [bashRow] = trace.reader.query().filter((row) => row.name === 'bash')
-  expect(bashRow).toMatchObject({ ok: false, error: 'Command exited with code 2' })
+  expect(bashRow).toMatchObject({ ok: false, error: 'Tool failed' })
   expect(bashRow).not.toHaveProperty('args')
+  expect(bashRow).not.toHaveProperty('result')
   trace.close()
 })
 
