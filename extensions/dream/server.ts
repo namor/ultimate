@@ -78,10 +78,9 @@ export function prepare(args: unknown, now: number): Prepared {
   }
 }
 
-/** Tool calls in `trace.sqlite`: per tool, the most frequent errors, and `enabled` tools never called in its window. */
+/** Tool-call metadata in `trace.sqlite`: counts, failures, durations, and `enabled` tools never called in its window. */
 export function toolStats(database: string, enabled: readonly string[]): ToolStats {
-  if (!existsSync(database))
-    return { calls: 0, tools: [], unused: [...enabled].toSorted(), errors: [] }
+  if (!existsSync(database)) return { calls: 0, tools: [], unused: [...enabled].toSorted() }
   const db = new DatabaseSync(database, { readOnly: true })
   try {
     const window = db
@@ -94,18 +93,12 @@ export function toolStats(database: string, enabled: readonly string[]): ToolSta
         )
         .all() as { name: string; calls: number; failed: number; avgMs: number }[]
     ).map((row) => ({ ...row, avgMs: Math.round(row.avgMs) }))
-    const errors = db
-      .prepare(
-        "SELECT name, substr(error, 1, 160) AS error, count(*) AS count FROM calls WHERE kind = 'tool' AND ok = 0 GROUP BY name, substr(error, 1, 160) ORDER BY count DESC LIMIT 20",
-      )
-      .all() as { name: string; error: string; count: number }[]
     const used = new Set(tools.map((tool) => tool.name))
     return {
       ...(window.since === null ? {} : { since: window.since }),
       calls: window.calls,
       tools,
       unused: enabled.filter((name) => !used.has(name)).toSorted(),
-      errors,
     }
   } finally {
     db.close()
