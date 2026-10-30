@@ -1,0 +1,11 @@
+{
+  "name": "ultimate-personal-public-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node verify.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-mcp": "1.4.0"
+  }
+}
