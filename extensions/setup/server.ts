@@ -18,6 +18,7 @@ import { discoverAgents } from '../../lib/agents.ts'
 import { isolatable } from '../../lib/git.ts'
 import { implementAction } from '../../lib/actions.ts'
 import { readSettings, userSettingsPath } from '../../lib/settings.ts'
+import { readWorktreeSetup } from '../../lib/worktree-setup.ts'
 import { readSecret, secretMetadata } from '../../lib/secrets.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { ConversationsApi } from '../conversations/api.ts'
@@ -263,11 +264,15 @@ const MANIFESTS = [
 async function worktreeArea(host: CheckHost): Promise<SetupIssue | undefined> {
   if (!host.extensions().some((extension) => extension.name === 'workspaces' && extension.enabled))
     return undefined
-  const commands = ((await host.projectSettings()).isolates as { worktree?: { setup?: unknown } })
-    ?.worktree?.setup
-  if (Array.isArray(commands) && commands.length)
+  const isolation = await isolatable(host.projectRoot)
+  const commands = await readWorktreeSetup(
+    host.userHome,
+    'source' in isolation ? isolation.source : host.projectRoot,
+    () => host.projectSettings(),
+  )
+  if (commands.length)
     return { area: 'Worktree setup', status: 'ok', summary: `${commands.length} commands` }
-  if ('reason' in (await isolatable(host.projectRoot))) return undefined
+  if ('reason' in isolation) return undefined
   const manifests = MANIFESTS.filter((name) => existsSync(join(host.projectRoot, name)))
   if (!manifests.length) return undefined
   return {

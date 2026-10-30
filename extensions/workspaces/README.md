@@ -41,8 +41,25 @@ refuses worktrees outside one folder, or a team that keeps every tree in one pla
 
 The commands get five minutes each. A conversation started in a subfolder of its repository opens in the same
 subfolder of its checkout.
-Preparation runs `isolates.worktree.setup` with `ULTIMATE_SOURCE` set to the source checkout.
-Setup commands must be safe to repeat after interruption.
+Preparation runs setup commands with `ULTIMATE_SOURCE` set to the source checkout. By default these are the gated
+project settings' `isolates.worktree.setup`. To configure only setup personally, even when project setup is declined,
+put a per-project map in **`~/.ultimate/settings.json` only**:
+
+```json
+{
+  "worktreeSetup": {
+    "/projects/my-app": ["pnpm install --frozen-lockfile"]
+  }
+}
+```
+
+The key is the canonical absolute main-checkout path, shared by its linked and nested worktrees. An explicit entry
+replaces the entire command list; `[]` disables execution. Only an absent entry uses the existing gated project
+settings. There is no global command fallback, and other projects are unchanged. Settings are read afresh for
+preparation, merged-revision lander setup and setup health. Health reports configured command counts, not whether an
+install succeeded. This personal map does not enable any project resources or override worktree `path`, `add`,
+`remove`, lander checks/push, models or extensions.
+Setup commands run sequentially in the new checkout, with a two-minute timeout each, and must be safe to repeat after interruption.
 What a project's setup should do (dependencies, `.env`, a copy-on-write SQLite clone, a dev port per worktree, skipping
 the database in the lander's checkout, and when to ask about Postgres) is the "Worktree setup" step of the
 `integrate-ultimate` skill; setup health warns while an isolatable project with a package manifest has none.
@@ -153,9 +170,10 @@ first lines and outcome, and the root note carry that snapshot. `landing.tsx` re
 the root's landing note; its one-line `Subject` heads each submission in the lander log and the submit card, and the
 lander's sidebar row shows the feature it lands or landed last.
 
-1. Resets its own detached checkout, `<home>/lander/<hash of source>`, to the target branch tip. `isolates.worktree.setup`
-   runs once when the checkout is created. With `lander.push`, it fetches the remote branch and merges it when it is ahead.
+1. Resets its own detached checkout, `<home>/lander/<hash of source>`, to the target branch tip.
+   With `lander.push`, it fetches the remote branch and merges it when it is ahead.
 2. Merges the submitted tip. A conflict aborts the merge and reports the conflicting paths to the submitter.
+   Runs the same resolved setup commands on the merged revision before checks.
 3. Runs `lander.checks` in order. Each check is stopped after 2 minutes without output or 10 minutes total, or at
    its own `timeout` (seconds, which also caps the no-output limit), killing its whole process group. Watchdog
    failures name the limit that fired, the failed test lines seen so far (vitest's `FAIL`/`×` lines, kept even when

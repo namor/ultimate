@@ -13,6 +13,7 @@ import {
 import type { ConversationId, Cursor, TaskId, Tx } from '@earendil-works/pi-durable'
 import { exec } from '../../lib/exec.ts'
 import { git, isolatable } from '../../lib/git.ts'
+import { readWorktreeSetup } from '../../lib/worktree-setup.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { ConversationsApi } from '../conversations/api.ts'
 import { Branches } from './api.ts'
@@ -83,6 +84,7 @@ type Host = Pick<
   ExtensionHost,
   | 'harness'
   | 'home'
+  | 'userHome'
   | 'ultimateRoot'
   | 'projectRoot'
   | 'projectSettings'
@@ -386,7 +388,7 @@ export function workspaces(host: Host) {
           await setup(
             workspace.source,
             workspace.path,
-            await host.projectSettings(),
+            await readWorktreeSetup(host.userHome, workspace.source, () => host.projectSettings()),
             runtime.signal,
           )
           await runtime.commit(async (tx) => {
