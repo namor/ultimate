@@ -45,12 +45,27 @@ earlier. `compaction.modelOverrides` in those settings files, keyed by exact `"p
 are read when the server starts.
 User config is independent of `ULTIMATE_HOME`. A project's `isolates.worktree` sets its checkouts' `setup` commands and, optionally, where they live (`path`) and
 how they are made and removed (`add`, `remove`); see `extensions/workspaces/README.md`.
+For personal setup without enabling project resources, set `worktreeSetup` in **`~/.ultimate/settings.json` only**:
+
+```json
+{
+  "worktreeSetup": {
+    "/projects/my-app": ["pnpm install --frozen-lockfile"]
+  }
+}
+```
+
+Keys are canonical absolute main-checkout paths; linked and nested worktrees share that identity. An explicit entry
+replaces the project's setup command list, including `[]` to disable setup. Only an absent entry falls back to the
+existing, gated `host.projectSettings()` `isolates.worktree.setup`. There is no global command fallback. Resolution
+reads personal settings afresh each time and leaves other projects unchanged. This does not trust the project or
+enable its extensions, agents, skills, models, worktree layout/lifecycle commands, lander checks or push settings.
 This repository's `.ultimate/settings.json` holds its isolate setup,
 lander checks and preview model.
 
 A project's `.ultimate/` applies only once it is chosen: its `extensions/`, the project `extensions` settings layer,
 `agents/`, and `skills/` load only when the project decision is local. Decisions are kept per project path with Pi's
 `ProjectTrustStore` in `~/.ultimate/trust.json`, and a linked git worktree shares its main checkout's; undecided behaves like global and is reported in system info
-(`project.decision`). Every `.ultimate/settings.json` key (`defaultSurface`, `isolates`, …) goes through the gated
+(`project.decision`). Every project `.ultimate/settings.json` key (`defaultSurface`, `isolates`, …) goes through the gated
 `host.projectSettings()`; onboarding reads the file only to show what choosing the project would bring. The `onboarding` extension asks once and its Extensions panel changes the choice live. Resources you add to a
 project's `.ultimate/` stay unloaded until that project is local; tests seed the decision in their temporary home.

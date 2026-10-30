@@ -1,17 +1,7 @@
-import type { JsonObject } from '@earendil-works/pi-durable'
 import { exec } from '../../lib/exec.ts'
 
-/** Run the project's `isolates.worktree.setup` commands in a new worktree at `path`, branched from `source`. */
-export async function setup(
-  source: string,
-  path: string,
-  settings: JsonObject,
-  signal: AbortSignal,
-) {
-  const commands =
-    (settings as { isolates?: { worktree?: { setup?: string[] } } }).isolates?.worktree?.setup ?? []
-  if (!Array.isArray(commands) || !commands.every((command) => typeof command === 'string'))
-    throw new Error('isolates.worktree.setup must be an array of command strings')
+/** Run resolved setup commands in a new worktree at `path`, branched from `source`. */
+export async function setup(source: string, path: string, commands: string[], signal: AbortSignal) {
   for (const command of commands) {
     signal.throwIfAborted()
     try {
