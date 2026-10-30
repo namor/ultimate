@@ -220,7 +220,7 @@ export async function run(request: CursorRequest, command = 'cursor-agent') {
     source,
     worktree: join(directory, 'worktree'),
     base: '',
-    model: 'cursor-grok-4.6-xhigh',
+    model: 'grok-4.6[effort=xhigh,fast=false]',
     startedAt: Date.now(),
     activity: 'Preparing committed HEAD (uncommitted files are not copied)',
     nativeCalls: 0,
