@@ -2,10 +2,15 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ConversationId, JsonObject, Tx } from '@earendil-works/pi-durable'
 import { afterEach, expect, it } from 'vitest'
+import { ProjectTrustStore } from '@earendil-works/pi-coding-agent'
 import { fallbackModel, summaryModelStatus } from '../extensions/conversations/summary-model.ts'
 import { check, noteFor } from '../extensions/setup/server.ts'
 import type { SetupIssue } from '../extensions/setup/refs.ts'
 import { git } from '../lib/git.ts'
+import { projectKey } from '../lib/families-settings.ts'
+import { writeJson } from '../lib/json-file.ts'
+import { userSettingsPath } from '../lib/settings.ts'
+import { projectSettings } from '../server/project-setup.ts'
 import { removeTemps, temp } from './helpers.ts'
 
 afterEach(removeTemps)
@@ -219,9 +224,13 @@ it('warns about a missing worktree setup until one is configured', async () => {
   const workspaces = [...host.extensions(), { name: 'workspaces', enabled: true }] as ReturnType<
     typeof host.extensions
   >
-  const row = async (settings: JsonObject) =>
+  const row = async (settings?: JsonObject) =>
     (
-      await check({ ...host, extensions: () => workspaces, projectSettings: async () => settings })
+      await check({
+        ...host,
+        extensions: () => workspaces,
+        projectSettings: async () => settings ?? projectSettings(host.projectRoot, host.userHome),
+      })
     ).find((issue) => issue.area === 'Worktree setup')
   expect(await row({})).toMatchObject({
     status: 'warn',
@@ -229,6 +238,36 @@ it('warns about a missing worktree setup until one is configured', async () => {
   })
   expect(await row({ isolates: { worktree: { setup: ['composer install'] } } })).toMatchObject({
     status: 'ok',
+    summary: '1 commands',
+  })
+  await mkdir(join(host.projectRoot, '.ultimate'))
+  await writeJson(join(host.projectRoot, '.ultimate/settings.json'), {
+    isolates: { worktree: { setup: ['exit 1'] } },
+  })
+  new ProjectTrustStore(join(host.userHome, '.ultimate')).set(projectKey(host.projectRoot), false)
+  expect(await projectSettings(host.projectRoot, host.userHome)).toEqual({})
+  await writeJson(userSettingsPath(host.userHome), {
+    worktreeSetup: { [projectKey(host.projectRoot)]: ['composer install'] },
+  })
+  expect(await row()).toMatchObject({ status: 'ok', summary: '1 commands' })
+  const subfolder = join(host.projectRoot, 'subfolder')
+  await mkdir(subfolder)
+  expect(
+    (
+      await check({
+        ...host,
+        projectRoot: subfolder,
+        extensions: () => workspaces,
+        projectSettings: () => projectSettings(subfolder, host.userHome),
+      })
+    ).find((issue) => issue.area === 'Worktree setup'),
+  ).toMatchObject({ status: 'ok', summary: '1 commands' })
+  await writeJson(userSettingsPath(host.userHome), {
+    worktreeSetup: { [join(host.projectRoot, 'other-project')]: ['composer install'] },
+  })
+  expect(await row()).toMatchObject({
+    status: 'warn',
+    summary: 'none, though the project has composer.json',
   })
 })
 

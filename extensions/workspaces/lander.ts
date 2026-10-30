@@ -10,6 +10,7 @@ import { withAbortSignal } from '@earendil-works/chord/context'
 import { defineEntry, defineTask, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import type { ConversationDocToken, ConversationId, Tx } from '@earendil-works/pi-durable'
 import { git } from '../../lib/git.ts'
+import { readWorktreeSetup } from '../../lib/worktree-setup.ts'
 import { runGroup, sweepPidFiles } from '../../lib/process-group.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { CheckRan, SubmissionLanded } from './api.ts'
@@ -104,7 +105,15 @@ export const log = (
 }
 type Host = Pick<
   ExtensionHost,
-  'home' | 'ultimateRoot' | 'harness' | 'projectSettings' | 'doc' | 'metadata' | 'notice' | 'emit'
+  | 'home'
+  | 'userHome'
+  | 'ultimateRoot'
+  | 'harness'
+  | 'projectSettings'
+  | 'doc'
+  | 'metadata'
+  | 'notice'
+  | 'emit'
 >
 /** One check command, with its own total limit in seconds when set. */
 type Check = { command: string; timeout?: number }
@@ -615,7 +624,12 @@ export function createLander(
             const { base } = merged
             // Setup prepares the merged revision, for example installs its lockfile.
             await step('setting up')
-            await setup(source, path, await host.projectSettings(), signal)
+            await setup(
+              source,
+              path,
+              await readWorktreeSetup(host.userHome, source, () => host.projectSettings()),
+              signal,
+            )
             const flaky: string[] = []
             for (const [position, group] of settings.checks.entries()) {
               const members = Array.isArray(group) ? group : [group]

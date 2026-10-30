@@ -2,6 +2,7 @@ import { fauxProvider } from '@earendil-works/pi-ai/providers/faux'
 import { cp, mkdir, readdir, readFile, writeFile, access, realpath, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Type } from '@earendil-works/pi-ai'
+import { ProjectTrustStore } from '@earendil-works/pi-coding-agent'
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
 import type { FauxResponseFactory } from '@earendil-works/pi-ai/providers/faux'
 import {
@@ -25,6 +26,10 @@ import workspaceExtension, {
 } from '../../extensions/workspaces/server.ts'
 import { Workspaces, workspaces } from '../../extensions/workspaces/workspaces.ts'
 import { git } from '../../lib/git.ts'
+import { projectKey } from '../../lib/families-settings.ts'
+import { writeJson } from '../../lib/json-file.ts'
+import { userSettingsPath } from '../../lib/settings.ts'
+import { projectSettings } from '../../server/project-setup.ts'
 import { setup } from '../../extensions/workspaces/setup.ts'
 import type { LanderEntry, WorkspaceIndex } from '../../extensions/workspaces/types.ts'
 import { createLander, landerCheckout, landerPath } from '../../extensions/workspaces/lander.ts'
@@ -459,12 +464,47 @@ it.concurrent('setup closes stdin so commands waiting for EOF finish', async () 
   await setup(
     paths.projectRoot,
     paths.projectRoot,
-    {
-      isolates: { worktree: { setup: ['cat >/dev/null; echo eof > eof.txt'] } },
-    },
+    ['cat >/dev/null; echo eof > eof.txt'],
     AbortSignal.timeout(2000),
   )
   expect(await readFile(join(paths.projectRoot, 'eof.txt'), 'utf8')).toBe('eof\n')
+})
+it.concurrent('runs personal setup before ready while project settings remain declined', async () => {
+  const f = await fixture()
+  await mkdir(join(f.projectRoot, '.ultimate'))
+  await writeJson(join(f.projectRoot, '.ultimate/settings.json'), {
+    isolates: { worktree: { setup: ['exit 1'] } },
+    lander: { checks: ['exit 1'] },
+  })
+  new ProjectTrustStore(join(f.host.userHome, '.ultimate')).set(projectKey(f.projectRoot), false)
+  f.host.projectSettings = () => projectSettings(f.projectRoot, f.host.userHome)
+  expect(await f.host.projectSettings()).toEqual({})
+  const started = join(f.directory, 'setup-started')
+  const gate = join(f.directory, 'setup-gate')
+  await writeJson(userSettingsPath(f.host.userHome), {
+    worktreeSetup: {
+      [projectKey(f.projectRoot)]: [
+        `cp "$ULTIMATE_SOURCE/base.txt" prepared.txt; touch '${started}'; while [ ! -f '${gate}' ]; do sleep 0.02; done`,
+        'cp prepared.txt ready.txt',
+      ],
+    },
+  })
+  const id = await f.create()
+  await until(() =>
+    access(started).then(
+      () => true,
+      () => false,
+    ),
+  )
+  const workspace = (await f.service.get(id, context))!
+  expect(workspace.state).toBe('preparing')
+  expect(await readFile(join(workspace.path, 'prepared.txt'), 'utf8')).toBe('base')
+  await expect(access(join(workspace.path, 'ready.txt'))).rejects.toThrow('ENOENT')
+  await writeFile(gate, '')
+  await f.service.ready(id, context)
+  expect((await f.service.get(id, context))!.state).toBe('ready')
+  expect(await readFile(join(workspace.path, 'ready.txt'), 'utf8')).toBe('base')
+  expect(await f.host.projectSettings()).toEqual({})
 })
 it.concurrent('failed setup keeps its output tail, removes its empty branch, and blocks tools rather than writing in the source', async () => {
   const f = await fixture(['echo SETUP_OUTPUT_TAIL >&2; exit 1'])
@@ -1542,6 +1582,38 @@ it.concurrent('runs worktree setup on the merged revision before the checks', as
   const [report] = await submitted(f, id)
   expect(report).toContain('landed as')
   expect(report).not.toContain('Flaky')
+})
+it.concurrent('runs the same personal setup on the merged revision with project settings declined', async () => {
+  const f = await fixture()
+  await mkdir(join(f.projectRoot, '.ultimate'))
+  await writeJson(join(f.projectRoot, '.ultimate/settings.json'), {
+    isolates: { worktree: { setup: ['exit 1'] } },
+    lander: { checks: ['exit 1'] },
+  })
+  await writeFile(join(f.projectRoot, '.gitignore'), 'have.txt\n')
+  await writeFile(join(f.projectRoot, 'want.txt'), 'one')
+  await git(f.projectRoot, 'add', '.')
+  await git(f.projectRoot, 'commit', '-qm', 'setup inputs')
+  new ProjectTrustStore(join(f.host.userHome, '.ultimate')).set(projectKey(f.projectRoot), false)
+  f.host.projectSettings = () => projectSettings(f.projectRoot, f.host.userHome)
+  expect(await f.host.projectSettings()).toEqual({})
+  await writeJson(userSettingsPath(f.host.userHome), {
+    worktreeSetup: { [projectKey(f.projectRoot)]: ['cp want.txt have.txt'] },
+  })
+  const id = await f.create()
+  await f.service.ready(id, context)
+  const workspace = (await f.service.get(id, context))!
+  expect(workspace.state).toBe('ready')
+  expect(await readFile(join(workspace.path, 'have.txt'), 'utf8')).toBe('one')
+  await writeFile(join(workspace.path, 'want.txt'), 'two')
+  await git(workspace.path, 'commit', '-qam', 'needs setup')
+  await f.service.submit(id, 'None', context)
+  const [report] = await submitted(f, id)
+  expect(report).toContain('landed as')
+  const path = await landerPath(f.home, f.projectRoot, await f.host.projectSettings())
+  expect(await readFile(join(path, 'want.txt'), 'utf8')).toBe('two')
+  expect(await readFile(join(path, 'have.txt'), 'utf8')).toBe('two')
+  expect(await f.host.projectSettings()).toEqual({})
 })
 async function withRemote() {
   const paths = await repository()
