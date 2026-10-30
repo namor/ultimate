@@ -1,0 +1,1443 @@
+<!doctype html>
+<html lang="en" data-register="paper">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <title>Elephant–Goldfish × Ultimate — what changes, what remains unproved</title>
+    <link rel="stylesheet" href="kit.css" data-ve-kit />
+    <style>
+      :root,
+      html[data-register='paper'] {
+        --bg: #f6f7f5;
+        --surface: #eef1ef;
+        --text: #202d31;
+        --text-dim: #526064;
+        --border: #c8d0cd;
+        --border-bright: #738780;
+        --accent: #17675e;
+        --accent-dim: #e0eeea;
+        --warn-ink: #805114;
+        --warn-ground: #f4ebda;
+        --reading-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        --reading-serif:
+          Charter, 'Bitstream Charter', 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia,
+          serif;
+        --reading-mono: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+        color-scheme: light dark;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root,
+        html[data-register='paper'] {
+          --bg: #172225;
+          --surface: #1e2d30;
+          --text: #e1e8e5;
+          --text-dim: #b0bebb;
+          --border: #3c5051;
+          --border-bright: #7e9792;
+          --accent: #8ccbbc;
+          --accent-dim: #253e39;
+          --warn-ink: #efc48b;
+          --warn-ground: #382f24;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: auto;
+        scroll-padding-top: 24px;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 16px/1.6 var(--reading-sans);
+      }
+      body,
+      button,
+      input,
+      textarea,
+      select {
+        font-family: var(--reading-sans);
+      }
+      main {
+        width: min(1120px, 100%);
+        max-width: 1120px;
+        margin: auto;
+        padding: 28px 32px 64px;
+      }
+      h1,
+      h2,
+      h3 {
+        color: var(--text);
+        font-family: var(--reading-serif);
+        letter-spacing: -0.02em;
+        text-wrap: balance;
+      }
+      h1 {
+        max-width: none;
+        font-size: clamp(30px, 4vw, 46px);
+        line-height: 1.12;
+        margin: 0 0 12px;
+        font-weight: 600;
+      }
+      h2 {
+        font-size: clamp(26px, 3vw, 34px);
+        line-height: 1.2;
+        margin: 0 0 20px;
+        font-weight: 600;
+      }
+      h3 {
+        font-size: 23px;
+        line-height: 1.25;
+        margin: 0 0 12px;
+        font-weight: 600;
+      }
+      p {
+        max-width: 70ch;
+        margin: 0 0 16px;
+      }
+      a {
+        color: var(--accent);
+        text-underline-offset: 0.2em;
+        text-decoration-thickness: 1px;
+        overflow-wrap: anywhere;
+      }
+      a:hover {
+        text-decoration-thickness: 2px;
+      }
+      :focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: 4px;
+      }
+      ::selection {
+        background: var(--accent);
+        color: var(--bg);
+      }
+      code,
+      .pin {
+        font-family: var(--reading-mono);
+        font-size: 0.85em;
+        overflow-wrap: anywhere;
+      }
+      small,
+      .note {
+        font-size: 14px;
+        line-height: 1.5;
+        color: var(--text-dim);
+      }
+      .lead {
+        color: var(--text-dim);
+        margin-bottom: 20px;
+      }
+      nav {
+        display: flex;
+        gap: 12px 24px;
+        flex-wrap: wrap;
+        margin: 24px 0 0;
+        padding-bottom: 20px;
+        border-bottom: 1px solid var(--border);
+        font-size: 14px;
+      }
+      section {
+        margin: 60px 0 0;
+        min-width: 0;
+      }
+      figure {
+        margin: 0;
+        min-width: 0;
+      }
+      figcaption {
+        display: block;
+        max-width: 85ch;
+        font: 14px/1.55 var(--reading-sans);
+        color: var(--text-dim);
+        margin-top: 16px;
+      }
+      .fig-n {
+        font: inherit;
+        color: var(--accent);
+        font-weight: 650;
+        margin-right: 8px;
+      }
+      .verdict {
+        padding: 24px 0 0;
+        border-top: 1px solid var(--border-bright);
+      }
+      .shared {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr auto 1fr;
+        align-items: center;
+        gap: 16px;
+      }
+      .shared > div {
+        min-width: 0;
+      }
+      .shared strong {
+        display: block;
+        font-size: 19px;
+        line-height: 1.3;
+      }
+      .shared small {
+        display: block;
+        margin-top: 4px;
+      }
+      .edge {
+        color: var(--accent);
+        font-size: 14px;
+        text-align: center;
+      }
+      .edge b {
+        display: block;
+        font-size: 24px;
+        font-weight: 400;
+        line-height: 1;
+      }
+      .verdict-notes {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        margin-top: 24px;
+        border-top: 1px solid var(--border);
+      }
+      .verdict-notes > div {
+        padding: 16px 20px 0 0;
+      }
+      .verdict-notes > div + div {
+        padding-left: 20px;
+        border-left: 1px solid var(--border);
+      }
+      .verdict-notes strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+      .verdict-notes p {
+        margin: 0;
+        font-size: 15px;
+      }
+      .caution {
+        color: var(--warn-ink);
+      }
+      .columns {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 32px;
+        align-items: start;
+      }
+      .columns > * {
+        min-width: 0;
+      }
+      .lane {
+        border-top: 2px solid var(--border-bright);
+        padding-top: 20px;
+      }
+      .lane.ultimate {
+        border-color: var(--accent);
+      }
+      .lane-title {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        align-items: baseline;
+        margin-bottom: 12px;
+      }
+      .lane-title h3 {
+        margin-bottom: 0;
+      }
+      .context {
+        padding: 12px 16px;
+        background: var(--surface);
+        font-size: 15px;
+      }
+      .pipeline {
+        margin: 20px 0;
+        padding-left: 34px;
+      }
+      .pipeline li {
+        padding: 0 0 16px 12px;
+        border-left: 1px solid var(--border-bright);
+      }
+      .pipeline li:last-child {
+        padding-bottom: 0;
+      }
+      .pipeline li::marker {
+        color: var(--accent);
+        font-weight: 650;
+      }
+      .pipeline strong {
+        display: block;
+        line-height: 1.4;
+        margin-bottom: 4px;
+      }
+      .pipeline span {
+        display: block;
+        font-size: 15px;
+        color: var(--text-dim);
+      }
+      .loop {
+        border: 1px dashed var(--border-bright);
+        padding: 12px 16px;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      .loop strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+      .callout {
+        background: var(--warn-ground);
+        color: var(--warn-ink);
+        padding: 20px 24px;
+        margin-top: 24px;
+      }
+      .callout p {
+        margin: 0;
+      }
+      .boundary {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 32px;
+      }
+      .boundary > div {
+        padding: 20px;
+        border: 1px solid var(--border-bright);
+      }
+      .boundary .reader {
+        border-style: dashed;
+      }
+      .boundary ul {
+        padding-left: 20px;
+        margin: 0;
+      }
+      .boundary li {
+        margin-bottom: 8px;
+        font-size: 15px;
+      }
+      .boundary h3 {
+        font-size: 22px;
+      }
+      .boundary-key {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 24px;
+        margin-top: 24px;
+      }
+      .boundary-key strong {
+        display: block;
+        margin-bottom: 6px;
+      }
+      .boundary-key p {
+        font-size: 15px;
+        margin: 0;
+      }
+      .ve-table {
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-radius: 0;
+        margin: 0;
+        scrollbar-color: var(--border-bright) var(--surface);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font: 15px/1.5 var(--reading-sans);
+        font-variant-numeric: tabular-nums;
+      }
+      caption {
+        text-align: left;
+        color: var(--text);
+        font-weight: 650;
+        padding: 16px 20px;
+        background: var(--surface);
+      }
+      th,
+      td {
+        text-align: left;
+        vertical-align: top;
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--border);
+        white-space: normal;
+      }
+      thead th {
+        font-size: 14px;
+        background: var(--surface);
+        color: var(--text);
+      }
+      tbody th {
+        width: 18%;
+        font-weight: 650;
+      }
+      tbody tr:last-child > * {
+        border-bottom: 0;
+      }
+      .mapping {
+        min-width: 680px;
+      }
+      .comparison {
+        min-width: 960px;
+      }
+      .comparison td {
+        width: 27%;
+      }
+      .status {
+        display: inline-block;
+        font-size: 12px;
+        line-height: 1.4;
+        font-weight: 650;
+        border: 1px solid var(--border-bright);
+        padding: 2px 6px;
+        margin-bottom: 6px;
+        color: var(--text);
+      }
+      .status.hypothesis {
+        border-style: dashed;
+        color: var(--warn-ink);
+      }
+      .status.unknown {
+        color: var(--warn-ink);
+        background: var(--warn-ground);
+      }
+      .scroll-hint {
+        font-size: 14px;
+        color: var(--text-dim);
+        margin-bottom: 12px;
+      }
+      .evidence {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      .evidence li {
+        display: grid;
+        grid-template-columns: 180px 1fr;
+        gap: 24px;
+        border-top: 1px solid var(--border);
+        padding: 20px 0;
+      }
+      .evidence li:last-child {
+        border-bottom: 1px solid var(--border);
+      }
+      .evidence strong {
+        display: block;
+      }
+      .evidence p {
+        margin: 0;
+        font-size: 15px;
+      }
+      .evidence .scope {
+        color: var(--text-dim);
+        margin-top: 6px;
+      }
+      .cases-strip {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 24px;
+      }
+      .case-item {
+        border-top: 1px solid var(--border-bright);
+        padding-top: 20px;
+      }
+      .case-item h3 {
+        font-size: 23px;
+      }
+      .case-item p {
+        font-size: 15px;
+      }
+      .alloc {
+        display: block;
+        font-size: 18px;
+        font-weight: 650;
+        color: var(--accent);
+        margin-bottom: 12px;
+      }
+      .sequence {
+        font: 15px/1.7 var(--reading-mono);
+        margin-bottom: 12px;
+      }
+      .experiment {
+        display: grid;
+        grid-template-columns: 1fr 2fr;
+        gap: 32px;
+        border-top: 1px solid var(--border-bright);
+        padding-top: 24px;
+        margin-top: 32px;
+      }
+      .experiment ol {
+        margin: 0;
+        padding-left: 22px;
+      }
+      .experiment li {
+        margin-bottom: 12px;
+      }
+      .sources {
+        border-top: 1px solid var(--border-bright);
+        padding-top: 24px;
+      }
+      .sources li {
+        max-width: 85ch;
+        margin-bottom: 16px;
+        font-size: 14px;
+        overflow-wrap: anywhere;
+      }
+      .sources ul {
+        padding-left: 20px;
+      }
+      .sources h3 {
+        margin-top: 28px;
+      }
+      footer {
+        margin-top: 40px;
+        color: var(--text-dim);
+        font-size: 13px;
+      }
+      @media (max-width: 700px) {
+        main {
+          padding: 20px 20px 40px;
+        }
+        .shared {
+          gap: 8px;
+        }
+        .shared strong {
+          font-size: 15px;
+        }
+        .shared small {
+          font-size: 12px;
+        }
+        .edge {
+          font-size: 12px;
+        }
+        .edge b {
+          font-size: 20px;
+        }
+        .verdict {
+          padding-top: 16px;
+        }
+        .verdict-notes,
+        .columns,
+        .boundary,
+        .boundary-key,
+        .cases-strip,
+        .experiment {
+          grid-template-columns: 1fr;
+        }
+        .verdict-notes > div {
+          padding: 12px 0;
+        }
+        .verdict-notes > div + div {
+          border-left: 0;
+          border-top: 1px solid var(--border);
+          padding: 12px 0 0;
+        }
+        .columns,
+        .boundary {
+          gap: 28px;
+        }
+        .boundary-key {
+          gap: 20px;
+        }
+        .evidence li {
+          grid-template-columns: 1fr;
+          gap: 8px;
+        }
+        section {
+          margin-top: 44px;
+        }
+        nav {
+          gap: 10px 20px;
+        }
+        .callout {
+          padding: 16px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation: none !important;
+          transition: none !important;
+          scroll-behavior: auto !important;
+        }
+      }
+      @media print {
+        :root,
+        html[data-register='paper'] {
+          --bg: white;
+          --surface: #f0f2f1;
+          --text: #142227;
+          --text-dim: #38494c;
+          --accent: #17584f;
+          --border: #aebbb5;
+          --border-bright: #60756c;
+          --warn-ink: #69400c;
+          --warn-ground: #faf4e7;
+          color-scheme: light;
+        }
+        main {
+          width: 100%;
+          max-width: none;
+          padding: 0;
+        }
+        nav,
+        .scroll-hint,
+        [data-ve-reply] {
+          display: none !important;
+        }
+        section {
+          margin-top: 28px;
+        }
+        .ve-table {
+          overflow: visible;
+        }
+        .mapping,
+        .comparison {
+          min-width: 0;
+          font-size: 12px;
+        }
+        th,
+        td {
+          padding: 6px;
+        }
+        tr,
+        .case-item,
+        .boundary > div {
+          break-inside: avoid;
+        }
+        h2,
+        h3,
+        figcaption {
+          break-after: avoid;
+        }
+        thead {
+          display: table-header-group;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Elephant–Goldfish × Ultimate</h1>
+        <p class="lead">
+          The same review idea. A different handoff. No demonstrated winner.<br /><small
+            >Source-grounded comparison · research freeze 30 October 2026</small
+          >
+        </p>
+      </header>
+      <figure
+        class="verdict"
+        aria-label="Verdict: shared information split, local handoff focus, unproved benefit"
+      >
+        <div class="shared">
+          <div><strong>Continuing author</strong><small>Keeps intent and history</small></div>
+          <span class="edge">exports<b aria-hidden="true">→</b></span>
+          <div><strong>Artifact + source</strong><small>Carries the task truth</small></div>
+          <span class="edge">tests with<b aria-hidden="true">→</b></span>
+          <div><strong>Fresh reader</strong><small>No author persuasion</small></div>
+        </div>
+        <div class="verdict-notes">
+          <div>
+            <strong>Ultimate’s bet: the final handoff</strong>
+            <p>
+              Review exact worker briefs, source identity, ownership and lifecycle boundaries—not
+              just the design.
+            </p>
+          </div>
+          <div>
+            <strong class="caution">Not proved better</strong>
+            <p>
+              Weaker tool withholding than Google’s Claude adapter. Real port rollout and
+              comparative usefulness remain unproved.
+            </p>
+          </div>
+        </div>
+        <figcaption>
+          <span class="fig-n">Fig. 1</span>Both keep the author’s continuity and test what fresh
+          readers can reconstruct; Ultimate’s integration is a hypothesis, not a quality result.
+          <a href="DEEP-DIVE.md#7-side-by-side-comparison">Report §7</a>.
+        </figcaption>
+      </figure>
+      <nav aria-label="Document sections">
+        <a href="#pipelines">Review paths</a><a href="#boundary">Information boundary</a
+        ><a href="#roles">Role mapping</a><a href="#comparison">Comparison</a
+        ><a href="#evidence">Evidence</a><a href="#proof">Next proof</a
+        ><a href="#sources">Sources &amp; pins</a>
+      </nav>
+      <section id="pipelines">
+        <h2>Review the idea, then the executable plan</h2>
+        <figure>
+          <div class="columns">
+            <div class="lane">
+              <div class="lane-title">
+                <h3>Google EGM</h3>
+                <span class="note">Pinned review stages 5–9</span>
+              </div>
+              <div class="context">
+                <strong>Before review:</strong> brainstorm the concept → draft and reconcile the
+                predecessor.
+              </div>
+              <ol class="pipeline" start="5">
+                <li>
+                  <strong>Initial zoom-out</strong
+                  ><span>Whole design: necessity, framing, reuse and simplicity.</span>
+                </li>
+                <li>
+                  <strong>Comprehension</strong
+                  ><span>Retain two paraphrases: proposal and existing system.</span>
+                </li>
+                <li>
+                  <strong>Critic</strong
+                  ><span>Design critic + structural + style; feature scope.</span>
+                </li>
+                <li>
+                  <strong>Intermediate zoom-out</strong
+                  ><span>Revised whole: remove unjustified additions from review.</span>
+                </li>
+                <li>
+                  <strong>Readiness</strong
+                  ><span
+                    >Implementation readiness + codebase details + style; detailed scope and real
+                    source.</span
+                  >
+                </li>
+              </ol>
+              <div class="loop">
+                <strong>Repair depends on the preset</strong>Interactive critic/readiness subflows
+                use fresh review loops. Uninterrupted full review consolidates without the same
+                interleaved human repair. Feature-only is not detailed-plan certification.
+              </div>
+              <div class="context">
+                <strong>After review:</strong> authorized implementation and ordinary code
+                verification—not automatic approval.
+              </div>
+            </div>
+            <div class="lane ultimate">
+              <div class="lane-title">
+                <h3>Ultimate adaptation</h3>
+                <span class="note">Strengthened proposal + resource draft</span>
+              </div>
+              <div class="context">
+                <strong>Author reconciliation:</strong> bind request, predecessor, source and actual
+                authority.
+              </div>
+              <ol class="pipeline">
+                <li>
+                  <strong>I + C; add D only for a material hazard</strong
+                  ><span
+                    >Fresh intent/paraphrases + independent technical critic. If framing is
+                    unsettled, I runs before C.</span
+                  >
+                </li>
+                <li>
+                  <strong>Resolve with accessible evidence</strong
+                  ><span
+                    >Fix, contest, escalate, decline nits, or explicitly accept risk under real
+                    authority.</span
+                  >
+                </li>
+                <li>
+                  <strong>Fresh affected-claim repair</strong
+                  ><span
+                    >Recheck changed obligations; check post-fix simplicity. Do not count an edit as
+                    a verified repair.</span
+                  >
+                </li>
+                <li>
+                  <strong>New R on exact final briefs</strong
+                  ><span
+                    >Read worker file actions, source pin, coupled ownership, dependencies and
+                    tests. Source-grounded readiness also exists upstream.</span
+                  >
+                </li>
+                <li>
+                  <strong>Normal build + final review</strong
+                  ><span
+                    >Readiness is not user go, passing tests, code approval or permission to
+                    land.</span
+                  >
+                </li>
+              </ol>
+              <div class="loop">
+                <strong>Repair returns to the affected obligation ↶</strong>Three concurrent readers
+                at most—not three total. Concept-only assessment can stop after I+C with readiness
+                pending. Unchanged reviewed bytes may reuse explicit provenance.
+              </div>
+            </div>
+          </div>
+          <figcaption>
+            <span class="fig-n">Fig. 2</span>Upstream separates five review stages; the local recipe
+            combines lenses but reserves a new reader for the final execution artifact.
+            <a
+              href="https://github.com/google/elephant-goldfish-model/blob/5efe34126a0059eff51ca7e0af7e3249d70952bf/skills/egm-review/SKILL.md"
+              >Pinned review skill</a
+            >; report §§3.3, 6.1.
+          </figcaption>
+        </figure>
+        <details class="note" style="margin-top: 20px">
+          <summary>Stopping rules are not correctness certificates</summary>
+          <p style="margin-top: 12px">
+            The upstream loop assesses cleanliness before that round’s fixes: no unsettled
+            Blocker/Major plus adequate reviewer completion. Two consecutive clean rounds converge;
+            the default cap is five. A failed reviewer gets one retry, then “not run,” never zero
+            findings. Some outer stage re-audits have a separate one-re-audit cap.
+          </p>
+          <p>
+            Upstream says not to reopen a settled contest or accepted risk at the same scope; it
+            states no contrary-evidence exception.
+            <strong>Reopening on new contrary evidence is Ultimate’s local policy</strong>, not an
+            upstream guarantee. See
+            <a
+              href="https://github.com/google/elephant-goldfish-model/blob/5efe34126a0059eff51ca7e0af7e3249d70952bf/skills/egm-review-loop/SKILL.md"
+              >pinned loop</a
+            >
+            and report §3.8.
+          </p>
+        </details>
+      </section>
+      <section id="boundary">
+        <h2>A fresh transcript is not a sandbox</h2>
+        <figure>
+          <div class="boundary">
+            <div>
+              <h3>Author retains</h3>
+              <ul>
+                <li>Intent, earlier discussion and rejected alternatives.</li>
+                <li>Responsibility for predecessor reconciliation.</li>
+                <li>Authority to propose dispositions—not to erase inconvenient evidence.</li>
+              </ul>
+            </div>
+            <div class="reader">
+              <h3>Reviewer receives</h3>
+              <ul>
+                <li>The artifact, request, non-goals and necessary neutral constraints.</li>
+                <li>Pinned source and explicit missing-coverage information.</li>
+                <li>
+                  <strong>Not</strong> author chat, persuasive rebuttals or a preferred verdict.
+                </li>
+              </ul>
+            </div>
+          </div>
+          <div class="boundary-key">
+            <div>
+              <strong>Transcript freshness</strong>
+              <p>
+                A new session reduces author-history anchoring. Shared training, prompts and code
+                misconceptions remain.
+              </p>
+            </div>
+            <div>
+              <strong>Tool withholding</strong>
+              <p>
+                Google’s Claude reviewer: <code>Read / Grep / Glob</code>, no shell/write/delegation
+                tools. A substantive defense.
+              </p>
+            </div>
+            <div>
+              <strong>Filesystem confinement</strong>
+              <p>
+                Neither profile proves a filesystem sandbox. Readable paths and host permissions
+                still matter.
+              </p>
+            </div>
+          </div>
+          <div class="callout">
+            <p>
+              <strong>Local capability regression:</strong> Ultimate exposes
+              <code>read / bash</code>, with <code>isolate: none</code>. “Do not write, execute
+              source, or read excluded stores” is a prompt obligation. Shell access can violate it;
+              fresh <code>fork:false</code> does not make stores inaccessible.
+            </p>
+          </div>
+          <figcaption>
+            <span class="fig-n">Fig. 3</span>Export enough task truth to review independently; do
+            not confuse selected context, withheld tools and a sandbox.
+            <a
+              href="https://github.com/google/elephant-goldfish-model/blob/5efe34126a0059eff51ca7e0af7e3249d70952bf/docs/claude.md"
+              >Claude adapter</a
+            >,
+            <a
+              href="https://github.com/google/elephant-goldfish-model/blob/5efe34126a0059eff51ca7e0af7e3249d70952bf/docs/codex.md"
+              >Codex host caveats</a
+            >; report §§3.11, 6.3, 8.
+          </figcaption>
+        </figure>
+      </section>
+      <section id="roles">
+        <h2>Seven lenses become four profiles—not equal sampling</h2>
+        <figure>
+          <p class="scroll-hint">
+            On a narrow screen, scroll within the labelled table. I = intent, C = critic, R =
+            readiness, D = conditional domain.
+          </p>
+          <div
+            class="ve-table"
+            role="region"
+            aria-label="Seven upstream reviewer lenses mapped to four Ultimate profiles"
+            tabindex="0"
+          >
+            <table class="mapping">
+              <caption>
+                Attention retained, combined, or reduced
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Upstream reviewer</th>
+                  <th scope="col">Local destination</th>
+                  <th scope="col">What changes</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">zoom_out</th>
+                  <td>I: <code>design-intent</code>; post-fix simplicity also in R</td>
+                  <td>
+                    Framing shares attention with naive interpretation; less independent post-fix
+                    sampling.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">comprehension</th>
+                  <td>I: <code>design-intent</code></td>
+                  <td>
+                    Two full paraphrases retained, even with no findings; compliance still needs
+                    proof.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">design_critic</th>
+                  <td>
+                    C: <code>design-critic</code>; D: <code>design-domain</code> when justified
+                  </td>
+                  <td>
+                    Independent technical challenge; a named domain role does not establish
+                    expertise.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">codebase_details</th>
+                  <td>R: <code>design-readiness</code>, with source-grounded C</td>
+                  <td>Current contracts share attention with brief readiness and ownership.</td>
+                </tr>
+                <tr>
+                  <th scope="row">implementation_readiness</th>
+                  <td>R: <code>design-readiness</code></td>
+                  <td>New final reader of exact worker briefs, not merely design prose.</td>
+                </tr>
+                <tr>
+                  <th scope="row">structural</th>
+                  <td>Lightweight shared rubric across profiles</td>
+                  <td>No separate documentation-structure reader.</td>
+                </tr>
+                <tr>
+                  <th scope="row">style</th>
+                  <td>Lightweight shared rubric across profiles</td>
+                  <td>Less cosmetic ceremony; less independent communication review.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <figcaption>
+            <span class="fig-n">Fig. 4</span>Combining rubrics preserves questions, not independent
+            attention; all four local profiles use Sol/high.
+            <a
+              href="https://github.com/google/elephant-goldfish-model/tree/5efe34126a0059eff51ca7e0af7e3249d70952bf/agents"
+              >Pinned personas</a
+            >; report §§3.5, 6.2.
+          </figcaption>
+        </figure>
+        <p class="note" style="margin-top: 20px">
+          <strong>Outside that mapping:</strong> upstream’s synthesizer and bootstrap orchestrator
+          are not two more reviewer lenses. The coordinator absorbs synthesis; bootstrap contracts
+          (Peanuts/Hay) and systematic drift reporting are deferred. That loses real help for
+          underdocumented repositories.
+        </p>
+      </section>
+      <section id="comparison">
+        <h2>The trade-offs, without advantage badges</h2>
+        <figure>
+          <p class="scroll-hint">
+            <strong>S</strong> = source-supported difference · <strong>H</strong> = hypothesized
+            outcome · <strong>U</strong> = unproved here. Scroll the table horizontally on phones.
+          </p>
+          <div
+            class="ve-table"
+            role="region"
+            aria-label="Detailed Google EGM versus Ultimate comparison"
+            tabindex="0"
+          >
+            <table class="comparison">
+              <caption>
+                Google EGM at 5efe3412 versus the strengthened local proposal and inspected draft
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Dimension</th>
+                  <th scope="col">Google EGM</th>
+                  <th scope="col">Ultimate adaptation</th>
+                  <th scope="col">Status / trade-off</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">Core idea</th>
+                  <td>Continuing author; fresh artifact/source readers.</td>
+                  <td>Same information split.</td>
+                  <td><span class="status">S · shared</span><br />Not a port innovation.</td>
+                </tr>
+                <tr>
+                  <th scope="row">Framing</th>
+                  <td>Dedicated initial zoom-out.</td>
+                  <td>Intent and framing combined.</td>
+                  <td>
+                    <span class="status hypothesis">S / H</span><br />Less ceremony versus attention
+                    interference.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Meaning test</th>
+                  <td>Two full paraphrases remain in the report.</td>
+                  <td>Same required output.</td>
+                  <td>
+                    <span class="status unknown">S / U</span><br />Requirement preserved; actual
+                    compliance unproved.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Technical coverage</th>
+                  <td>
+                    Distinct critic, codebase, readiness and presentation lenses; dispatch depends
+                    on preset.
+                  </td>
+                  <td>C + combined R + conditional D.</td>
+                  <td>
+                    <span class="status hypothesis">S / H</span><br />Fewer independent samples;
+                    targeted domains may help or miss hazards.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Final target</th>
+                  <td>Detailed implementation section and real code.</td>
+                  <td>Exact worker briefs, source identity and ownership.</td>
+                  <td>
+                    <span class="status hypothesis">S / H</span><br />Local fit may improve
+                    handoffs; source-grounded readiness is not unique.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Repair</th>
+                  <td>
+                    Fresh loops, two clean rounds, cap/churn decisions; preset-specific behavior.
+                  </td>
+                  <td>Affected-obligation checks plus new final R.</td>
+                  <td>
+                    <span class="status hypothesis">S / H</span><br />Adaptive but less repeatable.
+                    Neither proves correctness.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Settled findings</th>
+                  <td>
+                    Do not reopen the same settled issue at the same scope; no stated
+                    contrary-evidence exception.
+                  </td>
+                  <td>New contrary evidence reopens an obligation.</td>
+                  <td>
+                    <span class="status">S · local policy</span><br />A local safeguard, not an
+                    upstream promise or enforced compliance.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Review-induced complexity</th>
+                  <td>Dedicated intermediate zoom-out.</td>
+                  <td>Explicit post-fix simplicity obligation.</td>
+                  <td>
+                    <span class="status hypothesis">S / H</span><br />Preserves the question, with
+                    less independent attention.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Decision authority</th>
+                  <td>Repeated human section/architecture checkpoints.</td>
+                  <td>Existing user/goal authority; no redundant go.</td>
+                  <td>
+                    <span class="status hypothesis">S / H</span><br />Fits authorized autonomy;
+                    reconstruction can fail.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Tool restrictions</th>
+                  <td>Claude reviewers: Read/Grep/Glob; host-specific.</td>
+                  <td>Read/bash; read-only instructions; no sandbox.</td>
+                  <td>
+                    <span class="status unknown">S · capability regression</span><br />Shell access
+                    is a material loss of mechanical withholding.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Freshness</th>
+                  <td>Native fresh child; adapter/configuration matters.</td>
+                  <td><code>fork:false</code>; inherited project/extension context.</td>
+                  <td>
+                    <span class="status">S · bounded</span><br />Neither makes history/source stores
+                    inaccessible.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Model diversity</th>
+                  <td>Host/inherited model; optional repeated samples.</td>
+                  <td>Four Sol profiles; normal coding/final-review policy unchanged.</td>
+                  <td>
+                    <span class="status unknown">S / U</span><br />Role names do not guarantee
+                    independent errors.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Context rebuilding</th>
+                  <td>Bootstrap contracts and drift workflow.</td>
+                  <td>Existing source/memory practices; both workflows deferred.</td>
+                  <td>
+                    <span class="status hypothesis">S / H</span><br />Upstream offers more for
+                    underdocumented repositories.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Findings transport</th>
+                  <td>Optional artifact-first synthesizer.</td>
+                  <td>Coordinator, existing reporter and evidence record.</td>
+                  <td>
+                    <span class="status hypothesis">S / H</span><br />Less layering, more
+                    coordinator burden and compression risk.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Lifecycle fit</th>
+                  <td>Host-agnostic instructions and adapters.</td>
+                  <td>Local Stop/watchdog, ownership and source rules.</td>
+                  <td>
+                    <span class="status hypothesis">S / H</span><br />Potential seam-handling
+                    benefit; mostly prompt obligations.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Small clear fixes</th>
+                  <td>Ordinary workflow recommended.</td>
+                  <td>Explicit zero-reader path.</td>
+                  <td>
+                    <span class="status">S · shared exception</span><br />Classify uncertainty and
+                    consequence, not diff size.
+                  </td>
+                </tr>
+                <tr>
+                  <th scope="row">Checks / usefulness</th>
+                  <td>138 offline checks passed in the research; live fixtures also exist.</td>
+                  <td>Recorded parse/test outputs inspected; real recipe rollout pending.</td>
+                  <td>
+                    <span class="status unknown">S / U</span><br />Neither establishes comparative
+                    effectiveness.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <figcaption>
+            <span class="fig-n">Fig. 5</span>The strongest local case is source/lifecycle/ownership
+            handoffs; upstream retains broader workflows and stronger Claude tool withholding. This
+            is a comparison of mechanisms, not measured outcomes. Report §7.
+          </figcaption>
+        </figure>
+      </section>
+      <section id="evidence">
+        <h2>Evidence stops before a usefulness claim</h2>
+        <figure>
+          <ol class="evidence">
+            <li>
+              <div>
+                <strong>Source facts</strong><span class="note">Inspectable mechanisms</span>
+              </div>
+              <div>
+                <p>
+                  Pinned skills, adapters, standards, local proposal and resource draft establish
+                  what is written or implemented.
+                </p>
+                <p class="scope">
+                  A prompt obligation is not a runtime constraint. A source pin identifies bytes,
+                  not completed review.
+                </p>
+              </div>
+            </li>
+            <li>
+              <div>
+                <strong>138 offline checks</strong
+                ><span class="note">Executed by the research coordinator</span>
+              </div>
+              <div>
+                <p>
+                  Upstream offline unit suite: 138 passed, zero failures/skips. Packaging, schema,
+                  links, metadata and fabricated-trace contracts.
+                </p>
+                <p class="scope">
+                  No live model review; no efficacy inference. The visual companion did not rerun
+                  these checks.
+                </p>
+              </div>
+            </li>
+            <li>
+              <div>
+                <strong>17 paper scenarios</strong><span class="note">Supplied policy cases</span>
+              </div>
+              <div>
+                <p>
+                  Allocation, repair and authority transitions were reasoned through in the
+                  strengthened plan.
+                </p>
+                <p class="scope">
+                  Not 17 tests or successful model executions. Independent plan critique improved
+                  one coupled worker split; future recipe reliability is unproved.
+                </p>
+              </div>
+            </li>
+            <li>
+              <div>
+                <strong>Draft parse / suite records</strong
+                ><span class="note">Recorded outputs inspected</span>
+              </div>
+              <div>
+                <p>
+                  The coordinator inspected implementation-run outputs: four parsed profiles and
+                  license equality; 51/51 existing affected tests; a project check.
+                </p>
+                <p class="scope">
+                  Not independently rerun by the research coordinator or this companion. Separate
+                  evidence objects, not an aggregate pass count. Parser/existing-suite success alone
+                  does not prove the loader or live workflow.
+                </p>
+              </div>
+            </li>
+            <li>
+              <div>
+                <strong>Later A/B mechanics</strong
+                ><span class="note">2 selected passes · 46 filtered</span>
+              </div>
+              <div>
+                <p>
+                  A refresh (37 ms) exercises actual agent discovery and skill expansion with
+                  declined project trust and current personal overlays, preserving the Sol trial and
+                  Dream request preflight. B (98 ms) uses the actual subagent path with
+                  <code>fork:false</code>, read/bash tools and pinned source/rules reads.
+                </p>
+                <p class="scope">
+                  Author-history/prior-verdict canaries are absent; an inherited system canary
+                  remains. Returned identity: <code>faux/faux-1</code>, not live Sol. The research
+                  coordinator inspected source and recorded output—not a rerun.
+                  <a href="#loader-followup">Versioned evidence</a>.
+                </p>
+              </div>
+            </li>
+            <li>
+              <div>
+                <strong class="caution">Not established</strong
+                ><span class="note">The next evidence boundary</span>
+              </div>
+              <div>
+                <p>
+                  Live recipe compliance, final resource-range review, real rollout and matched
+                  head-to-head usefulness remain pending.
+                </p>
+                <p class="scope">
+                  A corrected failed assertion distinguishes a retained codemode extension from its
+                  unexposed tool—not isolation. Scripted faux responses establish selected-registry
+                  mechanics, not live model judgment, full-host capability safety or effectiveness.
+                  Bash remains available; frozen comparison pins are unchanged.
+                </p>
+              </div>
+            </li>
+          </ol>
+          <figcaption>
+            <span class="fig-n">Fig. 6</span>Each rung supports a different claim; counts are not
+            additive, and none measures whether the adaptation beats ordinary Ultimate or upstream
+            EGM. Report §§6.5, 11.
+          </figcaption>
+        </figure>
+        <details style="margin-top: 24px">
+          <summary>Related research is mixed—and is not an EGM evaluation</summary>
+          <p style="margin-top: 16px">
+            <a href="https://arxiv.org/abs/2303.17651">Self-Refine</a> supports
+            feedback-and-revision on selected tasks;
+            <a href="https://arxiv.org/abs/2310.01798">intrinsic self-correction research</a> warns
+            repetition without external evidence can fail.
+            <a href="https://arxiv.org/abs/2506.07962">Correlated Errors</a> cautions against
+            treating fresh roles or model families as independent samples.
+          </p>
+          <p>
+            <a href="https://arxiv.org/html/2603.12123">Cross-Context Review’s updated result</a>
+            favors fresh review over repeated same-session review, but not significantly over
+            single-review or context-aware-subagent conditions on average. Synthetic errors, one
+            model, unverified outputs, a language confound and heuristic matching limit transfer.
+          </p>
+          <p>
+            <a
+              href="https://stephens.page/blog/fresh-eyes-beat-a-second-family/paper/fresh-eyes-beat-a-second-family.pdf"
+              >Stephens’s replay</a
+            >
+            motivates controlling freshness separately from family and auditing declined true
+            findings. One pipeline, selected historical defects, limited sampling, grading and
+            skill-version confounds remain. Neither paper proves this port works. Access depth and
+            caveats: <a href="EXTERNAL-SOURCES.md">external ledger E5–E12</a>.
+          </p>
+        </details>
+      </section>
+      <section id="proof">
+        <h2>Spend readers where uncertainty can change the work</h2>
+        <figure>
+          <div class="cases-strip">
+            <div class="case-item">
+              <h3>Small, clear fix</h3>
+              <span class="alloc">0 readers · 0 waves</span>
+              <div class="sequence">inspect → fix → test</div>
+              <p>
+                No unresolved behavior or authority question. “One line” alone does not qualify an
+                auth or replay change.
+              </p>
+            </div>
+            <div class="case-item">
+              <h3>Clean feature</h3>
+              <span class="alloc">3 launches · 2 waves</span>
+              <div class="sequence">I + C → fresh R</div>
+              <p>
+                In the coupled typed-input paper case: one atomic implementation owner—not three
+                workers.
+              </p>
+            </div>
+            <div class="case-item">
+              <h3>Repaired examples</h3>
+              <span class="alloc">5 launches · not universal</span>
+              <div class="sequence">I1 + C1 → I2 → R1 → R2</div>
+              <p>
+                Medium case: four waves. High-risk case: I+C+D → R1 → R2, three waves, plus a
+                separate evidence worker.
+              </p>
+            </div>
+          </div>
+          <figcaption>
+            <span class="fig-n">Fig. 7</span>These are supplied allocation examples, not measured
+            costs: count reader launches, generations, waves and implementation workers separately.
+            A retry on one child is not a new independent reader. Report §9.
+          </figcaption>
+        </figure>
+        <div class="experiment">
+          <div>
+            <h3>The minimum useful experiment</h3>
+            <p>Retain a bounded experiment, not a workflow engine or a superiority claim.</p>
+            <p class="note">
+              First verify actual discovery, effective configuration, resource reads and the
+              capability decision. Then try one feature and a zero-reader control before broader
+              adoption.
+            </p>
+          </div>
+          <ol>
+            <li>
+              <strong>Compare three arms:</strong> ordinary Ultimate; pinned EGM with a named
+              preset; the strengthened adaptation.
+            </li>
+            <li>
+              <strong>Match the ground truth:</strong> same request, source, accessible evidence and
+              feasible total model/tool budget. Match model configuration in the primary comparison;
+              test family changes separately.
+            </li>
+            <li>
+              <strong>Judge the whole chain:</strong> valid serious catches, false positives,
+              declined true findings, evidence dispositions, repair success, regressions and escaped
+              defects.
+            </li>
+            <li>
+              <strong>Count the bill:</strong> total time, tokens, retries, decision turns and
+              implementation rework—not just reviewer count. Blind adjudication where practicable;
+              report uncertainty and per-class results.
+            </li>
+          </ol>
+        </div>
+        <p style="margin-top: 24px">
+          <strong>Conditional recommendation:</strong> test the local final-brief/lifecycle bet on
+          authorized, coupled work. Prefer upstream’s broader documentation and restrictive-adapter
+          strengths where those matter. For a clear correction, ordinary inspection and the relevant
+          test may be enough.
+        </p>
+      </section>
+      <section id="sources" class="sources" aria-label="Sources and frozen identities">
+        <h2>Sources stay with the page</h2>
+        <p>
+          This HTML is a shorter companion, not a replacement for the report. Its content, styles,
+          fonts and scripts need no network or sibling file. The links below are optional
+          navigation.
+        </p>
+        <p>
+          <a href="DEEP-DIVE.md">Full report</a> ·
+          <a href="EXTERNAL-SOURCES.md">External evidence ledger</a> ·
+          <a href="UPSTREAM-COVERAGE.csv">225-path coverage ledger</a> ·
+          <a href="RESEARCH-LOG.md">Research notebook</a>
+        </p>
+        <ul>
+          <li>
+            <strong>Google EGM:</strong>
+            <code>5efe34126a0059eff51ca7e0af7e3249d70952bf</code> (plugin metadata 0.1.0).
+            <a
+              href="https://github.com/google/elephant-goldfish-model/tree/5efe34126a0059eff51ca7e0af7e3249d70952bf"
+              >Immutable repository</a
+            >. Decisive sources: review stages/presets, review-loop stopping, reviewer personas,
+            Claude/Codex adapters; linked beside the figures.
+          </li>
+          <li>
+            <strong>Strengthened local proposal:</strong>
+            <code>3b1d5b1967d486e91133881870cf89503f277508</code>,
+            <code>docs/designs/elephant-goldfish/{DESIGN,PORT-MAP,SEAMS,DRY-RUNS,REVIEW-3}.md</code
+            >. Local Git evidence; no public publication presumed.
+          </li>
+          <li>
+            <strong>Resource draft:</strong> <code>906a10a0c772c4465689e39482d93524f9b9fe0a</code>,
+            <code>.ultimate/resources/design-checkpoint/</code>. Separately inspected wording
+            follow-up: <code>b1f47fcc0030e9f399ee92614fa1821456e45a0a</code>. Draft, not installed
+            activation. Runtime comparison baseline:
+            <code>1475c80e27fe540cf600805df6d40dbc7b8abff5</code>.
+          </li>
+          <li id="loader-followup">
+            <strong>Later A/B mechanics evidence:</strong> current-overlay A refresh and faux-child
+            B, source/patch and actual output <code>#21909/31296</code>, inspected by the research
+            coordinator, not rerun. Refreshed A source SHA-256:
+            <code>6e943b62f5157d428953a121aac658247b65c0720b56bb9f40cadd69e9ba2056</code>; preserved
+            B patch SHA-256:
+            <code>3e0af4705ccd25da73fef519bb2346d01ae9e8d6882fb78afd9e1865247ac995</code>. Earlier
+            A-only evidence and the corrected B assertion are recorded chronologically in
+            <a href="DEEP-DIVE.md">report §6.5</a>. These fixtures do not change the frozen
+            comparison baseline.
+          </li>
+          <li>
+            <strong>Official account:</strong> Brian Suchy and Dave Rensin,
+            <a
+              href="https://opensource.googleblog.com/2026/10/introducing-elephant-goldfish-model-plugin.html"
+              >Google launch post</a
+            >, 22 October 2026. Intended mechanism and reported adoption—not a controlled benefit
+            result. Author/practitioner accounts and abstract-only research access are distinguished
+            in the external ledger.
+          </li>
+          <li>
+            <strong>Visual Explainer:</strong> canonical skill v0.14.0 at
+            <code>5f378868e0ea745a6284b51e710c390f0c76f72c</code>.
+            <a
+              href="https://github.com/nicobailon/visual-explainer/tree/5f378868e0ea745a6284b51e710c390f0c76f72c"
+              >Pinned public kit</a
+            >. Actual <code>renderPage</code> / <code>prepareRenderedHtml</code> API, paper
+            register; no registered native command or global install. Copyright © 2025 Nico Bailon,
+            MIT. Full kit license is embedded in the rendered HTML and retained as
+            <a href="VISUAL-EXPLAINER-LICENSE.txt">a companion file</a>.
+          </li>
+        </ul>
+        <footer>
+          Research freeze: 2026-10-30 · Source facts ≠ prompt compliance ≠ measured usefulness.
+        </footer>
+      </section>
+    </main>
+  </body>
+</html>
