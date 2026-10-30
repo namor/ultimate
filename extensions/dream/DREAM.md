@@ -9,7 +9,8 @@ itself.
 
 A dream is ordinary work: one branch, its answer, the user's decisions, ordinary branches for what they approve. There
 is no session to track. Dream's actions, called with codemode `ultimate.action('dream', name, args)`: `prepare
-{chapter, learned, handoff}` and `stats` (tool numbers from the trace, no model). The trace keeps only about the last
+{chapter, learned, handoff}` and `stats` (tool-call metadata from the trace, no diagnostic text or arguments, no model).
+The trace keeps only about the last
 7 days, so `stats` and `ultimate.trace` see only that window, and `stats` counts only tool calls; older failures and
 model errors are found in conversation entries.
 
