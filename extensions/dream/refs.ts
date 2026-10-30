@@ -56,13 +56,6 @@ export type ToolStats = {
   calls: number
   tools: { name: string; calls: number; failed: number; avgMs: number }[]
   unused: string[]
-  /** The most frequent errors, each with its two newest calls: `#<conversation>/<entry>` and the start of its args. */
-  errors: {
-    name: string
-    error: string
-    count: number
-    examples: { at: string; args: string }[]
-  }[]
 }
-/** No arguments → tool statistics from `trace.sqlite`, no model involved. */
+/** No arguments → tool-call metadata from `trace.sqlite`, without diagnostic text or arguments; no model involved. */
 export const StatsAction = actionRef<null, ToolStats>('dream', 'stats')

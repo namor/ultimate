@@ -108,5 +108,6 @@ restart never returns: the new host opens the requested chapter.
 ## Actions
 
 `refs.ts` holds the document and actions: `start`, `asleep`, `switch` (user-only), `prepare`, `chapters`, and `stats`,
-which reads tool calls from `<home>/trace.sqlite` read-only: calls, failures and mean duration per tool, the 20 most
-frequent errors (each with its two newest calls as `#<conversation>/<entry>` and the start of its args), and enabled tools never called in the trace's window (7 days or 200k rows).
+which reads tool-call metadata from the active chapter's `trace.sqlite` read-only: calls, failures and mean duration
+per tool, enabled tools never called, and the start of the trace's tool-call window (7 days or 200k rows). It returns
+no diagnostic text or arguments and leaves stored trace history unchanged.
