@@ -264,12 +264,15 @@ const MANIFESTS = [
 async function worktreeArea(host: CheckHost): Promise<SetupIssue | undefined> {
   if (!host.extensions().some((extension) => extension.name === 'workspaces' && extension.enabled))
     return undefined
-  const commands = await readWorktreeSetup(host.userHome, host.projectRoot, () =>
-    host.projectSettings(),
+  const isolation = await isolatable(host.projectRoot)
+  const commands = await readWorktreeSetup(
+    host.userHome,
+    'source' in isolation ? isolation.source : host.projectRoot,
+    () => host.projectSettings(),
   )
   if (commands.length)
     return { area: 'Worktree setup', status: 'ok', summary: `${commands.length} commands` }
-  if ('reason' in (await isolatable(host.projectRoot))) return undefined
+  if ('reason' in isolation) return undefined
   const manifests = MANIFESTS.filter((name) => existsSync(join(host.projectRoot, name)))
   if (!manifests.length) return undefined
   return {

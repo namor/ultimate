@@ -250,6 +250,18 @@ it('warns about a missing worktree setup until one is configured', async () => {
     worktreeSetup: { [projectKey(host.projectRoot)]: ['composer install'] },
   })
   expect(await row()).toMatchObject({ status: 'ok', summary: '1 commands' })
+  const subfolder = join(host.projectRoot, 'subfolder')
+  await mkdir(subfolder)
+  expect(
+    (
+      await check({
+        ...host,
+        projectRoot: subfolder,
+        extensions: () => workspaces,
+        projectSettings: () => projectSettings(subfolder, host.userHome),
+      })
+    ).find((issue) => issue.area === 'Worktree setup'),
+  ).toMatchObject({ status: 'ok', summary: '1 commands' })
   await writeJson(userSettingsPath(host.userHome), {
     worktreeSetup: { [join(host.projectRoot, 'other-project')]: ['composer install'] },
   })
