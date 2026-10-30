@@ -42,6 +42,12 @@ export default function deepwiki() {
             version: '1.0.0',
             requestTimeoutMs: 30_000,
           })
+          let cleanup: Promise<void> | undefined
+          const close = () => {
+            cleanup ??= client.close()
+          }
+          signal.addEventListener('abort', close, { once: true })
+          if (signal.aborted) close()
           try {
             try {
               signal.throwIfAborted()
@@ -63,6 +69,7 @@ export default function deepwiki() {
                     }),
                 }),
               )
+              signal.throwIfAborted()
               const result = await client.callTool(name, { repoName }, { signal })
               if (result.isError) return failure()
               const content = toLlmContent(result)
@@ -82,7 +89,9 @@ export default function deepwiki() {
                 ],
               }
             } finally {
-              await client.close()
+              signal.removeEventListener('abort', close)
+              close()
+              await cleanup
             }
           } catch {
             // Endpoint, protocol, and cleanup errors are untrusted; expose only a fixed safe message.
