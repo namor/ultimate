@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import {
   appendFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -13,13 +14,14 @@ import { dirname, isAbsolute, join, relative, resolve as resolvePath } from 'nod
 import { createInterface } from 'node:readline'
 import { StringDecoder } from 'node:string_decoder'
 import { ownedProcess } from './process.ts'
-import type { CursorJob, CursorRequest } from './types.d.ts'
+import type { CursorJob, CursorRequest, LocationDiagnostic, LocationScope } from './types.d.ts'
 
 type Call = {
   toolCallId?: string
   title?: string
   kind?: string
-  locations?: { path?: string }[]
+  status?: string
+  locations?: { path?: unknown }[]
   rawInput?: Record<string, unknown>
 }
 type Config = { id: string; currentValue?: string }
@@ -77,31 +79,102 @@ function todoMetadata(params: unknown) {
   return accepted
 }
 function canonical(path: string): string {
-  if (existsSync(path)) return realpathSync(path)
+  if (existsSync(path)) return realpathSync.native(path)
+  if (lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink())
+    throw new Error('Unresolved symlink')
   const parent = dirname(path)
   return parent === path ? path : join(canonical(parent), relative(parent, path))
 }
-/** Missing rawInput is normal ACP, not a reason to reject ordinary native tools. */
-export function permit(call: Call, cwd: string) {
-  const inside = (path: string) => {
-    const part = relative(canonical(cwd), canonical(resolvePath(cwd, path)))
-    return part !== '..' && !part.startsWith('../') && !isAbsolute(part)
+type Roots = [LocationScope['root'], string][]
+const toolKinds = [
+  'read',
+  'edit',
+  'delete',
+  'move',
+  'search',
+  'execute',
+  'think',
+  'fetch',
+  'switch_mode',
+  'other',
+]
+const known = (value: unknown, choices: string[]) =>
+  typeof value === 'string' && choices.includes(value) ? value : 'unknown'
+const contains = (root: string, path: string) => {
+  const part = relative(root, path)
+  return part !== '..' && !part.startsWith('../') && !isAbsolute(part)
+}
+function pathForm(value: unknown): LocationScope['form'] {
+  if (value == null) return 'missing'
+  if (typeof value !== 'string') return 'non_string'
+  if (!value) return 'empty'
+  if (value.length > 4096) return 'too_long'
+  if (Array.from(value).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127))
+    return 'control'
+  if (/^file:/i.test(value)) return 'file_uri'
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return 'uri'
+  if (value.startsWith('~')) return 'tilde'
+  return isAbsolute(value) ? 'absolute' : 'relative'
+}
+export function classifyLocation(value: unknown, cwd: string, roots: Roots = []): LocationScope {
+  const form = pathForm(value)
+  const result: LocationScope = { form, lexicalInside: null, canonicalInside: null, root: 'other' }
+  if (form !== 'absolute' && form !== 'relative') return result
+  try {
+    const path = value as string
+    const resolved = resolvePath(cwd, path)
+    result.lexicalInside = contains(resolvePath(cwd), resolved)
+    // Preserve symlink/.. order for the filesystem; resolvePath is only the lexical comparison.
+    const target = canonical(isAbsolute(path) ? path : `${cwd}/${path}`)
+    result.canonicalInside = contains(canonical(cwd), target)
+    for (const [label, root] of [['assigned', cwd] as const, ...roots]) {
+      if (contains(canonical(root), target)) {
+        result.root = label
+        break
+      }
+    }
+  } catch {
+    // Broken/inaccessible paths are unresolved, never an approval or a raw filesystem diagnostic.
   }
-  const paths = (value: unknown): string[] => {
+  return result
+}
+function locationInputs(call: Call) {
+  const paths = (value: unknown): unknown[] => {
     if (!value || typeof value !== 'object') return []
     return Object.entries(value).flatMap(([key, item]) =>
-      /^(?:path|filePath|file_path|cwd|directory)$/.test(key) && typeof item === 'string'
-        ? [item]
-        : paths(item),
+      /^(?:path|filePath|file_path|cwd|directory)$/.test(key) ? [item] : paths(item),
     )
   }
-  if (
-    [
-      ...(call.locations ?? []).flatMap((item) => (item.path ? [item.path] : [])),
-      ...paths(call.rawInput),
-    ].some((path) => !inside(path))
-  )
-    return false
+  return [
+    ...(call.locations == null
+      ? []
+      : Array.isArray(call.locations)
+        ? call.locations.map((item) => ({ field: 'locations' as const, value: item?.path }))
+        : [{ field: 'locations' as const, value: call.locations }]),
+    ...paths(call.rawInput).map((value) => ({ field: 'input' as const, value })),
+  ]
+}
+function mergeCall(previous: Call | undefined, update: Call): Call {
+  // ACP v1 omitted/null fields retain prior context, notably rawInput on partial permission requests.
+  return {
+    ...previous,
+    ...Object.fromEntries(Object.entries(update).filter(([, value]) => value != null)),
+  }
+}
+/** Missing rawInput is normal ACP; malformed supplied targets are not. */
+export function permit(
+  call: Call,
+  cwd: string,
+  roots: Roots = [],
+  observe?: (scope: LocationScope, field: LocationDiagnostic['field']) => void,
+) {
+  let inside = true
+  for (const { value, field } of locationInputs(call)) {
+    const scope = classifyLocation(value, cwd, roots)
+    observe?.(scope, field)
+    inside &&= scope.canonicalInside === true
+  }
+  if (!inside) return false
   if (!['read', 'edit', 'search', 'execute'].includes(call.kind ?? '')) return false
   if (
     /^\s*(?:MCP[:\s]|mcp__|Sign in\b|Log in\b)/i.test(call.title ?? '') ||
@@ -166,6 +239,33 @@ export async function run(request: CursorRequest, command = 'cursor-agent') {
   let target: ReturnType<typeof ownedProcess> | undefined
   const pending = new Map<number, { resolve: (result: Result) => void; reject: () => void }>()
   const calls = new Map<string, Call>()
+  const decisions = new Map<string, LocationDiagnostic['permission']>()
+  let roots: Roots = []
+  const record = (
+    call: Call,
+    phase: LocationDiagnostic['phase'],
+    scope: LocationScope,
+    field: LocationDiagnostic['field'],
+    permission = decisions.get(call.toolCallId ?? '') ?? 'none',
+  ) => {
+    const item: LocationDiagnostic = {
+      ...scope,
+      phase,
+      field,
+      kind: known(call.kind, toolKinds),
+      status: known(call.status, ['pending', 'in_progress', 'completed', 'failed']),
+      permission,
+    }
+    const saved = (job.locationDiagnostics ??= [])
+    if (!saved.some((value) => JSON.stringify(value) === JSON.stringify(item))) {
+      if (saved.length < 8) saved.push(item)
+      else {
+        job.locationDiagnosticsDropped = (job.locationDiagnosticsDropped ?? 0) + 1
+        if (permission === 'rejected' && scope.canonicalInside !== true) saved[7] = item
+      }
+    }
+    return item
+  }
   const publish = () => {
     saveJob(directory, job)
     if (!process.stdout.destroyed) process.stdout.write(`${JSON.stringify(job)}\n`)
@@ -241,6 +341,17 @@ export async function run(request: CursorRequest, command = 'cursor-agent') {
     job.base = git(['rev-parse', '--verify', 'HEAD'], source).trim()
     git(['worktree', 'add', '--detach', job.worktree, job.base], source)
     job.worktree = realpathSync(job.worktree)
+    const common = git(['rev-parse', '--path-format=absolute', '--git-common-dir'], source).trim()
+    roots = [
+      ['git_common', common],
+      ['source', realpathSync(source)],
+      ['repository', dirname(common)],
+      ['job_data', realpathSync(directory)],
+      ['temporary', tmpdir()],
+      ...['/usr', '/System', '/Library', '/bin', '/sbin'].map(
+        (path): [LocationScope['root'], string] => ['system', path],
+      ),
+    ]
     for (const name of ['config', 'data', 'cache'])
       mkdirSync(join(directory, name), { recursive: true })
     target = ownedProcess(
@@ -314,15 +425,13 @@ export async function run(request: CursorRequest, command = 'cursor-agent') {
           ['tool_call', 'tool_call_update'].includes(update.sessionUpdate) &&
           update.toolCallId
         ) {
-          calls.set(update.toolCallId, { ...calls.get(update.toolCallId), ...update })
+          const merged = mergeCall(calls.get(update.toolCallId), update)
+          calls.set(update.toolCallId, merged)
           job.nativeCalls = calls.size
-          job.activity = `Native ${calls.get(update.toolCallId)?.kind ?? 'tool'} activity`
-          if (
-            update.locations?.some(
-              (item) => item.path && !permit({ kind: 'read', locations: [item] }, job.worktree),
-            )
-          )
-            stop('Native tool reported a location outside the assigned worktree.')
+          job.activity = `Native ${known(merged.kind, toolKinds)} activity`
+          // ACP v1 locations are follow-along display metadata, not an execution permission boundary.
+          for (const { value, field } of locationInputs(merged))
+            record(merged, 'progress', classifyLocation(value, job.worktree, roots), field)
         }
         publish()
       } else if (message.method === 'cursor/update_todos') {
@@ -342,10 +451,22 @@ export async function run(request: CursorRequest, command = 'cursor-agent') {
       } else if (message.id !== undefined) {
         if (message.method === 'session/request_permission') {
           const call = message.params?.toolCall
-          const merged = { ...calls.get(call?.toolCallId ?? ''), ...call }
-          const allowed = !stopping && permit(merged, job.worktree)
+          const merged = mergeCall(calls.get(call?.toolCallId ?? ''), call ?? {})
+          const checked: { scope: LocationScope; field: LocationDiagnostic['field'] }[] = []
+          const allowed =
+            !stopping &&
+            permit(merged, job.worktree, roots, (scope, field) => checked.push({ scope, field }))
           const option = message.params?.options?.find(
             (item) => item.kind === (allowed ? 'allow_once' : 'reject_once'),
+          )
+          const decision = allowed && option ? 'allowed_once' : 'rejected'
+          if (call?.toolCallId) {
+            calls.set(call.toolCallId, merged)
+            job.nativeCalls = calls.size
+            decisions.set(call.toolCallId, decision)
+          }
+          const details = checked.map(({ scope, field }) =>
+            record(merged, 'permission', scope, field, decision),
           )
           send({
             jsonrpc: '2.0',
@@ -356,7 +477,12 @@ export async function run(request: CursorRequest, command = 'cursor-agent') {
                 : { outcome: 'cancelled' },
             },
           })
-          if (!allowed || !option) stop('Unexpected native permission request; task stopped.')
+          if (!allowed || !option) {
+            const denied = details.find((item) => item.canonicalInside !== true) ?? details[0]
+            stop(
+              `Native permission rejected${denied ? ` (${denied.kind}; ${denied.field}; ${denied.form}; ${denied.root}; lexical=${denied.lexicalInside}; canonical=${denied.canonicalInside})` : ''}; task stopped.`,
+            )
+          }
         } else {
           send({
             jsonrpc: '2.0',

@@ -230,6 +230,83 @@ await test(
 )
 
 await test(
+  'outside progress is advisory while an inside permission still completes native coding',
+  { timeout: 30000 },
+  async () => {
+    const setup = fixture()
+    try {
+      const run = launch(setup, 'progress-scope')
+      assert.equal(await run.closed, 0, JSON.stringify(run.jobs.at(-1)))
+      const job = JSON.parse(readFileSync(join(setup.job, 'job.json'), 'utf8')) as CursorJob
+      assert.equal(job.status, 'complete')
+      assert.match(readFileSync(job.patchPath, 'utf8'), /Math.max/)
+      assert.ok(
+        job.locationDiagnostics?.some(
+          (item) =>
+            item.phase === 'progress' && item.root === 'source' && item.canonicalInside === false,
+        ),
+      )
+      assert.ok(
+        job.locationDiagnostics?.some(
+          (item) =>
+            item.phase === 'permission' &&
+            item.permission === 'allowed_once' &&
+            item.canonicalInside === true,
+        ),
+      )
+      assert.doesNotMatch(JSON.stringify({ job, streamed: run.jobs }), /SYNTHETIC_SECRET/)
+      execFileSync(process.execPath, ['--test', 'clamp.test.mjs'], {
+        cwd: job.worktree,
+        env: { PATH: process.env.PATH },
+      })
+    } finally {
+      rmSync(setup.directory, { recursive: true, force: true })
+    }
+  },
+)
+
+for (const task of ['outside-scope', 'null-scope', 'malformed-scope', 'symlink-scope']) {
+  await test(
+    `${task}: actual outside or malformed permission stays denied with safe context`,
+    { timeout: 30000 },
+    async () => {
+      const setup = fixture()
+      try {
+        const run = launch(setup, task)
+        assert.equal(await run.closed, 1)
+        const job = JSON.parse(readFileSync(join(setup.job, 'job.json'), 'utf8')) as CursorJob
+        assert.equal(job.status, 'failed')
+        assert.equal(readFileSync(join(job.worktree, '.scope-denied'), 'utf8'), 'yes')
+        assert.match(job.error ?? '', /Native permission rejected/)
+        const denied = job.locationDiagnostics?.find(
+          (item) =>
+            item.phase === 'permission' &&
+            item.permission === 'rejected' &&
+            item.canonicalInside !== true,
+        )
+        assert.ok(denied)
+        assert.equal(denied.form, task === 'malformed-scope' ? 'file_uri' : 'absolute')
+        assert.equal(denied.field, task === 'null-scope' ? 'input' : 'locations')
+        if (task === 'symlink-scope') {
+          assert.equal(denied.lexicalInside, true)
+          assert.equal(denied.canonicalInside, false)
+        }
+        assert.doesNotMatch(
+          JSON.stringify({ job, streamed: run.jobs }) + readFileSync(job.patchPath, 'utf8'),
+          /SYNTHETIC_SECRET/,
+        )
+        assert.equal(
+          readFileSync(join(job.worktree, 'clamp.mjs'), 'utf8'),
+          'export const clamp = n => n\n',
+        )
+      } finally {
+        rmSync(setup.directory, { recursive: true, force: true })
+      }
+    },
+  )
+}
+
+await test(
   'unsupported addressed requests retain only their method while still denying client execution',
   { timeout: 30000 },
   async () => {

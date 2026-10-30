@@ -10,7 +10,7 @@ The `cursor_task` tool takes a coding `task`. It starts from the calling convers
 
 Cursor owns its native coding, shell tools and internal loop. It is not a selectable Pi provider, a Pi conversation or a reconstructed Pi history. Each call starts a fresh Cursor session using `cursor-grok-4.6-xhigh` (Grok 4.6 Extra High, non-fast). Before sending the task, the runner requires ACP to advertise model `grok-4.6`, effort `xhigh` and fast `false`; missing or different values fail without a prompt. Resume/follow-up, images and cross-job history are not exposed.
 
-**Cursor runs with normal user access. A worktree is not an OS security sandbox.** Task instructions and normal allow-once permission decisions assign work to that working copy; they do not isolate the machine from arbitrary code. The CLI may use its normal personal context. Unexpected client execution, observable outside-worktree effects, new authentication and destructive host operations are rejected, but shell execution is not a general security boundary.
+**Cursor runs with normal user access. A worktree is not an OS security sandbox.** Task instructions and normal allow-once permission decisions assign work to that working copy; they do not isolate the machine from arbitrary code. The CLI may use its normal personal context. Unsupported client execution, requested outside-worktree permission targets, new authentication and recognized destructive host commands are rejected, but native shell execution is not a general security boundary.
 
 The extension never reads or exports credentials, starts a browser login, confirms a Keychain prompt, changes billing settings, or uses a force/allow-all CLI flag. Settings, CLI data and compile cache are redirected to the job directory. Missing existing authentication is a failure, not an invitation to log in automatically.
 
@@ -19,6 +19,14 @@ The extension never reads or exports credentials, starts a browser login, confir
 [Cursor's official ACP contract](https://cursor.com/docs/cli/acp) defines `cursor/update_todos` with `toolCallId: string`, `merge: boolean` and `todos: { id: string; content: string; status: "pending" | "in_progress" | "completed" | "cancelled" }[]`. It describes notifications (no response) and also specifies `CursorUpdateTodosResponse`. For the observed addressed form, including request id `0`, this client returns the documented nested result `{ outcome: { outcome: "accepted", todos } }`. A no-id notification receives no reply.
 
 This acknowledges Cursor-owned metadata only. Extra fields are discarded; no todo contents are logged, saved or copied into Pi's plan, and no local todo list is mirrored (`merge` remains Cursor-owned). Limits are 100 todos, 256 characters per identifier, 4096 per content string and 64 KiB of combined todo id/content bytes. Invalid metadata receives the documented rejected outcome with a fixed reason and stops the job. Other addressed client methods remain denied; no filesystem, terminal, authentication or generic `cursor/*` capability is enabled.
+
+## Progress and permission scope
+
+[ACP v1 tool locations](https://agentclientprotocol.com/protocol/v1/tool-calls) are follow-along display metadata, not file-access grants. Progress hints never open files or cancel a job merely for pointing outside the assigned worktree. Actual permission requests still reject outside or unresolved targets. Partial v1 updates retain prior context when fields are omitted or null; explicit current permission details replace it.
+
+A shared classifier distinguishes lexical and physical containment (including symlink parents and `..`). URI, tilde, control-character, empty, oversized and non-string supplied targets are denied rather than expanded or treated as local filenames. Missing optional location/input metadata is not itself a malformed supplied target. Broken links remain unresolved and cannot authorize a permission.
+
+`job.json` saves at most eight deduplicated `locationDiagnostics`, plus a dropped count. They contain only fixed phase/field/kind/status/permission labels, input-form and root categories, and lexical/canonical containment booleans. A rejected target retains a diagnostic even after the cap. No reported path, basename, username, title, command, params or raw frame is logged; repository-relative path logging is deliberately omitted. Canonicalization inspects filesystem metadata only, never file contents. This is diagnostic and permission policy, not OS isolation or proof of filesystem effects; it does not mutate Pi's plan.
 
 ## Review the working copy
 

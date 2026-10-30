@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { spawn, execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
+import { dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 assert.deepEqual(process.argv.slice(2), [
   '--disable-auto-update',
@@ -16,7 +18,8 @@ const update = (value) => send({ method: 'session/update', params: { update: val
 let promptId,
   hold = false,
   leaf,
-  todoParams
+  todoParams,
+  scopeTask
 // Real regression: permission omits rawInput AND kind; prior native context supplies kind.
 const permission = () =>
   send({
@@ -88,6 +91,57 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       send({ id: 0, method: 'cursor/update_todos', params: todoParams })
       return
     }
+    scopeTask = message.params.prompt[0].text.split('\n').at(-1)
+    if (scopeTask.endsWith('-scope')) {
+      const source = dirname(
+        execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+          encoding: 'utf8',
+        }).trim(),
+      )
+      const outside = join(source, 'SYNTHETIC_SECRET_PATH.ts')
+      const inside = join(process.cwd(), 'clamp.mjs')
+      const partial = scopeTask === 'null-scope'
+      if (scopeTask === 'symlink-scope') symlinkSync(source, join(process.cwd(), 'scope-link'))
+      update({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'native',
+        kind: 'edit',
+        status: 'pending',
+        title: 'SYNTHETIC_SECRET_TITLE',
+        locations: [{ path: partial || scopeTask === 'malformed-scope' ? inside : outside }],
+        ...(partial ? { rawInput: { path: outside } } : {}),
+      })
+      if (partial)
+        update({ sessionUpdate: 'tool_call_update', toolCallId: 'native', rawInput: null })
+      send({
+        id: 900,
+        method: 'session/request_permission',
+        params: {
+          toolCall: partial
+            ? { toolCallId: 'native', rawInput: null }
+            : {
+                toolCallId: 'native',
+                locations: [
+                  {
+                    path:
+                      scopeTask === 'outside-scope'
+                        ? outside
+                        : scopeTask === 'malformed-scope'
+                          ? pathToFileURL(outside).href
+                          : scopeTask === 'symlink-scope'
+                            ? process.cwd() + '/scope-link/../SYNTHETIC_SECRET_PATH.ts'
+                            : inside,
+                  },
+                ],
+              },
+          options: [
+            { kind: 'allow_once', optionId: 'once' },
+            { kind: 'reject_once', optionId: 'no' },
+          ],
+        },
+      })
+      return
+    }
     hold = message.params.prompt[0].text.endsWith('hold')
     if (hold) {
       leaf = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
@@ -141,6 +195,11 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     )
     writeFileSync('.request-denied', String(message.error.code))
   } else if (message.id === 900) {
+    if (scopeTask?.endsWith('-scope') && scopeTask !== 'progress-scope') {
+      assert.equal(message.result.outcome.optionId, 'no')
+      writeFileSync('.scope-denied', 'yes')
+      return
+    }
     assert.equal(message.result.outcome.optionId, 'once')
     if (hold) {
       update({
