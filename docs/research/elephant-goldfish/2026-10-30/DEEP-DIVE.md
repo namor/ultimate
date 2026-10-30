@@ -305,6 +305,10 @@ Its intended flow is:
 6. **Fresh final readiness:** a new reader checks the actual final worker briefs, file actions, current contracts, dependencies and verification.
 7. **Normal build/integration/final review:** design readiness is not code approval, user go, a passing test or permission to land.
 
+The source’s exact obligation mapping is **O1 author reconciliation; O2 intent/paraphrases; O3 independent technical/domain coverage; O4 named claims and actual read/missing-source coverage; O5 evidenced dispositions; O6 fresh affected-claim repair and simplicity; O7 new final readiness; O8 authorized implementation/integration/final review**. O4 is important: a clean-looking finding list without evidence coverage does not discharge the review.
+
+Allocation is not always parallel I+C: if framing is fundamentally unsettled, I goes first and C waits for repair. A concept-feasibility assessment may stop after I+C with **readiness pending**. An unchanged previously reviewed packet/brief can reuse explicit provenance rather than relaunch to hit a quota. The recipe permits at most three concurrent readers, sequentializing additional domain lenses; this is a concurrency bound, not a total-review cap.
+
 The policy selects four supporting profiles, all Sol/high: `design-intent`, `design-critic`, `design-readiness`, and a conditional `design-domain`. There is no new authority dispatcher, persisted workflow engine or reset hook. It reuses messages, goal decisions, plan/todo artifacts, subagent reporting and watchdog mechanics.
 
 ### 6.2 What is kept, compressed and lost
