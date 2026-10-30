@@ -402,7 +402,18 @@ index e0a824be43db62a92a0329ff7c63fc0f14f3af65..c87a148f71260f353bca9b0aa56a6997
          name: `${TOOL_PREFIX}${block.name}`,
          input: clone(block.arguments) as Record<string, unknown>,
        });
-@@ -198,7 +210,7 @@ export function prepareFrames(messages: Message[]): NativeFrame[] {
+@@ -163,7 +175,9 @@ function canonicalAssistantContent(message: AssistantMessage): NativeContentBloc
+ function assistantContent(message: AssistantMessage): NativeContentBlock[] {
+   const carrier = replayCarrier(message);
+   if (carrier && projectionsEqual(assistantProjection(message), carrier.projection)) {
+-    return clone(carrier.message.content);
++    return clone(carrier.message.content).map((block) =>
++      block.type === "tool_use" && typeof block.id === "string" ? { ...block, id: anthropicToolId(block.id) } : block,
++    );
+   }
+ 
+   // A changed projection must not restore stale signed thinking. For messages
+@@ -198,7 +212,7 @@ export function prepareFrames(messages: Message[]): NativeFrame[] {
        blocks = [
          {
            type: "tool_result",
@@ -411,7 +422,7 @@ index e0a824be43db62a92a0329ff7c63fc0f14f3af65..c87a148f71260f353bca9b0aa56a6997
            content: toolResultContent(message),
            is_error: message.isError,
          },
-@@ -292,28 +304,35 @@ export function prepareTools(tools: Tool[]): {
+@@ -292,28 +306,35 @@ export function prepareTools(tools: Tool[]): {
    return { manifest, nativeTools, names };
  }
  
@@ -453,7 +464,7 @@ index e0a824be43db62a92a0329ff7c63fc0f14f3af65..c87a148f71260f353bca9b0aa56a6997
   */
  export function prepareNativeTranscript(
    messages: Message[],
-@@ -321,19 +340,10 @@ export function prepareNativeTranscript(
+@@ -321,19 +342,10 @@ export function prepareNativeTranscript(
  ): NativeTranscriptPlan | undefined {
    const initial = getInitialSystemMessage(messages);
    const initialTools = initial?.toolsAdded ?? [];
@@ -475,7 +486,7 @@ index e0a824be43db62a92a0329ff7c63fc0f14f3af65..c87a148f71260f353bca9b0aa56a6997
  
    const systemInjections: NativeSystemInjection[] = [];
    let pending: Array<Array<Record<string, unknown>>> = [];
-@@ -356,7 +366,7 @@ export function prepareNativeTranscript(
+@@ -356,7 +368,7 @@ export function prepareNativeTranscript(
    flush(null);
  
    return {
