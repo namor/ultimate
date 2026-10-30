@@ -9,12 +9,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
-import type {
-  Extension,
-  ToolExecutionResult,
-  ToolRegistration,
-  ToolTaskInput,
-} from '@earendil-works/pi-durable'
+import type { Extension, ToolRegistration, ToolTaskInput } from '@earendil-works/pi-durable'
 import type { EventContext } from '../shared/events.ts'
 
 export type TraceContext = EventContext & { traceId: string; parentCall: string }
@@ -29,7 +24,7 @@ export interface Call {
   conversationId?: number
   taskId?: number
   entryId?: number
-  /** Record neither arguments nor result (a tool's live in the transcript). */
+  /** Record neither arguments nor result; sealed tool failures keep only a fixed label. */
   sealed?: boolean
   /** A read-only poll: on success, counted in `polls()` instead of written, with the plain calls it makes. */
   poll?: boolean
@@ -86,21 +81,6 @@ const SEALED = new Set(['secrets', 'models'])
 function failure(error: unknown, credentials: boolean) {
   if (credentials) return error instanceof Error ? error.name : typeof error
   return error instanceof Error ? error.message : String(error)
-}
-
-/**
- * What a tool's error result says, cut at about 300 characters: its error diagnostics, then its text. A shell command
- * that exits nonzero has no text parts, its retained output tail sits in `structuredOutput.output`, and its one error
- * diagnostic says `Command exited with code 2`; that is the row's error.
- */
-function toolError(result: ToolExecutionResult) {
-  const text = [
-    ...(result.diagnostics ?? []).flatMap((item) =>
-      item.severity === 'error' ? [item.message] : [],
-    ),
-    ...(result.output ?? []).flatMap((part) => (part.type === 'text' ? [part.text] : [])),
-  ].join('\n')
-  return text.length <= LIMIT ? text : text.slice(0, LIMIT) + '…'
 }
 
 /** JSON of `value`, cut at about 300 characters, with values under secret-looking keys replaced. */
@@ -265,7 +245,7 @@ export function callTrace(file: string | (() => string), retention = { rows: 200
           call.kind,
           call.name,
           ok ? 1 : 0,
-          ok ? null : failure(value, credentials),
+          ok ? null : sealed && call.kind === 'tool' ? 'Tool failed' : failure(value, credentials),
           args ?? null,
           (ok && !sealed && summary(value)) || null,
           context.conversationId ?? null,
@@ -403,9 +383,8 @@ CREATE INDEX IF NOT EXISTS calls_at ON calls (at);`)
           tools.set(key, self)
           try {
             const result = await storage.run(self, () => tool.execute(args, api, context))
-            // A tool that returns an error result failed, though it did not throw; its row keeps the error's text.
-            if (result?.isError) finish(false, toolError(result))
-            else finish(true, result)
+            // Returned error results fail the call too; sealed rows keep no error payload.
+            finish(!result?.isError, result)
             return result
           } catch (error) {
             finish(false, error)
