@@ -5,7 +5,6 @@ import type { TestContext } from 'node:test'
 import publicDocs from './server.ts'
 
 const exa = 'https://mcp.exa.ai/mcp?tools=web_search_exa,web_fetch_exa'
-const context7 = 'https://mcp.context7.com/mcp'
 const tools = publicDocs().tools!
 const failed = {
   isError: true,
@@ -60,15 +59,10 @@ async function run(index: number, args: Record<string, unknown>, signal?: AbortS
   return tools[index].execute(args as never, {} as never, { abortSignal: signal } as never)
 }
 
-await test('four native tools use real Pi HTTP with exact endpoints/payloads and bounded text conversion', async (t) => {
+await test('two native tools use real Pi HTTP with exact endpoints/payloads and bounded text conversion', async (t) => {
   assert.deepEqual(
     tools.map((tool) => tool.name),
-    [
-      'mcp__exa__web_search_exa',
-      'mcp__exa__web_fetch_exa',
-      'mcp__context7__resolve_library_id',
-      'mcp__context7__query_docs',
-    ],
+    ['mcp__exa__web_search_exa', 'mcp__exa__web_fetch_exa'],
   )
   const cases = [
     {
@@ -95,32 +89,6 @@ await test('four native tools use real Pi HTTP with exact endpoints/payloads and
       },
       expected: 'Handbook',
     },
-    {
-      index: 2,
-      endpoint: context7,
-      name: 'resolve-library-id',
-      args: { query: 'Public TypeScript handbook', libraryName: 'TypeScript' },
-      sent: { query: 'Public TypeScript handbook', libraryName: 'TypeScript' },
-      result: { structuredContent: { libraryId: '/microsoft/typescript' } },
-      expected: '{\n  "libraryId": "/microsoft/typescript"\n}',
-    },
-    {
-      index: 3,
-      endpoint: context7,
-      name: 'query-docs',
-      args: {
-        libraryId: '/microsoft/typescript',
-        query: 'Explain public compiler options',
-        language: 'en',
-      },
-      sent: {
-        libraryId: '/microsoft/typescript',
-        query: 'Explain public compiler options',
-        language: 'en',
-      },
-      result: { content: [{ type: 'text', text: 'Compiler options' }] },
-      expected: 'Compiler options',
-    },
   ]
   for (const item of cases) {
     lookup(t)
@@ -139,11 +107,11 @@ await test('four native tools use real Pi HTTP with exact endpoints/payloads and
 })
 
 await test('remote tool errors stay errors without leaking diagnostics', async (t) => {
-  const requests = http(t, context7, {
+  const requests = http(t, exa, {
     isError: true,
     content: [{ type: 'text', text: 'UNSAFE_ENDPOINT_DEBUG_TRACE' }],
   })
-  assert.deepEqual(await run(2, { query: 'Public docs', libraryName: 'TypeScript' }), failed)
+  assert.deepEqual(await run(0, { query: 'Public docs', objective: 'TypeScript' }), failed)
   assert.equal(requests.at(-1)?.method, 'DELETE')
 })
 
@@ -167,6 +135,59 @@ await test('cancellation preserves independent bounded Pi session cleanup', asyn
   )
   assert.equal(requests.at(-1)?.method, 'DELETE')
   assert.equal(cleanupCompleted, true)
+})
+
+await test('user abort settles a pending initialize after a completed wrong-id HTTP reply', async (t) => {
+  const controller = new AbortController()
+  const requests: { method?: string; rpc?: { method: string } }[] = []
+  const unhandled: unknown[] = []
+  const onUnhandled = (reason: unknown) => unhandled.push(reason)
+  process.on('unhandledRejection', onUnhandled)
+  t.after(() => process.off('unhandledRejection', onUnhandled))
+  let deleteCompleted = false
+  t.mock.method(globalThis, 'fetch', async (input: string | URL, init: RequestInit) => {
+    assert.equal(String(input), exa)
+    assert.equal(init.redirect, 'error')
+    assert.ok(init.signal)
+    for (const key of new Headers(init.headers).keys()) {
+      assert.ok(['accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version'].includes(key))
+    }
+    const rpc = typeof init.body === 'string' ? JSON.parse(init.body) : undefined
+    requests.push({ method: init.method, rpc })
+    if (init.method === 'DELETE') {
+      assert.equal(controller.signal.aborted, true)
+      assert.equal(init.signal.aborted, false)
+      await Promise.resolve()
+      deleteCompleted = true
+      return new Response(null, { status: 202 })
+    }
+    assert.equal(rpc?.method, 'initialize')
+    // Abort only after this completed HTTP reply has been delivered to Pi.
+    setImmediate(() => controller.abort())
+    return Response.json(
+      {
+        jsonrpc: '2.0',
+        id: 'wrong-id',
+        result: {
+          protocolVersion: '2025-11-25',
+          capabilities: { tools: {} },
+          serverInfo: { name: 'fixture', version: '1' },
+        },
+      },
+      { headers: { 'mcp-session-id': 'fixture-session' } },
+    )
+  })
+  assert.deepEqual(
+    await run(0, { query: 'TypeScript', objective: 'Public docs' }, controller.signal),
+    failed,
+  )
+  assert.deepEqual(
+    requests.map((request) => request.rpc?.method ?? request.method),
+    ['initialize', 'DELETE'],
+  )
+  assert.equal(requests.filter((request) => request.method === 'DELETE').length, 1)
+  assert.equal(deleteCompleted, true)
+  assert.deepEqual(unhandled, [])
 })
 
 await test('public URL guard rejects unsafe URLs and every nonpublic DNS answer before any Exa request', async (t) => {
