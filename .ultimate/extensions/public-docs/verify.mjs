@@ -26,9 +26,14 @@ try {
   const module = await vite.ssrLoadModule(join(folder, 'server.ts'))
   assert.deepEqual(
     module.default().tools.map((tool) => tool.name),
-    ['mcp__exa__web_search_exa', 'mcp__exa__web_fetch_exa'],
+    [
+      'mcp__exa__web_search_exa',
+      'mcp__exa__web_fetch_exa',
+      'mcp__context7__resolve_library_id',
+      'mcp__context7__query_docs',
+    ],
   )
-  console.log('Ultimate extension loader: both public documentation tools loaded')
+  console.log('Ultimate extension loader: all four public documentation tools loaded')
   await vite.ssrLoadModule(join(folder, 'server.test.ts'))
 } finally {
   await vite?.close()
