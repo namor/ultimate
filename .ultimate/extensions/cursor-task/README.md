@@ -8,7 +8,7 @@ The `cursor_task` tool takes a coding `task`. It starts from the calling convers
 
 ## Independent, not a Pi model
 
-Cursor owns its native coding, shell tools and internal loop. It is not a selectable Pi provider, a Pi conversation or a reconstructed Pi history. Each call starts a fresh Cursor session using `cursor-grok-4.6-xhigh` (Grok 4.6 Extra High, non-fast). Before sending the task, the runner requires ACP to advertise model `grok-4.6`, effort `xhigh` and fast `false`; missing or different values fail without a prompt. Resume/follow-up, images and cross-job history are not exposed.
+Cursor owns its native coding, shell tools and internal loop. It is not a selectable Pi provider, a Pi conversation or a reconstructed Pi history. Each call starts a fresh Cursor session using `grok-4.6[effort=xhigh,fast=false]` (Grok 4.6 Extra High, non-fast). Both parameters are explicit rather than relying on a legacy alias's catalogue defaults; Cursor's model settings remain in the job's isolated configuration directory. Before sending the task, the runner requires ACP to advertise model `grok-4.6`, effort `xhigh` and fast `false`; missing or different values fail without a prompt. Resume/follow-up, images and cross-job history are not exposed.
 
 **Cursor runs with normal user access. A worktree is not an OS security sandbox.** Task instructions and normal allow-once permission decisions assign work to that working copy; they do not isolate the machine from arbitrary code. The CLI may use its normal personal context. Unsupported client execution, requested outside-worktree permission targets, new authentication and recognized destructive host commands are rejected, but native shell execution is not a general security boundary.
 

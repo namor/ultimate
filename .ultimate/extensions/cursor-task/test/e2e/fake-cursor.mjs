@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url'
 assert.deepEqual(process.argv.slice(2), [
   '--disable-auto-update',
   '--model',
-  'cursor-grok-4.6-xhigh',
+  'grok-4.6[effort=xhigh,fast=false]',
   'acp',
 ])
 writeFileSync('.cursor.pid', String(process.pid))
@@ -59,7 +59,10 @@ createInterface({ input: process.stdin }).on('line', (line) => {
             id: 'effort',
             currentValue: existsSync('effort.txt') ? readFileSync('effort.txt', 'utf8') : 'xhigh',
           },
-          { id: 'fast', currentValue: 'false' },
+          {
+            id: 'fast',
+            currentValue: existsSync('fast.txt') ? readFileSync('fast.txt', 'utf8') : 'false',
+          },
         ],
         modes: { currentModeId: 'agent' },
       },

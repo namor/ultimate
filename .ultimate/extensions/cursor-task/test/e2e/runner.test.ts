@@ -20,7 +20,7 @@ import type { CursorJob } from '../../types.d.ts'
 const here = dirname(fileURLToPath(import.meta.url))
 const fake = join(here, 'fake-cursor.mjs')
 chmodSync(fake, 0o755)
-function fixture(effort?: string) {
+function fixture(effort?: string, fast?: string) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'cursor-task-test-')))
   const source = join(directory, 'source'),
     job = join(directory, 'job')
@@ -34,6 +34,7 @@ function fixture(effort?: string) {
     'import assert from "node:assert/strict"; import { clamp } from "./clamp.mjs"; assert.equal(clamp(-1), 0)\n',
   )
   if (effort !== undefined) writeFileSync(join(source, 'effort.txt'), effort)
+  if (fast !== undefined) writeFileSync(join(source, 'fast.txt'), fast)
   git(['add', '.'])
   git([
     '-c',
@@ -153,26 +154,31 @@ await test(
   },
 )
 
-await test(
-  'refuses a Grok session without Extra High effort before sending a prompt',
-  { timeout: 30000 },
-  async () => {
-    const setup = fixture('high')
-    try {
-      const run = launch(setup, 'fix')
-      assert.equal(await run.closed, 1, run.diagnostics())
-      const job = JSON.parse(readFileSync(join(setup.job, 'job.json'), 'utf8')) as CursorJob
-      assert.equal(job.status, 'failed')
-      assert.equal(job.model, 'cursor-grok-4.6-xhigh')
-      assert.match(job.error ?? '', /effort=xhigh and fast=false; no task sent/)
-      assert.equal(job.nativeCalls, 0)
-      assert.throws(() => readFileSync(join(job.worktree, '.prompt-sent')))
-      assert.throws(() => readFileSync(join(job.worktree, '.native.json')))
-    } finally {
-      rmSync(setup.directory, { recursive: true, force: true })
-    }
-  },
-)
+for (const [effort, fast] of [
+  ['high', 'false'],
+  ['xhigh', 'true'],
+]) {
+  await test(
+    `refuses effort=${effort}/fast=${fast} before sending a prompt despite the explicit pin`,
+    { timeout: 30000 },
+    async () => {
+      const setup = fixture(effort, fast)
+      try {
+        const run = launch(setup, 'fix')
+        assert.equal(await run.closed, 1, run.diagnostics())
+        const job = JSON.parse(readFileSync(join(setup.job, 'job.json'), 'utf8')) as CursorJob
+        assert.equal(job.status, 'failed')
+        assert.equal(job.model, 'grok-4.6[effort=xhigh,fast=false]')
+        assert.match(job.error ?? '', /effort=xhigh and fast=false; no task sent/)
+        assert.equal(job.nativeCalls, 0)
+        assert.throws(() => readFileSync(join(job.worktree, '.prompt-sent')))
+        assert.throws(() => readFileSync(join(job.worktree, '.native.json')))
+      } finally {
+        rmSync(setup.directory, { recursive: true, force: true })
+      }
+    },
+  )
+}
 
 await test(
   'Cursor todo metadata is acknowledged before the native coding loop continues',

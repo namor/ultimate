@@ -102,7 +102,7 @@ export default function cursorTask(host: ExtensionHost) {
             source: request.source,
             worktree: join(directory, 'worktree'),
             base: '',
-            model: 'cursor-grok-4.6-xhigh',
+            model: 'grok-4.6[effort=xhigh,fast=false]',
             startedAt: Date.now(),
             activity: 'Starting runner',
             nativeCalls: 0,
