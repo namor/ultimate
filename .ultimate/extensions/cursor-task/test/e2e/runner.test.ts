@@ -282,8 +282,12 @@ for (const task of ['outside-scope', 'null-scope', 'malformed-scope', 'symlink-s
         assert.equal(await run.closed, 1)
         const job = JSON.parse(readFileSync(join(setup.job, 'job.json'), 'utf8')) as CursorJob
         assert.equal(job.status, 'failed')
-        assert.equal(readFileSync(join(job.worktree, '.scope-denied'), 'utf8'), 'yes')
-        assert.match(job.error ?? '', /Native permission rejected/)
+        assert.match(
+          job.error ?? '',
+          /Native permission rejected/,
+          JSON.stringify(job.processEvidence),
+        )
+        // Cleanup may kill the denied client before it acknowledges receipt; verify policy and effects.
         const denied = job.locationDiagnostics?.find(
           (item) =>
             item.phase === 'permission' &&
@@ -376,6 +380,91 @@ syncBuiltinESMExports();\n`,
     }
   },
 )
+
+for (const category of ['timeout', 'malformed_row']) {
+  await test(
+    `${category} after ownership capture preserves safe evidence and never clears the tracking gap`,
+    { timeout: 30000 },
+    async () => {
+      const setup = fixture()
+      let passed = false
+      try {
+        const preload = join(setup.directory, 'late-inventory-failure.mjs')
+        writeFileSync(
+          preload,
+          `import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const original = childProcess.execFileSync;
+const request = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const marker = join(request.directory, 'worktree', '.native.json');
+let observed = false, injected = false;
+childProcess.execFileSync = (command, ...args) => {
+  const output = original(command, ...args);
+  if (command !== '/bin/ps' || !existsSync(marker)) return output;
+  if (observed && !injected) {
+    injected = true;
+    ${category === 'timeout' ? "throw Object.assign(new Error('SENSITIVE_INVENTORY_SENTINEL'), { code: 'ETIMEDOUT' });" : "return output.trimEnd() + '\\n0 0 0\\n';"}
+  }
+  const ids = JSON.parse(readFileSync(marker, 'utf8'));
+  const rows = output.trim().split('\\n').map(line => {
+    const match = line.match(/^\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(.+)$/);
+    return match && { pid: +match[1], ppid: +match[2], pgid: +match[3], birth: match[4] };
+  });
+  const root = rows.find(row => row?.pid === ids.root), leaf = rows.find(row => row?.pid === ids.leaf);
+  if (root && leaf && !observed) {
+    observed = true;
+    writeFileSync(join(request.directory, 'observed.json'), JSON.stringify({ root, leaf }));
+  }
+  return output;
+};
+syncBuiltinESMExports();\n`,
+        )
+        const run = launch(setup, 'hold', '', ['--import', preload])
+        assert.equal(await run.closed, 1, run.diagnostics())
+        const job = JSON.parse(readFileSync(join(setup.job, 'job.json'), 'utf8')) as CursorJob
+        const observed = JSON.parse(readFileSync(join(setup.job, 'observed.json'), 'utf8'))
+        assert.equal(job.status, 'failed')
+        assert.match(
+          job.error ?? '',
+          /Process inventory unavailable.*cleanup could not be verified/,
+        )
+        assert.deepEqual(job.processEvidence?.failure?.category, category)
+        assert.equal(job.processEvidence?.failure?.phase, 'sampling')
+        assert.equal(job.processEvidence?.trackingFailed, true)
+        assert.equal(job.processEvidence?.reaped, true)
+        assert.deepEqual(job.processEvidence?.root, observed.root)
+        const last = job.processEvidence?.lastObserved
+        assert.ok(last && last.at <= job.processEvidence.failure.at)
+        assert.ok(
+          last.owned.some(
+            (entry) => entry.pid === observed.root.pid && entry.birth === observed.root.birth,
+          ),
+        )
+        assert.ok(
+          last.owned.some(
+            (entry) => entry.pid === observed.leaf.pid && entry.birth === observed.leaf.birth,
+          ),
+        )
+        assert.deepEqual(job.processEvidence?.remaining?.owned, [])
+        assert.ok(job.processEvidence.remaining.at >= job.processEvidence.failure.at)
+        assert.equal(job.nativeCalls, 1)
+        for (const entry of [observed.root, observed.leaf])
+          assert.throws(() => process.kill(entry.pid, 0), { code: 'ESRCH' })
+        assert.doesNotMatch(
+          JSON.stringify({ job, streamed: run.jobs, diagnostics: run.diagnostics() }),
+          /SENSITIVE_INVENTORY_SENTINEL/,
+        )
+        passed = true
+      } finally {
+        // An unexpected infrastructure failure must not destroy the only ownership evidence.
+        if (passed) rmSync(setup.directory, { recursive: true, force: true })
+        else console.error(`Inventory fixture retained for cleanup review: ${setup.directory}`)
+      }
+    },
+  )
+}
 
 for (const mode of ['cancel', 'owner']) {
   await test(

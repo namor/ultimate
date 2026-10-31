@@ -1,5 +1,5 @@
 import { CheckIcon, CopyIcon, RefreshCwIcon, SquareIcon } from 'lucide-react'
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { MessageResponse } from '@/components/ai/message'
 import { Tool, ToolContent, ToolDiagnostics, ToolHeader, ToolSection } from '@/components/ai/tool'
 import type { ToolState } from '@/components/ai/tool'
@@ -62,9 +62,14 @@ function CursorTask({ call }: { call: ToolCallView }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const job = saved?.id === streamed?.id && saved?.endedAt ? saved : streamed
+  const activeJob = job?.status === 'starting' || job?.status === 'running'
+  const callEnded =
+    call.status === 'done' || call.status === 'error' || call.status === 'interrupted'
   const interrupted =
-    job?.status === 'interrupted' || (call.status === 'interrupted' && job?.status !== 'failed')
-  const running = !interrupted && (job?.status === 'starting' || job?.status === 'running')
+    job?.status === 'interrupted' ||
+    (activeJob && callEnded) ||
+    (!job && call.status === 'interrupted')
+  const running = activeJob && !interrupted
   const state: ToolState = interrupted
     ? 'interrupted'
     : job?.status === 'complete'
@@ -184,8 +189,8 @@ function CursorTask({ call }: { call: ToolCallView }) {
             )}
             {interrupted && !job.summary && (
               <ToolSection className="font-sans text-[13px] text-muted-foreground">
-                The task stopped. Inspect any saved output and working copy before starting another.
-                It will not restart automatically.
+                Inspect any saved output and working copy before starting another task. It will not
+                restart automatically.
               </ToolSection>
             )}
           </>

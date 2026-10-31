@@ -1,8 +1,10 @@
 Run an independent Cursor coding agent in a dedicated git worktree, with progress, cancellation and saved results for review.
 
-## Personal installation
+## Installation
 
-This folder is staging for a personal extension. After verification and review, copy it to `~/.ultimate/extensions/cursor-task/`; do not land it as an Ultimate built-in or project extension. No package installation or SDK/API key is needed. It uses Node26, the installed `cursor-agent` CLI and its existing login.
+Keep this folder at `.ultimate/extensions/cursor-task/` for a trusted project's extension, or copy the folder to `~/.ultimate/extensions/cursor-task/` for personal use. Project installation requires the project's normal trust decision; no broader trust is needed. This is an extension, not an Ultimate built-in.
+
+Use Node26 and the official `cursor-agent` CLI, already installed and logged in. No extension package or SDK/API-key installation is needed. The extension does not install the CLI, authenticate automatically or rewrite agent settings.
 
 The `cursor_task` tool takes a coding `task`. It starts from the calling conversation's committed `HEAD`, in a fresh detached worktree. Uncommitted source changes are not copied. One task can run at a time.
 
@@ -28,6 +30,12 @@ A shared classifier distinguishes lexical and physical containment (including sy
 
 `job.json` saves at most eight deduplicated `locationDiagnostics`, plus a dropped count. They contain only fixed phase/field/kind/status/permission labels, input-form and root categories, and lexical/canonical containment booleans. A rejected target retains a diagnostic even after the cap. No reported path, basename, username, title, command, params or raw frame is logged; repository-relative path logging is deliberately omitted. Canonicalization inspects filesystem metadata only, never file contents. This is diagnostic and permission policy, not OS isolation or proof of filesystem effects; it does not mutate Pi's plan.
 
+## Unverified process cleanup
+
+A failed cleanup saves `processEvidence` in `job.json`: the known root identity, last complete observed ownership set and timestamp before the tracking gap, latest retained remaining-identity snapshot, total observed count, direct-child reaped state and first fixed failure category/phase/time. Identities contain only PID, parent PID, process group and validated birth time—never commands, environment, usernames, raw rows or OS error text. Sampling and cleanup failures remain distinct.
+
+Each stored identity set is limited to 4096 entries. Overflow fails closed and preserves the earlier complete set; runtime ownership is never truncated, so cleanup still considers every known identity. A later healthy inventory—even an empty remaining set—does not clear sticky tracking failure or certify cleanup. These records support checking known birth-matched ownership, not arbitrary PID/PGID/cwd guesses or universal daemonization coverage. They cannot backfill older jobs whose ownership was never saved. Inventory deadlines and signal/membership checks are unchanged; malformed rows or unusable birth times are fatal.
+
 ## Review the working copy
 
 The card shows native activity, status, paths and a result preview. The job directory keeps saved state and, once created, these artifacts:
@@ -43,7 +51,7 @@ Use **Cancel** to stop a task and await owned-process cleanup. Interruptions and
 
 ## Delegation
 
-The parent installs the routing policy in the personal `ultimate` and `coordinator` agent overlays, retaining their Sol model frontmatter. Replace their previous broad model-preference paragraph with:
+Optional routing example for `ultimate` and `coordinator` agent overlays: keep the project's chosen model/family settings and adopt this only when native Cursor delegation is wanted. Installing the extension does not require this policy or change agent models:
 
 > Use GPT-6.1 Sol for orchestration, planning, decisions and work you perform yourself. Use GPT-6 Luna for routine monitoring and summaries. Route every eligible bounded non-review coding/execution delegation through `cursor_task` (Cursor Grok 4.6 Extra High, fast=false), not Pi worker/designer subagents. Eligible means a self-contained native job from committed HEAD that fits the 10-minute limit and needs no Pi-only tools or ongoing child conversation. Serialize Cursor jobs across the host; if busy or failed, stop and report rather than silently fall back to Sol/Luna. Do read-only reconnaissance yourself; do not substitute a write-capable Cursor job for a scout. Review/test retained changes and handle commits/integration yourself.
 >
@@ -56,7 +64,7 @@ The parent installs the routing policy in the personal `ultimate` and `coordinat
 - External usage/cost is unknown when ACP does not provide it; it is not reported as zero.
 - Process tracking covers observed descendants, including separate process groups. It is not a kernel sandbox/subreaper and cannot guarantee capture of an unobserved daemon that escapes before discovery.
 - Local cancellation/exit is not proof that remote inference or billing has stopped.
-- macOS/Node26 and this installed Cursor version are verified; no cross-platform compatibility layer is included.
+- Native CLI verification was limited to macOS/Node26; other platforms are unverified. No cross-platform compatibility layer is included.
 
 ## Focused checks
 
@@ -67,4 +75,4 @@ node --test .ultimate/extensions/cursor-task/test/e2e/runner.test.ts
 node scripts/deps.ts
 ```
 
-The core tests use a fake ACP process, not the user's Cursor account. Live official-CLI coding and native-child cancellation are verified separately in disposable repositories; no test should silently launch a billable task.
+The core tests use a fake ACP process, not the user's Cursor account. They do not establish live Cursor availability or remote billing termination. Live verification is separate and requires explicit authorization; these checks never silently launch a billable task.

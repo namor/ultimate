@@ -29,6 +29,27 @@ export type LocationDiagnostic = LocationScope & {
   status: string
   permission: 'none' | 'allowed_once' | 'rejected'
 }
+export type ProcessIdentity = { pid: number; ppid: number; pgid: number; birth: string }
+export type ProcessEvidence = {
+  root?: ProcessIdentity
+  lastObserved?: { at: number; owned: ProcessIdentity[] }
+  remaining?: { at: number; owned: ProcessIdentity[] }
+  observedCount: number
+  reaped: boolean
+  trackingFailed: boolean
+  failure?: {
+    at: number
+    phase: 'sampling' | 'cleanup'
+    category:
+      | 'timeout'
+      | 'buffer_limit'
+      | 'execution'
+      | 'malformed_row'
+      | 'invalid_birth'
+      | 'capacity'
+      | 'signal'
+  }
+}
 export type CursorJob = {
   id: string
   task: string
@@ -49,6 +70,7 @@ export type CursorJob = {
   error?: string
   locationDiagnostics?: LocationDiagnostic[]
   locationDiagnosticsDropped?: number
+  processEvidence?: ProcessEvidence
 }
 
 export type CursorRequest = {
