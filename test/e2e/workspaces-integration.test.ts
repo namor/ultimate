@@ -280,8 +280,15 @@ async function holdGit(path: string, command: string, fail = false) {
     `#!/bin/sh
 cat >/dev/null
 [ "$1" = prepared ] && [ ! -f '${started}' ] || exit 0
-# Inspect only this hook's Git parent; macOS's launcher resolves Git to an absolute path.
-case "$(ps -p "$PPID" -o args=)" in "git ${command} "*|*/"git ${command} "*) ;; *) exit 0 ;; esac
+# Older Git creates the worktree's branch in a child; follow only that known Git parent.
+parent=$PPID
+if [ '${command}' = worktree ]; then
+  case "$(ps -p "$parent" -o args=)" in
+    "git branch "*|*/"git branch "*) parent=$(ps -p "$parent" -o ppid= | tr -d ' ') ;;
+  esac
+fi
+# macOS's launcher resolves Git to an absolute path.
+case "$(ps -p "$parent" -o args=)" in "git ${command} "*|*/"git ${command} "*) ;; *) exit 0 ;; esac
 mkfifo '${gate}'
 touch '${started}'
 read release < '${gate}'
@@ -2413,7 +2420,7 @@ it.concurrent('a persistent branch deletion failure blocks tools with its reason
     `#!/bin/sh
 cat >/dev/null
 [ "$1" = prepared ] || exit 0
-case "$(tr '\\0' ' ' < /proc/$PPID/cmdline)" in "git branch -D "*) exit 1 ;; esac
+case "$(ps -p "$PPID" -o args=)" in "git branch -D "*|*/"git branch -D "*) exit 1 ;; esac
 `,
     { mode: 0o755 },
   )
