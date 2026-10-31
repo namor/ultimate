@@ -261,45 +261,39 @@ it("asks @ultimate to dream on the user's Dream, prepares the next chapter, and 
   expect((await f.harness.snapshot(Next, ROOT_CONVERSATION_ID, context))?.prepared).toEqual(second)
 })
 
-it('reads tool numbers from the trace, with unused tools and frequent errors', async () => {
+it('returns only tool-call metadata without exposing or changing stored diagnostics and arguments', async () => {
   const file = join(await temp(), 'trace.sqlite')
   const db = new DatabaseSync(file)
-  db.exec(
-    'CREATE TABLE calls (id TEXT, at REAL, ms REAL, kind TEXT, name TEXT, ok INTEGER, error TEXT, args TEXT, conversation INTEGER, entry INTEGER)',
-  )
-  const insert = db.prepare('INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-  insert.run('1', 100, 10, 'tool', 'edit', 1, null, null, null, null)
-  insert.run(
-    '2',
-    200,
-    30,
-    'tool',
-    'edit',
-    0,
-    'Could not find the exact text',
-    '{"path":"a.ts"}',
-    7,
-    42,
-  )
-  insert.run('3', 300, 5, 'tool', 'read', 1, null, null, null, null)
-  insert.run('4', 50, 5, 'action', 'dream/stats', 1, null, null, null, null)
-  db.close()
-  expect(toolStats(file, ['edit', 'read', 'notify'])).toEqual({
-    since: 100,
-    calls: 3,
-    tools: [
-      { name: 'edit', calls: 2, failed: 1, avgMs: 20 },
-      { name: 'read', calls: 1, failed: 0, avgMs: 5 },
-    ],
-    unused: ['notify'],
-    errors: [
-      {
-        name: 'edit',
-        error: 'Could not find the exact text',
-        count: 1,
-        examples: [{ at: '#7/42', args: '{"path":"a.ts"}' }],
-      },
-    ],
-  })
+  try {
+    db.exec(
+      'CREATE TABLE calls (id TEXT, at REAL, ms REAL, kind TEXT, name TEXT, ok INTEGER, error TEXT, args TEXT)',
+    )
+    const error = 'SYNTHETIC Authorization: Bearer example-private-token'
+    const args = JSON.stringify({ password: 'SYNTHETIC-example-private-password' })
+    const insert = db.prepare('INSERT INTO calls VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    insert.run('1', 100, 10, 'tool', 'edit', 1, null, null)
+    insert.run('2', 200, 30, 'tool', 'edit', 0, error, args)
+    insert.run('3', 300, 5, 'tool', 'read', 1, null, null)
+    insert.run('4', 50, 5, 'action', 'dream/stats', 1, null, null)
+    const history = db.prepare('SELECT * FROM calls ORDER BY id').all()
+    const host = {
+      chapter: { trace: file },
+      extensions: () => [
+        { enabled: true, server: { tools: ['edit', 'read', 'notify'].map((name) => ({ name })) } },
+      ],
+    } as unknown as ExtensionHost
+    expect(actions.stats(null, { host } as ActionContext)).toEqual({
+      since: 100,
+      calls: 3,
+      tools: [
+        { name: 'edit', calls: 2, failed: 1, avgMs: 20 },
+        { name: 'read', calls: 1, failed: 0, avgMs: 5 },
+      ],
+      unused: ['notify'],
+    })
+    expect(db.prepare('SELECT * FROM calls ORDER BY id').all()).toEqual(history)
+  } finally {
+    db.close()
+  }
   expect(toolStats(join(await temp(), 'none.sqlite'), ['read']).unused).toEqual(['read'])
 })
