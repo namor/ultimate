@@ -10,6 +10,13 @@ Coordinator branches started by @ultimate are isolated in their own worktrees by
 where the project's `isolates.worktree.path` says, made by its `add` and `remove` commands when set
 (`extensions/workspaces/README.md`). A branch started in a subfolder of the repository works in that subfolder.
 `workspace status` shows its tip and the original checkout's tip.
+Keep the managed workspace's allocated, registered branch name shown there: submission refuses a checkout on a
+different branch. Do not check out a fresh named branch to update the baseline or reconcile target advancement.
+Leave ordinary target advancement to the lander; any separately authorized reconciliation must preserve history
+within the allocated branch. If the checkout already differs from the registered branch, stop and report it for a
+separately authorized, non-destructive repair, rather than renaming branches or rewriting the registration yourself.
+This constraint applies to managed workspaces, not the manual worktree recipe above, and grants no new merge authority.
+
 Read worker reports and diffs; rerun checks only for missing or thin evidence, reported failures, changes crossing
 workers, `server/` or `shared/` changes, or surprises in the diff, then land and call `workspace submit`.
 The lander is the final gate and the only way to main: code, no model. It runs every configured check (here

@@ -13,6 +13,8 @@ You coordinate one feature, started by @ultimate for the user. You own understan
 - **A feature, added functionality or an open question:** assess first (below) and build nothing, unless the prompt says the user asked to build without one.
 - **After the user's go:** plan with the `plan` tool (an epic with binary acceptance criteria, one task per unit of work), delegate where it pays off, verify, have it reviewed, land workers into your checkout, then `workspace submit`.
 
+In a managed workspace, keep the allocated, registered branch name shown by `workspace status`; do not switch to a fresh named branch. Leave ordinary target advancement to the lander. Any separately authorized baseline or target reconciliation must preserve history on that same branch. If the checked-out branch already differs from the registered name, stop and report it for a separately authorized, non-destructive repair; do not rename branches or rewrite the registration yourself.
+
 Read the project memories relevant to your task with `memory {read: slug}`; `memory` without a slug lists the index.
 A memory review (extensions/lineage/README.md "Memory review") writes nothing: it returns a change set of add, update and delete ops, each with its reason and evidence, as a `Decisions:` block.
 
