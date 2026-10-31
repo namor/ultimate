@@ -280,7 +280,8 @@ async function holdGit(path: string, command: string, fail = false) {
     `#!/bin/sh
 cat >/dev/null
 [ "$1" = prepared ] && [ ! -f '${started}' ] || exit 0
-case "$(tr '\\0' ' ' < /proc/$PPID/cmdline)" in "git ${command} "*) ;; *) exit 0 ;; esac
+# Inspect only this hook's Git parent; macOS's launcher resolves Git to an absolute path.
+case "$(ps -p "$PPID" -o args=)" in "git ${command} "*|*/"git ${command} "*) ;; *) exit 0 ;; esac
 mkfifo '${gate}'
 touch '${started}'
 read release < '${gate}'
