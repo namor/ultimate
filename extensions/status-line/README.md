@@ -5,3 +5,17 @@ The bottom status bar is global: model output tokens per second across all conve
 Hovering a stored message shows its context and cost on its action row (`messageDetails`): a response's context as a share of its model's window and its cost; the last response of a turn adds its model, the turn's duration since the input, and the cost of every response in the turn; an input shows the context it was sent into. The tooltip breaks down the response, the turn, the context, and the model with its thinking level. A turn whose input is not loaded yet shows the response alone. `turns.ts` holds these transcript helpers.
 
 Conversation totals come from `pi.usage`, the model from `pi.agent`, and cwd, branch, and process from system info. The context meter reads the shown conversation's `conversations.context` document, maintained server-side by conversations: measured prompt tokens after an answer, or an estimate after compaction/reset until the next answer. It keeps the same percentage, warning colours and estimate tooltip without a browser estimate action. Historic per-message windows still come from `GET /api/models`. Shared context helpers live in `lib/context-usage.ts`; `context.ts` keeps spend totals. The `rates` action also returns settled totals from every conversation's `UsageDoc`; it scans once on open and updates from commits, independently of the shown conversation.
+
+**Task usage** opens an on-demand checkpoint for the shown conversation and every owned descendant. It lists each
+conversation's own usage once, with existing role labels, model/tool buckets, input/output, cache categories and cost.
+Refresh reads it again; it does not poll or store another ledger. Codemode reads the same result with
+`ultimate.action('status-line', 'usage', { conversation: id })` (omit `conversation` for the caller). A plan task's
+`child` selects that task's subtree; no stages or roles are guessed from message text.
+
+These are native durable `pi.usage` counters, so resumed work keeps its usage, forks start with their own usage,
+and recorded summary/compaction and failed/aborted attempts are already included. An ownerless fork is independent;
+its source's history does not become its spend. Missing counters and empty usage are shown as unknown (`?`, `null`
+in the action), including in totals they contribute to. Native buckets cannot establish whether every request
+reported an optional counter or recover unreported attempts/request IDs. Streaming usage and other chapters are
+excluded, and the snapshots are read sequentially. Reasoning is part of output and 1h writes part of cache writes;
+do not add them again. Recorded dollar cost may be zero for subscriptions and does not measure subscription quota.

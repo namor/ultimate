@@ -1,13 +1,14 @@
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import { onCommit } from '../../lib/commits.ts'
 import { defineExtension, LiveDoc, UsageDoc } from '@earendil-works/pi-durable'
-import type { Cursor, LiveState, UsageState } from '@earendil-works/pi-durable'
+import type { ConversationId, Cursor, LiveState, UsageState } from '@earendil-works/pi-durable'
 import type { ActionContext } from '../../server/actions.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { createRateSampler, keys, zero, type Rates, type RateSample } from './rates.ts'
 import { usageTotals } from './context.ts'
 import { implementAction } from '../../lib/actions.ts'
-import { RatesAction } from './refs.ts'
+import { RatesAction, UsageAction } from './refs.ts'
+import { subtreeUsage } from './usage.ts'
 
 type Totals = ReturnType<typeof usageTotals>
 const snapshots = new WeakMap<object, () => (RateSample & { totals: Totals }) | null>()
@@ -15,6 +16,26 @@ export const actions = {
   rates: implementAction(RatesAction, (_args, { host }: Pick<ActionContext, 'host'>) => {
     return snapshots.get(host)?.() ?? null
   }),
+  usage: implementAction(
+    UsageAction,
+    (
+      args,
+      {
+        host,
+        conversationId,
+      }: {
+        host: Pick<ExtensionHost, 'harness' | 'metadata'>
+        conversationId?: number
+      },
+    ) => {
+      if (args !== null && (typeof args !== 'object' || Array.isArray(args)))
+        throw new Error('Expected usage arguments { conversation? }')
+      const id = args?.conversation === undefined ? conversationId : args.conversation
+      if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
+        throw new Error('Expected a positive conversation number')
+      return subtreeUsage(host, id as ConversationId)
+    },
+  ),
 }
 
 const settled = (usage: UsageState | null | undefined) => {
