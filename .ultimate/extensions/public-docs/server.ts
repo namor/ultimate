@@ -1,4 +1,4 @@
-import { Type } from '@earendil-works/pi-ai'
+import { arr, int, num, obj, opt, str } from '@earendil-works/pi-schema'
 import { defineExtension, defineTool } from '@earendil-works/pi-durable'
 import { McpClient, StreamableHttpTransport, toLlmContent } from '@earendil-works/pi-mcp'
 import { checkPublicUrls } from './public-url.ts'
@@ -97,14 +97,11 @@ export default function publicDocs() {
         // Repeating a public search changes no state.
         replay: 'safe',
         description: `Search public web pages with Exa. ${publicOnly}`,
-        parameters: Type.Object(
-          {
-            query: Type.String({ minLength: 1, maxLength: 5000 }),
-            objective: Type.String({ minLength: 1, maxLength: 4096 }),
-            numResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, default: 5 })),
-          },
-          { additionalProperties: false },
-        ),
+        parameters: obj({
+          query: str({ minLength: 1, maxLength: 5000 }),
+          objective: str({ minLength: 1, maxLength: 4096 }),
+          numResults: opt(int({ minimum: 1, maximum: 10, default: 5 })),
+        }),
         execute({ query, objective, numResults = 5 }, _api, context) {
           return call(
             'exa',
@@ -119,18 +116,13 @@ export default function publicDocs() {
         // Repeating a public page read changes no state.
         replay: 'safe',
         description: `Read up to five public HTTP(S) URLs with Exa. Only public DNS names: no credentials, fragments, nonstandard ports, IP literals, or private/reserved destinations. ${publicOnly}`,
-        parameters: Type.Object(
-          {
-            urls: Type.Array(Type.String({ minLength: 1, maxLength: 8192 }), {
-              minItems: 1,
-              maxItems: 5,
-            }),
-            maxCharacters: Type.Optional(
-              Type.Number({ minimum: 1, maximum: 10000, default: 3000 }),
-            ),
-          },
-          { additionalProperties: false },
-        ),
+        parameters: obj({
+          urls: arr(str({ minLength: 1, maxLength: 8192 }), {
+            minItems: 1,
+            maxItems: 5,
+          }),
+          maxCharacters: opt(num({ minimum: 1, maximum: 10000, default: 3000 })),
+        }),
         execute({ urls, maxCharacters = 3000 }, _api, context) {
           return call(
             'exa',
@@ -146,13 +138,10 @@ export default function publicDocs() {
         // Repeating a public library lookup changes no state.
         replay: 'safe',
         description: `Find a Context7 library ID for a public library. ${publicOnly}`,
-        parameters: Type.Object(
-          {
-            query: Type.String({ minLength: 1, maxLength: 5000 }),
-            libraryName: Type.String({ minLength: 1, maxLength: 200 }),
-          },
-          { additionalProperties: false },
-        ),
+        parameters: obj({
+          query: str({ minLength: 1, maxLength: 5000 }),
+          libraryName: str({ minLength: 1, maxLength: 200 }),
+        }),
         execute({ query, libraryName }, _api, context) {
           return call('context7', 'resolve-library-id', { query, libraryName }, context.abortSignal)
         },
@@ -162,14 +151,11 @@ export default function publicDocs() {
         // Repeating a public documentation query changes no state.
         replay: 'safe',
         description: `Query documentation for a public Context7 library ID in /org/project or /org/project/version form. ${publicOnly}`,
-        parameters: Type.Object(
-          {
-            libraryId: Type.String({ minLength: 4, maxLength: 300, pattern: libraryIdPattern }),
-            query: Type.String({ minLength: 1, maxLength: 5000 }),
-            language: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
-          },
-          { additionalProperties: false },
-        ),
+        parameters: obj({
+          libraryId: str({ minLength: 4, maxLength: 300, pattern: libraryIdPattern }),
+          query: str({ minLength: 1, maxLength: 5000 }),
+          language: opt(str({ minLength: 1, maxLength: 100 })),
+        }),
         execute({ libraryId, query, language }, _api, context) {
           return call(
             'context7',

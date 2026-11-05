@@ -40,10 +40,9 @@ import { elidePath, formatDuration, shortenPath } from '../sdk/format.ts'
 import {
   TranscriptContext,
   useCompact,
-  useCompactQuiet,
+  useCompactThread,
   useConversation,
   useExtensions,
-  useIntro,
   useModels,
   useNow,
   useStore,
@@ -62,18 +61,14 @@ import {
   compactRows,
   groupAside,
   groupBetween,
-  groupQuiet,
   isOpenIn,
   openIn,
   partKey,
   partsOf,
-  quietOf,
   runOf,
   setAsideIds,
-  windowGaps,
-  windowKey,
 } from './compact.ts'
-import type { AsideGroup, BetweenGroup, CompactPart, QuietGroup, WorkRun } from './compact.ts'
+import type { AsideGroup, BetweenGroup, CompactPart, WorkRun } from './compact.ts'
 import { foldKey, readFold, writeFold } from './fold.tsx'
 import { reachedFork } from './fork.ts'
 import { readerLeft } from './follow.ts'
@@ -82,6 +77,15 @@ import { callsStart, indexTools, partialOf, slotsOf, toolCallView } from './mode
 import type { ToolResult } from './model.ts'
 import { ToolCallBlock } from './tool-call.tsx'
 import { TranscriptSkeleton } from './transcript-skeleton.tsx'
+
+/**
+ * The transcript around a contribution: its scroller, the element holding its rows (each top-level row carries
+ * `data-entry-id`), and whether it follows its newest row. For `transcript.*` slots.
+ */
+export function useTranscriptScroll() {
+  const { scrollRef, contentRef, isAtBottom } = useStickToBottomContext()
+  return { scrollRef, contentRef, atBottom: isAtBottom }
+}
 
 /** The shown conversation; `dock` fits it into a narrow side region. */
 export function Transcript({ dock }: { dock?: boolean }) {
@@ -177,29 +181,24 @@ export function Transcript({ dock }: { dock?: boolean }) {
   )
 }
 
+/** The space between a transcript's rows. */
+const rowGap = (content: Element | null) =>
+  content ? Number.parseFloat(getComputedStyle(content).rowGap) || 0 : 0
+
 function TranscriptEntries() {
   const { id, entries: active, older, live, busy, loading } = useConversation()
   const [history, setHistory] = useState<EntryRecord[]>([])
   const previousActive = useRef(active)
-  const previousWindow = useRef('')
+  const previousOlder = useRef<number>(undefined)
   const [tailSpace, setTailSpace] = useState(0)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
   const [exhausted, setExhausted] = useState(false)
   const [before, setBefore] = useState<number>()
-  // A windowed stream pages on from its oldest entry. A whole one after a head marker scans from its newest: retained
-  // suffixes can precede discarded compaction markers, which a minimum-active-ID cursor would skip. A whole one without
-  // a marker is the whole history.
+  // A windowed stream pages on from its oldest entry; a whole one is the whole history.
   // A fork's history before its own first entry is its source's and stays hidden: paging stops at the fork point.
-  const forked = reachedFork(
-    [...active, ...history],
-    id,
-    older !== undefined && active[0]?.head !== undefined ? active[0].id : undefined,
-  )
-  const cursor =
-    exhausted || forked
-      ? undefined
-      : (before ?? older ?? (active[0]?.head === undefined ? undefined : active.at(-1)?.id))
+  const forked = reachedFork([...active, ...history], id)
+  const cursor = exhausted || forked ? undefined : (before ?? older)
   const request = useRef<AbortController | null>(null)
   const anchor = useRef<{
     entryId: number
@@ -216,6 +215,8 @@ function TranscriptEntries() {
   const failed = useRef<[number, number][]>([])
   const [filling, setFilling] = useState(0)
   const sentinel = useRef<HTMLDivElement>(null)
+  /** What `transcript.top` pins over the top of the rows. */
+  const pinned = useRef<HTMLDivElement>(null)
   const { contentRef, scrollRef, stopScroll, state, isAtBottom, escapedFromLock } =
     useStickToBottomContext()
   // While following, the browser must not anchor: a row above that shrinks as the last one grows would move the view up,
@@ -298,33 +299,22 @@ function TranscriptEntries() {
   useLayoutEffect(() => {
     const current = new Set(active.map((entry) => entry.id))
     const dropped = previousActive.current.filter((entry) => !current.has(entry.id))
-    if (
-      active.some(
-        (entry) =>
-          (entry.kind === 'pi.compaction' || entry.kind === 'pi.reset') &&
-          !previousActive.current.some((old) => old.id === entry.id),
-      )
-    ) {
-      request.current?.abort()
-      request.current = null
-      anchor.current = null
-      setPending(false)
-      setError('')
-      setBefore(older ?? Math.max(...active.map((entry) => entry.id)))
-      setExhausted(false)
-    }
     if (dropped.length)
       setHistory((previous) => {
         const rows = new Map(previous.map((entry) => [entry.id, entry]))
         for (const entry of dropped) rows.set(entry.id, entry)
         return [...rows.values()]
       })
-    // A fresh window (a new `older`; appends keep it) can leave stored history uncovered.
-    const window = windowKey(active, older)
-    const fresh = window !== previousWindow.current
-    previousWindow.current = window
-    if (older !== undefined && fresh && active.length)
-      for (const [after, upTo] of windowGaps(active, older, loadedBelow(dropped))) fill(after, upTo)
+    // A fresh window (a new `older`; appends keep it) can leave stored history between it and the rows kept below it.
+    const fresh = older !== previousOlder.current
+    previousOlder.current = older
+    if (older !== undefined && fresh) {
+      const below = Math.max(
+        0,
+        ...loadedBelow(dropped).flatMap((e) => (e.id < older ? [e.id] : [])),
+      )
+      if (below) fill(below + 1, older)
+    }
     previousActive.current = active
   }, [active, older])
   useEffect(() => () => request.current?.abort(), [])
@@ -346,9 +336,7 @@ function TranscriptEntries() {
     if (!scroll || tailSpace === 0) return undefined
     const releaseTail = () => {
       // Release temporary space once it cannot clamp the reader, or they return to the bottom.
-      const gap = contentRef.current
-        ? Number.parseFloat(getComputedStyle(contentRef.current).rowGap) || 0
-        : 0
+      const gap = rowGap(contentRef.current)
       const bottom = scroll.scrollHeight - scroll.clientHeight
       if (scroll.scrollTop <= bottom - tailSpace - gap || scroll.scrollTop >= bottom - 1)
         setTailSpace(0)
@@ -508,29 +496,23 @@ function TranscriptEntries() {
       entry.conversationId === id &&
       !(entry.kind === 'pi.tool-result' && calls.has(toolCallId(entry) ?? '')),
   )
+  const thread = useCompactThread()
   const compact = useCompact()
   const keeps = (call: ToolCall) => !!compact?.(call)
   const rows: (CompactPart | WorkRun)[] = compact
     ? compactRows(visible, keeps)
     : visible.map((entry) => ({ entry }))
-  // Background rows, such as traffic between agents, fold into one line per stretch.
-  const background = useCompactQuiet()
-  const quiet = background
-    ? groupQuiet(rows, (part) => background.quiet({ entry: part.entry, calls: shownCalls(part) }))
-    : rows
-  // Background groups the reader or a reveal opened, by the keys of all their parts, as folded runs are.
-  const [shownQuiet, setShownQuiet] = useState<ReadonlySet<string>>(new Set())
   // What a go-back set aside folds into one quiet row; the rows themselves render as usual inside it.
   const aside = useMemo(() => setAsideIds(entries), [entries])
-  const grouped = groupAside(quiet, aside)
-  // What lies between two rows of the thread the reader follows folds into one line that opens it.
-  const thread = background?.thread
-  const threaded = thread
+  const grouped = groupAside(rows, aside)
+  // What lies between two rows of what the reader follows folds into one line that opens it.
+  const follows = thread?.test
+  const threaded = follows
     ? groupBetween(
         grouped,
         (row) =>
-          !('quiet' in row || 'work' in row || 'aside' in row) &&
-          thread({ entry: row.entry, calls: shownCalls(row) }),
+          !('work' in row || 'aside' in row) &&
+          follows({ entry: row.entry, calls: shownCalls(row) }),
       )
     : grouped.map((row) => row)
   const [shownBetween, setShownBetween] = useState(0)
@@ -540,14 +522,57 @@ function TranscriptEntries() {
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set())
   const isOpen = (run: WorkRun) => isOpenIn(opened, run)
   const open = (run: WorkRun, value: boolean) => setOpened((keys) => openIn(keys, run, value))
-  // Reveal a stored row without the auto-follow animation overriding the jump; a row older than those loaded needs the
-  // history down to it first, and one in a folded run needs the run open.
-  const [reveal, setReveal] = useState<number>()
+  // A revealed row keeps its top at the top of the view, below what `transcript.top` pins over the rows, while what is
+  // above it settles: the pinned strip arriving after the jump, rows above finishing their layout (Safari does not
+  // anchor scrolling). The reader's own scroll or tap, or following the newest row again, lets it go.
+  const held = useRef<Element>(null)
+  // The most the strip covered while holding: it hides while the start card shows, and chasing that would loop.
+  const cover = useRef(0)
+  const hold = useEffectEvent(() => {
+    const element = held.current
+    const scroll = scrollRef.current
+    if (!element || !scroll) return
+    if (!element.isConnected || state.isAtBottom) {
+      held.current = null
+      return
+    }
+    cover.current = Math.max(cover.current, pinned.current?.offsetHeight ?? 0)
+    const move =
+      element.getBoundingClientRect().top - scroll.getBoundingClientRect().top - cover.current
+    // A short row at the end needs room below it to reach the top: tail space, with a row gap more so the reader is not
+    // at the very bottom, where it is released.
+    const room = scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop
+    if (move > room) setTailSpace(tailSpace + move - room + rowGap(contentRef.current))
+    // Through the library's setter, so its scroll handler does not take the move for the reader's.
+    // oxlint-disable-next-line react/immutability -- the library's state is its own mutable object; it writes it the same way.
+    state.scrollTop += move
+  })
+  useEffect(() => {
+    const scroll = scrollRef.current
+    const content = contentRef.current
+    if (!scroll || !content || !pinned.current) return undefined
+    const resize = new ResizeObserver(() => hold())
+    for (const element of [scroll, content, pinned.current]) resize.observe(element)
+    const release = () => {
+      held.current = null
+    }
+    const inputs = ['wheel', 'touchstart', 'pointerdown', 'keydown']
+    for (const type of inputs) scroll.addEventListener(type, release, { passive: true })
+    return () => {
+      resize.disconnect()
+      for (const type of inputs) scroll.removeEventListener(type, release)
+    }
+  }, [scrollRef, contentRef])
+  // Reveal a stored row, or one tool call in it, without the auto-follow animation overriding the jump; a row older than
+  // those loaded needs the history down to it first, and one in a folded run needs the run open.
+  const [reveal, setReveal] = useState<{ entry: number; call?: string }>()
   useEvent('ultimate:reveal-entry', (value) => {
-    const target = value as { conversationId?: number; entryId?: number } | undefined
+    const target = value as
+      | { conversationId?: number; entryId?: number; toolCallId?: string }
+      | undefined
     const entryId = target?.entryId
     if (target?.conversationId === id && entryId !== undefined && Number.isSafeInteger(entryId))
-      setReveal(entryId)
+      setReveal({ entry: entryId, call: target?.toolCallId })
   })
   const revealStep = useEffectEvent(() => {
     if (reveal === undefined || loading || pending) return
@@ -555,10 +580,11 @@ function TranscriptEntries() {
       setReveal(undefined)
       return
     }
-    if (!entries.some((entry) => entry.id === reveal)) {
-      if (cursor !== undefined && reveal < cursor) {
+    const { entry: revealed, call } = reveal
+    if (!entries.some((entry) => entry.id === revealed)) {
+      if (cursor !== undefined && revealed < cursor) {
         // oxlint-disable-next-line typescript/no-floating-promises -- loadDown catches history failures and displays them with setError.
-        void loadDown(reveal)
+        void loadDown(revealed)
         return
       }
       // Inside the window's range: a fill still reading it brings it.
@@ -568,7 +594,7 @@ function TranscriptEntries() {
     const between = threaded.find(
       (row): row is BetweenGroup<(typeof grouped)[number]> =>
         'between' in row &&
-        row.between.some((inner) => itemParts(inner).some((part) => part.entry.id === reveal)),
+        row.between.some((inner) => itemParts(inner).some((part) => part.entry.id === revealed)),
     )
     if (between && !readBetween(id, between)) {
       writeBetween(id, between, true)
@@ -576,66 +602,42 @@ function TranscriptEntries() {
       return
     }
     const group = grouped.find(
-      (row): row is AsideGroup => 'aside' in row && !!runOf(row.aside, reveal),
+      (row): row is AsideGroup => 'aside' in row && !!runOf(row.aside, revealed),
     )
     const first = group && asideKey(group)
     if (first !== undefined && !shownAside.has(first)) {
       setShownAside((keys) => new Set(keys).add(first))
       return
     }
-    const stretch = quietOf(group ? group.aside : quiet, reveal)
-    if (stretch && !isOpenIn(shownQuiet, stretch)) {
-      setShownQuiet((keys) => openIn(keys, stretch, true))
-      return
-    }
-    const run = compact && runOf(rows, reveal)
+    const run = compact && runOf(rows, revealed)
     if (run && !isOpen(run)) {
       open(run, true)
       return
     }
-    const element = contentRef.current?.querySelector(`[data-entry-id="${reveal}"]`)
+    // In compact mode an entry's text and its kept tools are separate rows, each with the entry's id.
+    const row = `[data-entry-id="${revealed}"]`
+    const block =
+      call === undefined
+        ? undefined
+        : contentRef.current?.querySelector(`${row} [data-tool-call-id="${CSS.escape(call)}"]`)
+    const element =
+      block && block.getBoundingClientRect().height > 0
+        ? block
+        : contentRef.current?.querySelector(row)
     if (element) {
       stopScroll()
-      element.scrollIntoView({ block: 'start' })
+      held.current = element
+      cover.current = 0
+      hold()
     }
     setReveal(undefined)
   })
   useLayoutEffect(
     () => revealStep(),
-    [
-      reveal,
-      loading,
-      pending,
-      error,
-      history,
-      opened,
-      filling,
-      shownAside,
-      shownQuiet,
-      shownBetween,
-    ],
+    [reveal, loading, pending, error, history, opened, filling, shownAside, shownBetween],
   )
-  const render = (row: CompactPart | WorkRun | QuietGroup, last: boolean, faded = ''): ReactNode =>
-    'quiet' in row ? (
-      // Found like a folded run: by its first entry, or its last when a page reaches into it.
-      <div
-        className={faded}
-        data-conversation-id={id}
-        data-entry-id={partsOf(row)[0].entry.id}
-        data-run-last={partsOf(row).at(-1)!.entry.id}
-        key={`quiet:${quietKey(row)}`}
-      >
-        <QuietRow
-          busy={busy && last}
-          group={row}
-          onOpenChange={(value) => setShownQuiet((keys) => openIn(keys, row, value))}
-          open={isOpenIn(shownQuiet, row)}
-          summary={background?.summary}
-        >
-          {row.quiet.map((inner, index) => render(inner, last && index === row.quiet.length - 1))}
-        </QuietRow>
-      </div>
-    ) : 'work' in row ? (
+  const render = (row: CompactPart | WorkRun, last: boolean, faded = ''): ReactNode =>
+    'work' in row ? (
       <div
         className={cn('empty:hidden', faded)}
         data-conversation-id={id}
@@ -671,6 +673,12 @@ function TranscriptEntries() {
     )
   return (
     <TranscriptContext value={entries}>
+      {/* At the top of the view as it scrolls, taking no room: its margin cancels the gap after it. */}
+      <div className="pointer-events-none sticky top-0 z-10 -mb-3 h-0 [overflow-anchor:none]">
+        <div ref={pinned}>
+          <Slot name="transcript.top" />
+        </div>
+      </div>
       {!loading && entries.length > 0 && cursor !== undefined && (
         <div
           className="flex min-h-5 items-center justify-center font-mono text-[11px] text-muted-foreground/70"
@@ -703,12 +711,8 @@ function TranscriptEntries() {
         const key = `between:${partKey(itemParts(item.between[0])[0])}`
         // The stretch the agent works in now stays in view while it works.
         const shown = (busy && last) || readBetween(id, item)
-        // Open, a stretch shows its background groups' rows: their lines would repeat the stretch's.
-        const between = item.between.flatMap<CompactPart | WorkRun | AsideGroup>((row) =>
-          'quiet' in row ? row.quiet : [row],
-        )
-        const faded = between.map((inner, inside) =>
-          renderItem(inner, last && inside === between.length - 1, recedeRow),
+        const faded = item.between.map((inner, inside) =>
+          renderItem(inner, last && inside === item.between.length - 1, recedeRow),
         )
         return (
           <Fragment key={key}>
@@ -719,7 +723,7 @@ function TranscriptEntries() {
                 setShownBetween((count) => count + 1)
               }}
               open={shown}
-              summary={background?.summary}
+              summary={thread?.summary}
               working={busy && last}
             />
             {shown && faded}
@@ -738,7 +742,7 @@ function TranscriptEntries() {
     </TranscriptContext>
   )
   function renderItem(
-    item: CompactPart | WorkRun | QuietGroup | AsideGroup,
+    item: CompactPart | WorkRun | AsideGroup,
     last: boolean,
     faded = '',
   ): ReactNode {
@@ -760,7 +764,10 @@ function TranscriptEntries() {
         }
         open={shown}
       >
-        <CollapsibleTrigger className="flex cursor-pointer items-center gap-1.5 font-mono text-[11px] text-muted-foreground/70 hover:text-muted-foreground">
+        <CollapsibleTrigger
+          className="flex cursor-pointer items-center gap-1.5 font-mono text-[11px] text-muted-foreground/70 hover:text-muted-foreground"
+          data-ui="transcript-meta"
+        >
           {item.steps} step{item.steps === 1 ? '' : 's'} set aside · {shown ? 'hide' : 'show'}
           <ChevronRightIcon className="size-3 transition-transform group-data-[state=open]/aside:rotate-90" />
         </CollapsibleTrigger>
@@ -777,7 +784,7 @@ const recedeRow =
   '-mt-1.5 opacity-45 transition-opacity duration-200 hover:opacity-100 focus-within:opacity-100'
 
 /** All parts of a top-level row, set-aside groups included. */
-const itemParts = (item: CompactPart | WorkRun | QuietGroup | AsideGroup) =>
+const itemParts = (item: CompactPart | WorkRun | AsideGroup) =>
   'aside' in item ? item.aside.flatMap(partsOf) : partsOf(item)
 
 /**
@@ -786,18 +793,18 @@ const itemParts = (item: CompactPart | WorkRun | QuietGroup | AsideGroup) =>
  */
 const betweenKeys = (
   id: number | undefined,
-  group: BetweenGroup<CompactPart | WorkRun | QuietGroup | AsideGroup>,
+  group: BetweenGroup<CompactPart | WorkRun | AsideGroup>,
 ) => {
   const parts = group.between.flatMap(itemParts)
   return [parts[0], parts.at(-1)!].map((part) => foldKey(id, `between:${partKey(part)}`))
 }
 const readBetween = (
   id: number | undefined,
-  group: BetweenGroup<CompactPart | WorkRun | QuietGroup | AsideGroup>,
+  group: BetweenGroup<CompactPart | WorkRun | AsideGroup>,
 ) => betweenKeys(id, group).some(readFold)
 const writeBetween = (
   id: number | undefined,
-  group: BetweenGroup<CompactPart | WorkRun | QuietGroup | AsideGroup>,
+  group: BetweenGroup<CompactPart | WorkRun | AsideGroup>,
   open: boolean,
 ) => {
   for (const key of betweenKeys(id, group)) writeFold(key, open)
@@ -818,7 +825,7 @@ function BetweenLine({
   working,
   summary: Summary,
 }: {
-  group: BetweenGroup<CompactPart | WorkRun | QuietGroup | AsideGroup>
+  group: BetweenGroup<CompactPart | WorkRun | AsideGroup>
   open: boolean
   onOpen: () => void
   working: boolean
@@ -833,12 +840,12 @@ function BetweenLine({
   // Rows outside runs of work, which count as steps instead.
   const rows = group.between
     .flatMap((row) => ('aside' in row ? row.aside : [row]))
-    .flatMap((row) => ('quiet' in row ? row.quiet : [row]))
     .flatMap((row) => ('work' in row ? [] : [{ entry: row.entry, calls: shownCalls(row) }]))
-  const steps = group.between.reduce(
-    (sum, row) => sum + ('work' in row ? row.steps : 'quiet' in row ? row.steps : 0),
-    0,
-  )
+  const steps = group.between.reduce((sum, row) => sum + ('work' in row ? row.steps : 0), 0)
+  const entries = group.between
+    .flatMap((row) => ('aside' in row ? row.aside : [row]))
+    .flatMap((row) => ('work' in row ? row.work : [row]))
+    .map((part) => part.entry)
   const fallback = <>{rows.length} updates</>
   return (
     <button
@@ -856,7 +863,7 @@ function BetweenLine({
             variant="inline"
             version={Summary.version}
           >
-            <Summary.component between rows={rows} steps={steps} working={working} />
+            <Summary.component entries={entries} rows={rows} steps={steps} working={working} />
           </ExtensionBoundary>
         ) : (
           fallback
@@ -872,78 +879,12 @@ function BetweenLine({
 /** A set-aside group is known by its first entry, so it stays open while later rows join it. */
 const asideKey = (group: AsideGroup) => partsOf(group.aside[0])[0].entry.id
 
-/** A quiet group's React key: its first part. */
-const quietKey = (group: QuietGroup) => partKey(partsOf(group)[0])
-
 /** The tool calls a row shows: all of its entry's, or those of its blocks. */
 function shownCalls({ entry, blocks }: CompactPart): ToolCall[] {
   const message = entry.model?.[0]
   if (message?.role !== 'assistant') return []
   return message.content.flatMap((block, index) =>
     block.type === 'toolCall' && (!blocks || blocks.includes(index)) ? [block] : [],
-  )
-}
-
-/**
- * Background rows folded into one quiet line, which an extension's `summary` words (a step count otherwise); open, the
- * rows render as usual beneath it.
- */
-function QuietRow({
-  group,
-  open,
-  onOpenChange,
-  busy,
-  summary: Summary,
-  children,
-}: {
-  group: QuietGroup
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  busy: boolean
-  summary:
-    | {
-        extension: string
-        version: number
-        component: ComponentType<CompactSummaryProps>
-      }
-    | undefined
-  children: ReactNode
-}) {
-  const rows = group.quiet.flatMap((row) =>
-    'work' in row ? [] : [{ entry: row.entry, calls: shownCalls(row) }],
-  )
-  const fallback = (
-    <>
-      {rows.length} updates
-      {group.steps > 0 && ` · ${group.steps} step${group.steps === 1 ? '' : 's'}`}
-    </>
-  )
-  return (
-    <Collapsible
-      className="group/quiet"
-      data-compact-quiet={rows.length}
-      onOpenChange={onOpenChange}
-      open={open}
-    >
-      <CollapsibleTrigger className="flex w-full min-w-0 cursor-pointer items-center gap-1.5 text-left font-mono text-[11px] text-muted-foreground/70 hover:text-muted-foreground">
-        {Summary ? (
-          <ExtensionBoundary
-            extension={Summary.extension}
-            fallback={fallback}
-            variant="inline"
-            version={Summary.version}
-          >
-            <Summary.component rows={rows} steps={group.steps} working={busy} />
-          </ExtensionBoundary>
-        ) : (
-          fallback
-        )}
-        <ChevronRightIcon className="size-3 shrink-0 transition-transform group-data-[state=open]/quiet:rotate-90" />
-      </CollapsibleTrigger>
-      <CollapsibleContent className="mt-3 flex flex-col gap-3 border-l border-border/70 pl-3">
-        {children}
-      </CollapsibleContent>
-    </Collapsible>
   )
 }
 
@@ -967,7 +908,10 @@ function WorkRow({
 }) {
   return (
     <Collapsible className="group/work" onOpenChange={onOpenChange} open={open}>
-      <CollapsibleTrigger className="flex cursor-pointer items-center gap-1.5 font-mono text-[11px] text-muted-foreground/70 hover:text-muted-foreground">
+      <CollapsibleTrigger
+        className="flex cursor-pointer items-center gap-1.5 font-mono text-[11px] text-muted-foreground/70 hover:text-muted-foreground"
+        data-ui="transcript-meta"
+      >
         {working ? 'working' : 'worked'} · {run.steps} step
         {run.steps === 1 ? '' : 's'}
         <ChevronRightIcon className="size-3 transition-transform group-data-[state=open]/work:rotate-90" />
@@ -1078,7 +1022,6 @@ function StepLines({
 /** What this Ultimate is and runs on, before the first message. */
 function EmptyState() {
   const system = useSystem()
-  const intro = useIntro()
   const { agent } = useConversation()
   const reasoning = useModels()?.models.find(
     (model) => model.provider === agent.model?.provider && model.id === agent.model.modelId,
@@ -1117,20 +1060,17 @@ function EmptyState() {
         : '…',
     ],
   ]
-  const Card = intro?.card
   return (
     <ConversationEmptyState className="min-h-[55vh]">
-      <div className="w-full max-w-md font-mono text-[12px]">
-        <div className="text-[13px] font-semibold tracking-[0.3em] text-brand">ULTIMATE</div>
-        <div className="mt-1 font-sans text-[13px] text-muted-foreground">
-          {intro?.title ??
-            (!system || system.project.root === system.code.ultimateRoot
-              ? 'A coding agent that edits this repository, itself included.'
-              : `A coding agent that edits ${system.project.name}, and can change itself too.`)}
+      <div className="w-full max-w-md font-mono text-[12px]" data-ui="empty-state">
+        <div className="text-[13px] font-semibold tracking-[0.3em] text-brand" data-ui="wordmark">
+          ULTIMATE
         </div>
-        {intro?.hint && (
-          <div className="mt-1 font-sans text-[12.5px] text-muted-foreground/70">{intro.hint}</div>
-        )}
+        <div className="mt-1 font-sans text-[13px] text-muted-foreground">
+          {!system || system.project.root === system.code.ultimateRoot
+            ? 'A coding agent that edits this repository, itself included.'
+            : `A coding agent that edits ${system.project.name}, and can change itself too.`}
+        </div>
         <div className="mt-5 grid grid-cols-[4rem_1fr] gap-x-3 gap-y-1 border-t border-border/70 pt-4 text-left">
           {rows.map(([label, value]) => (
             <Fragment key={label}>
@@ -1139,13 +1079,6 @@ function EmptyState() {
             </Fragment>
           ))}
         </div>
-        {Card && intro && (
-          <div className="mt-5 text-left">
-            <ExtensionBoundary extension={intro.extension} version={intro.version}>
-              <Card />
-            </ExtensionBoundary>
-          </div>
-        )}
       </div>
     </ConversationEmptyState>
   )
@@ -1286,6 +1219,7 @@ function AssistantView({
         'group/message gap-3',
         final && 'rounded-lg border border-success/40 bg-success/5 px-3.5 py-2.5',
       )}
+      data-final={final || undefined}
       from="assistant"
     >
       {final && (
@@ -1377,6 +1311,7 @@ function Divider({ children, className }: { children: ReactNode; className?: str
         'flex items-center gap-3 font-mono text-[11px] text-muted-foreground/70 before:h-px before:flex-1 before:bg-border/70 after:h-px after:flex-1 after:bg-border/70',
         className,
       )}
+      data-ui="transcript-meta"
     >
       {children}
     </div>
@@ -1505,7 +1440,7 @@ export function LiveLines({
   for (const compaction of live.compactions ?? [])
     lines.push(
       <Shimmer key={`compaction-${compaction.taskId}`}>
-        {`compacting context · ${compaction.reason}${compaction.attempt > 1 ? ` · attempt ${compaction.attempt}` : ''}…`}
+        {`compacting context · ${compaction.trigger}${compaction.attempt > 1 ? ` · attempt ${compaction.attempt}` : ''}…`}
       </Shimmer>,
     )
   if (idle && lines.length === 0) {

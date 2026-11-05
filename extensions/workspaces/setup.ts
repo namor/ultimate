@@ -5,7 +5,8 @@ export async function setup(source: string, path: string, commands: string[], si
   for (const command of commands) {
     signal.throwIfAborted()
     try {
-      const pending = exec('sh', ['-c', command], {
+      // exec closes the command's input, so one that reads it gets EOF.
+      await exec('sh', ['-c', command], {
         cwd: path,
         env: { ...process.env, ULTIMATE_SOURCE: source },
         signal,
@@ -13,8 +14,6 @@ export async function setup(source: string, path: string, commands: string[], si
         killSignal: 'SIGKILL',
         maxBuffer: 1024 * 1024,
       })
-      pending.child.stdin?.end()
-      await pending
     } catch (error) {
       const output = error as Error & { stdout?: string; stderr?: string }
       throw new Error(

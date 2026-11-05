@@ -15,6 +15,7 @@ import {
   AllProvided,
   Provided,
   Slot,
+  useConversationSummary,
   useDocOf,
   useNow,
   useStore,
@@ -34,7 +35,7 @@ import {
   useWorkspaceConversations as useConversations,
   useWorkspaceIndex,
 } from '../workspaces/ui.tsx'
-import { Row, ChildRow, StandingRow, SubagentLine } from './rows.tsx'
+import { Row, ChildRow, EpicLine, StandingRow, SubagentLine } from './rows.tsx'
 import {
   MessagesDoc,
   conversationState,
@@ -539,7 +540,10 @@ function Tree({
     conversation: branch,
     working: working.has(branch.id),
     parked: parked.has(branch.id),
-    subagents: subagentLines(branch.id),
+    subagents: [
+      <EpicLine id={branch.id} key="epic" working={working.get(branch.id) === 'self'} />,
+      ...subagentLines(branch.id),
+    ],
   }))
 
   return (
@@ -675,7 +679,7 @@ function Tree({
       <div className="mt-auto pt-3">
         {earlier.length > 0 && (
           <Collapsible className="pt-1" open={earlierOpen} onOpenChange={setEarlierOpen}>
-            <CollapsibleTrigger className="group/earlier flex w-full cursor-pointer items-center gap-1 px-4 py-1 font-mono text-[10.5px] tracking-wider text-muted-foreground uppercase outline-none hover:text-foreground">
+            <CollapsibleTrigger className="group/earlier flex w-full cursor-pointer items-center gap-1 px-4 py-1 section-label outline-none hover:text-foreground">
               <ChevronRightIcon className="size-3 transition-transform group-data-[state=open]/earlier:rotate-90" />
               Earlier · {earlier.length}
             </CollapsibleTrigger>
@@ -690,7 +694,7 @@ function Tree({
         )}
         {hidden.length > 0 && (
           <Collapsible className="pt-1" open={concludedOpen} onOpenChange={setConcludedOpen}>
-            <CollapsibleTrigger className="group/concluded flex w-full cursor-pointer items-center gap-1 px-4 py-1 font-mono text-[10.5px] tracking-wider text-muted-foreground uppercase outline-none hover:text-foreground focus-visible:text-foreground">
+            <CollapsibleTrigger className="group/concluded flex w-full cursor-pointer items-center gap-1 px-4 py-1 section-label outline-none hover:text-foreground focus-visible:text-foreground">
               <ChevronRightIcon className="size-3 transition-transform group-data-[state=open]/concluded:rotate-90" />
               Concluded · {hidden.length}
             </CollapsibleTrigger>
@@ -718,7 +722,7 @@ function Tree({
 /** Records the answer the user has seen: the shown top-level conversation's latest, once it is idle. */
 export function Seen() {
   const id = useShownId()
-  const summary = useConversations().find((conversation) => conversation.id === id)
+  const summary = useConversationSummary(id)
   const [seen, setSeen] = useSidebarState<Record<string, number>>('seen', {})
   const answerAt =
     summary && summary.parentConversationId === undefined && !summary.busy

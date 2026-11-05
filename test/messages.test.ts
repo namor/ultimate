@@ -9,12 +9,13 @@ import { join, resolve } from 'node:path'
 import { awaitWithContext } from '@earendil-works/chord/context'
 import { fauxAssistantMessage, fauxText, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
 import type { FauxResponseFactory } from '@earendil-works/pi-ai/providers/faux'
-import { Type } from '@earendil-works/pi-ai'
+import { obj } from '@earendil-works/pi-schema'
 import {
   configure,
   defineExtension,
   defineTask,
   defineTool,
+  InboxDoc,
   LiveDoc,
   ROOT_CONVERSATION_ID,
 } from '@earendil-works/pi-durable'
@@ -30,6 +31,7 @@ import { emit } from '../server/events.ts'
 import messagesExtension, { actions } from '../extensions/messages/server.ts'
 import pauseExtension, { actions as pauseActions } from '../extensions/pause/server.ts'
 import { Messages, MessageSent } from '../extensions/messages/api.ts'
+import { send as sendMessage } from '../extensions/messages/send.ts'
 import { UserInputEvent } from '../shared/events.ts'
 import type { MessagesService } from '../extensions/messages/api.ts'
 import { BranchReceipts, Tally, rootOf, startBranch } from '../extensions/lineage/server.ts'
@@ -223,7 +225,7 @@ async function fixture(
         defineTool({
           name: 'hold',
           description: 'Hold the current run',
-          parameters: Type.Object({}),
+          parameters: obj({}),
           // Waiting has no side effects; replay simply waits on the same test gate.
           replay: 'safe',
           async execute(_input, _api, ctx) {
@@ -258,6 +260,19 @@ async function fixture(
     if (last.role === 'user' && (text === 'HOLD' || text.includes('\nHOLD')))
       return fauxAssistantMessage([fauxToolCall('hold', {})], { stopReason: 'toolUse' })
     if (last.role === 'user' && text.startsWith('Message from') && text.includes('NOANSWER'))
+      return fauxAssistantMessage([])
+    // A branch's reply that keeps @ultimate busy, so another branch's reply steers into the same run.
+    if (last.role === 'user' && text.startsWith('Reply from #') && text.includes('STALL'))
+      return fauxAssistantMessage([fauxToolCall('hold', {})], { stopReason: 'toolUse' })
+    // @ultimate (#1) answers a branch's reply or report only to weigh in: any other final answer would go down to it.
+    const fromBranch = /^(Reply|Message) from #(\d+)/.exec(text)
+    if (
+      last.role === 'user' &&
+      fromBranch &&
+      fromBranch[2] !== '1' &&
+      (fromBranch[1] === 'Reply' || text.includes('\nOne-way message:')) &&
+      !text.includes('WEIGH')
+    )
       return fauxAssistantMessage([])
     if (last.role === 'user' && text.startsWith('Message from') && text.includes('\nASK'))
       return fauxAssistantMessage([fauxText('Scope changed. Proceed?\n1. Yes\n2. No')])
@@ -319,9 +334,8 @@ async function fixture(
   }
 }
 async function replies(f: Awaited<ReturnType<typeof fixture>>) {
-  const view = await f.opened.root.viewState(context)
-  const entries = view.value.entries.filter((e) => e.kind === 'board.reply')
-  view.dispose()
+  const view = await f.opened.root.context(context)
+  const entries = view.entries.filter((e) => e.kind === 'board.reply')
   return entries
 }
 it('wakes an idle recipient and returns one typed reply; one-way messages return nothing', async () => {
@@ -360,9 +374,8 @@ it('records a one-way input answer without returning it to the sender', async ()
   const log = (await f.log())!
   expect(log.messages).toHaveLength(1)
   expect(log.messages[0]).toMatchObject({ state: 'delivered', reply: false })
-  const view = await f.recipient.viewState(context)
-  expect(view.value.entries.find((e) => e.id === log.messages[0].answer)?.kind).toBe('pi.assistant')
-  view.dispose()
+  const view = await f.recipient.context(context)
+  expect(view.entries.find((e) => e.id === log.messages[0].answer)?.kind).toBe('pi.assistant')
   expect(await replies(f)).toHaveLength(0)
 })
 async function worker(f: Awaited<ReturnType<typeof fixture>>) {
@@ -395,14 +408,11 @@ it('places an idle parent update as a note without starting a run', async () => 
     )
   ).wait(context)
   await until(async () => (await f.log())!.messages[0]?.state === 'delivered')
-  const view = await f.opened.root.viewState(context)
-  const note = view.value.entries.find((e) => e.kind === 'board.message')!
+  const view = await f.opened.root.context(context)
+  const note = view.entries.find((e) => e.kind === 'board.message')!
   expect(note.data).toMatchObject({ from: child.id, reply: false, delivery: 'note' })
   expect(note.input).not.toBe(true)
-  expect(
-    view.value.entries.filter((e) => e.id > note.id && e.kind === 'pi.assistant'),
-  ).toHaveLength(0)
-  view.dispose()
+  expect(view.entries.filter((e) => e.id > note.id && e.kind === 'pi.assistant')).toHaveLength(0)
   const page = await f.host.scanSubmissions(
     { conversationId: ROOT_CONVERSATION_ID },
     100,
@@ -454,32 +464,28 @@ it('still wakes a parent for a worker question and returns its typed reply', asy
   ).wait(context)
   await until(async () => (await f.log())!.messages[0]?.state === 'answered')
   await child.waitForIdle(context)
-  const parentView = await f.opened.root.viewState(context)
-  expect(parentView.value.entries.find((e) => e.kind === 'board.message')?.data).toMatchObject({
+  const parentView = await f.opened.root.context(context)
+  expect(parentView.entries.find((e) => e.kind === 'board.message')?.data).toMatchObject({
     reply: true,
     delivery: 'followUp',
   })
-  parentView.dispose()
   await until(async () => {
-    const current = await child.viewState(context)
-    const replied = current.value.entries.some((e) => e.kind === 'board.reply')
-    current.dispose()
+    const current = await child.context(context)
+    const replied = current.entries.some((e) => e.kind === 'board.reply')
     return replied
   })
-  const view = await child.viewState(context)
-  expect(view.value.entries.find((e) => e.kind === 'board.reply')?.data).toMatchObject({
+  const view = await child.context(context)
+  expect(view.entries.find((e) => e.kind === 'board.reply')?.data).toMatchObject({
     from: 1,
     re: 1,
   })
-  view.dispose()
 })
 /** The recipient's tool results, as text. */
 async function toolResults(f: Awaited<ReturnType<typeof fixture>>) {
-  const view = await f.recipient.viewState(context)
-  const results = view.value.entries
+  const view = await f.recipient.context(context)
+  const results = view.entries
     .filter((e) => e.kind === 'pi.tool-result')
     .map((e) => JSON.stringify(e.model))
-  view.dispose()
   return results
 }
 it('turns a message to a sender it owes an answer into that answer, once, with images', async () => {
@@ -510,9 +516,8 @@ it('turns a message to a sender it owes an answer into that answer, once, with i
   expect(imagesIn(reply)).toEqual([png(0), png(1)])
   // The tool result ends the run: no final answer restates it, and delivery sends nothing more.
   expect((await toolResults(f)).at(-1)).toContain(`Sent as your answer to message ${asked.id}.`)
-  const view = await f.recipient.viewState(context)
-  expect(view.value.entries.at(-1)?.kind).toBe('pi.tool-result')
-  view.dispose()
+  const view = await f.recipient.context(context)
+  expect(view.entries.at(-1)?.kind).toBe('pi.tool-result')
   expect(f.observed.filter((t) => t.startsWith('Reply from'))).toHaveLength(1)
 })
 it("turns @ultimate's message to the user it owes an answer into that answer and ends the run", async () => {
@@ -535,9 +540,8 @@ it("turns @ultimate's message to the user it owes an answer into that answer and
   const [first, report] = (await f.log())!.messages
   expect(first.state).toBe('answered')
   expect(report).toMatchObject({ to: 'user', re: first.id, text: 'Report', state: 'delivered' })
-  const ended = await f.opened.root.viewState(context)
-  expect(ended.value.entries.at(-1)?.kind).toBe('pi.tool-result')
-  ended.dispose()
+  const ended = await f.opened.root.context(context)
+  expect(ended.entries.at(-1)?.kind).toBe('pi.tool-result')
   // With questions it is the answer too, and stays open itself.
   await owe('Q2')
   await f.send('user', 'Next', { questions: [{ text: 'Ready?', kind: 'confirm' }] })
@@ -546,10 +550,9 @@ it("turns @ultimate's message to the user it owes an answer into that answer and
   expect(next).toMatchObject({ to: 'user', re: second.id, reply: true, state: 'delivered' })
   expect(next.questions).toHaveLength(1)
   // Its card reads the result as a sent message, so the answer card shows under it.
-  const view = await f.opened.root.viewState(context)
-  const results = view.value.entries.filter((e) => e.kind === 'pi.tool-result')
-  expect(view.value.entries.at(-1)?.kind).toBe('pi.tool-result')
-  view.dispose()
+  const view = await f.opened.root.context(context)
+  const results = view.entries.filter((e) => e.kind === 'pi.tool-result')
+  expect(view.entries.at(-1)?.kind).toBe('pi.tool-result')
   expect(JSON.stringify(results.at(-1)?.model)).toContain(`Message ${next.id} sent.`)
 })
 // omarchy-config #42: the user's card reply was still queued behind the run, and the questions were refused.
@@ -627,13 +630,13 @@ it('allows one-way updates to the sender while answering', async () => {
     { from: f.recipient.id, to: 1, re: 1 },
   ])
 })
-it('refuses messages to the user from anyone but @ultimate', async () => {
+it('refuses messages to the user from non-branch conversations other than @ultimate', async () => {
   const f = await fixture()
   await f.send('@scout', 'SEND ' + JSON.stringify({ to: 'user', text: 'Update' }))
   await until(async () => (await replies(f)).length === 1)
   expect((await f.log())!.messages).toHaveLength(2)
   expect(f.observed.join('\n')).toContain(
-    'Only @ultimate messages the user; send this to @ultimate (reply: false) and it relays it.',
+    'Only @ultimate and branches message the user; send this to the conversation that started you.',
   )
   await f.send('user', 'Relayed update')
   expect((await f.log())!.messages.at(-1)).toMatchObject({
@@ -752,10 +755,9 @@ it('answers questions to the user through answer cards or input in the sender co
 it("ends @ultimate's run with its message to the user, unless it still owes a reply", async () => {
   const f = await fixture()
   await f.send('user', 'Landed')
-  const root = await f.opened.root.viewState(context)
+  const root = await f.opened.root.context(context)
   // No final answer restates the message.
-  expect(root.value.entries.at(-1)?.kind).toBe('pi.tool-result')
-  root.dispose()
+  expect(root.entries.at(-1)?.kind).toBe('pi.tool-result')
   expect(f.observed).not.toContain('Message 1 sent.')
 
   // A message to @ultimate that expects a reply still gets its answer after the message to the user.
@@ -831,15 +833,14 @@ it('lets a subagent message only the conversation that started it', async () => 
   await send(workerId, '#1')
   expect(f.observed.filter((text) => text.includes('message only #1'))).toHaveLength(1)
   expect((await f.log())!.messages.map((m) => [m.from, m.to])).toEqual([[workerId, 1]])
-  const view = await (await f.opened.harness.conversation(workerId, context))!.viewState(context)
-  expect(JSON.stringify(view.value.entries)).toContain('Use message only to update #1')
-  view.dispose()
+  const view = await (await f.opened.harness.conversation(workerId, context))!.context(context)
+  expect(JSON.stringify(view.entries)).toContain('Use message only to update #1')
 
   // An owned conversation that is no subagent cannot bypass @ultimate either.
   const run = await child(false)
   await send(run, 'user')
   expect((await f.log())!.messages).toHaveLength(1)
-  expect(f.observed.join('\n')).toContain('Only @ultimate messages the user')
+  expect(f.observed.join('\n')).toContain('Only @ultimate and branches message the user')
 })
 it('refuses self, unknown ids, tally roots and unknown names with valid names', async () => {
   const f = await fixture()
@@ -854,9 +855,8 @@ it('refuses self, unknown ids, tally roots and unknown names with valid names', 
   await f.send(String(f.recipient.id))
   expect(f.observed.join('\n')).toContain('use note')
   await f.send('#1')
-  const view = await f.opened.root.viewState(context)
-  expect(JSON.stringify(view.value.entries)).toContain('cannot message yourself')
-  view.dispose()
+  const view = await f.opened.root.context(context)
+  expect(JSON.stringify(view.entries)).toContain('cannot message yourself')
 })
 it('loads existing version-1 logs with the unused read mark', async () => {
   const f = await fixture()
@@ -923,11 +923,10 @@ it('queues a busy recipient as follow-up, or steers its current run; @ultimate s
     expect(f.observed.some((t) => t.startsWith('Message from') && t.includes('Busy message'))).toBe(
       true,
     )
-    const view = await f.recipient.viewState(context)
-    expect(view.value.entries.find((e) => e.kind === 'board.message')?.data).toMatchObject({
+    const view = await f.recipient.context(context)
+    expect(view.entries.find((e) => e.kind === 'board.message')?.data).toMatchObject({
       delivery: steer ? 'steer' : 'followUp',
     })
-    view.dispose()
     const delivered = f.observed.findIndex(
       (t) => t.startsWith('Message from') && t.includes('Busy message'),
     )
@@ -996,13 +995,9 @@ it('has no posting action at the installed codemode boundary', async () => {
       await (
         await server.root.submit({ type: 'input', content: 'Try action' }, context)
       ).wait(context)
-      const view = await server.root.viewState(context)
-      try {
-        const result = view.value.entries.findLast((e) => e.kind === 'pi.tool-result')!
-        expect(JSON.stringify(result)).toContain(`Unknown extension action: messages/${action}`)
-      } finally {
-        view.dispose()
-      }
+      const view = await server.root.context(context)
+      const result = view.entries.findLast((e) => e.kind === 'pi.tool-result')!
+      expect(JSON.stringify(result)).toContain(`Unknown extension action: messages/${action}`)
     }
   } finally {
     await server.vite.watcher.close()
@@ -1065,9 +1060,8 @@ it('keeps sequential and parallel message calls distinct within one codemode scr
     ).toEqual(['script/3', 'script/4'])
     expect(log?.messages.at(-1)).toMatchObject({ text: 'Direct', call: 'm' })
     // The script's nested messages could not end the run; the direct message did, before 'Complete'.
-    const view = await server.root.viewState(context)
-    expect(view.value.entries.at(-1)?.kind).toBe('pi.tool-result')
-    view.dispose()
+    const view = await server.root.context(context)
+    expect(view.entries.at(-1)?.kind).toBe('pi.tool-result')
   } finally {
     await server.vite.watcher.close()
     await server.close()
@@ -1089,13 +1083,9 @@ it('replays interrupted sends once, both before and after memoizing the message 
     await f.opened.root.waitForIdle(context)
     expect((await f.log())!.messages).toMatchObject([{ id: 1, to: 'user', text: 'One item' }])
     expect((await f.log())!.next).toBe(2)
-    const view = await f.opened.root.viewState(context)
-    try {
-      const result = view.value.entries.findLast((e) => e.kind === 'pi.tool-result')!
-      expect(JSON.stringify(result)).toContain('Message 1 sent.')
-    } finally {
-      view.dispose()
-    }
+    const view = await f.opened.root.context(context)
+    const result = view.entries.findLast((e) => e.kind === 'pi.tool-result')!
+    expect(JSON.stringify(result)).toContain('Message 1 sent.')
   }
 })
 it.each([false, true])(
@@ -1184,21 +1174,19 @@ async function submitWithImages(
   return (await submission.status(context)).entry!
 }
 async function placed(f: Awaited<ReturnType<typeof fixture>>, id: number, message: number) {
-  const view = await (await f.opened.harness.conversation(
-    id as ConversationId,
+  const view = await (await f.opened.harness.conversation(id as ConversationId, context))!.context(
     context,
-  ))!.viewState(context)
-  const entry = view.value.entries.find(
+  )
+  const entry = view.entries.find(
     (e) => e.kind === 'board.message' && (e.data as { id: number }).id === message,
   )
-  view.dispose()
   return entry
 }
 const imagesIn = (entry: { model?: readonly { content: unknown }[] } | undefined) => {
   const content = entry?.model?.[0]?.content
   return Array.isArray(content) ? content.filter((p) => p.type === 'image') : []
 }
-it('forwards images from the sender to a message recipient, by latest or entry id', async () => {
+it('forwards images from the sender to a message recipient, by latest in this turn or entry id', async () => {
   const f = await fixture()
   const to = `#${f.recipient.id}`
   await submitWithImages(f, `SEND ${JSON.stringify({ to, text: 'See this', images: 'latest' })}`, 2)
@@ -1208,20 +1196,23 @@ it('forwards images from the sender to a message recipient, by latest or entry i
   const entry = await placed(f, f.recipient.id, first.id)
   expect(entry?.data).toMatchObject({ images: 2 })
   expect(imagesIn(entry)).toEqual([png(0), png(1)])
-  // A later input without images: `latest` still finds the one that has them, and an id names it exactly.
+  // A later input without images (a branch for an unrelated request once carried an old screenshot this way):
+  // `latest` is refused, and only an id forwards the older images.
   await f.send(to, 'Again', { images: 'latest' })
+  expect(f.observed.join('\n')).toContain('found no images in this turn')
   await f.send(to, 'By id', { images: first.images!.entry })
-  await until(async () => (await f.log())!.messages.filter((m) => m.images).length === 3)
-  for (const sent of (await f.log())!.messages.filter((m) => m.images && m.id !== first.id)) {
-    await until(async () => (await placed(f, f.recipient.id, sent.id)) !== undefined)
-    expect(imagesIn(await placed(f, f.recipient.id, sent.id))).toEqual([png(0), png(1)])
-  }
+  await until(async () => (await f.log())!.messages.filter((m) => m.images).length === 2)
+  const messages = (await f.log())!.messages
+  expect(messages.map((m) => m.text)).not.toContain('Again')
+  const byId = messages.find((m) => m.text === 'By id')!
+  await until(async () => (await placed(f, f.recipient.id, byId.id)) !== undefined)
+  expect(imagesIn(await placed(f, f.recipient.id, byId.id))).toEqual([png(0), png(1)])
 })
 it('refuses image references that do not resolve or exceed the limits', async () => {
   const f = await fixture()
   const to = `#${f.recipient.id}`
   await f.send(to, 'None yet', { images: 'latest' })
-  expect(f.observed.join('\n')).toContain('found no entry with images')
+  expect(f.observed.join('\n')).toContain('found no images in this turn')
   await f.send(to, 'Missing', { images: 99999 })
   expect(f.observed.join('\n')).toContain('entry 99999 is not in this conversation')
   const plain = await submitWithImages(f, 'plain', 0)
@@ -1252,7 +1243,7 @@ const result = (images: object[]) => [
     timestamp: Date.now(),
   },
 ]
-it('forwards tool-result images, finds latest past a page, and checks every image', async () => {
+it("forwards tool-result images by id, not an earlier turn's as latest, and checks every image", async () => {
   const f = await fixture()
   const to = `#${f.recipient.id}`
   const write = (model: object[]) =>
@@ -1262,12 +1253,10 @@ it('forwards tool-result images, finds latest past a page, and checks every imag
       context,
     )
   const shot = await write(result([png(7)]))
-  // More plain entries than one scan page: latest still reaches the screenshot.
-  await f.opened.harness.commit(async (tx) => {
-    for (let i = 0; i < 250; i++)
-      await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: 'test.filler' })
-  }, context)
-  await f.send(to, 'Screenshot', { images: 'latest' })
+  // The screenshot came before this input, in an earlier turn: latest refuses it, its id forwards it.
+  await f.send(to, 'Stale', { images: 'latest' })
+  expect(f.observed.join('\n')).toContain('found no images in this turn')
+  await f.send(to, 'Screenshot', { images: shot })
   // The reply reaches the sender before the next send, so it does not steer into that send's run.
   await until(async () => (await f.log())?.messages[1]?.state === 'delivered')
   const message = (await f.log())!.messages[0]
@@ -1297,21 +1286,22 @@ it('forwards tool-result images, finds latest past a page, and checks every imag
   expect(f.observed.join('\n')).toContain(`entry ${elsewhere} is not in this conversation`)
   expect((await f.log())!.messages.filter((m) => m.from === 1)).toHaveLength(1)
 })
-async function branched(f: Awaited<ReturnType<typeof fixture>>) {
+async function branched(f: Awaited<ReturnType<typeof fixture>>, prompt = 'Explore') {
   const tool = (await f.opened.root.agent(context)).deferred.find(
     (candidate) => candidate.name === 'branch',
-  )!
+  )
   await f.opened.harness.commit(async (tx) => {
     ;(await tx.doc(Roots, ROOT_CONVERSATION_ID)).roots = [1]
-    await configure(tx, f.opened.root.id, { modelTools: { add: [tool] } })
+    if (tool) await configure(tx, f.opened.root.id, { modelTools: { add: [tool] } })
   }, context)
   await f.opened.root.submit(
-    { type: 'input', content: 'BRANCH ' + JSON.stringify({ prompt: 'Explore', isolated: false }) },
+    { type: 'input', content: 'BRANCH ' + JSON.stringify({ prompt, isolated: false }) },
     context,
   )
-  await until(async () => (await replies(f)).length === 1)
+  const before = (await replies(f)).length
+  await until(async () => (await replies(f)).length === before + 1)
   await f.opened.root.waitForIdle(context)
-  const id = (await f.log())!.messages[0].to as number
+  const id = (await f.log())!.messages.findLast((m) => m.from === 1)!.to as number
   const branch = (await f.opened.harness.conversation(id as ConversationId, context))!
   await branch.waitForIdle(context)
   const from = async () => (await f.log())!.messages.filter((m) => m.from === id)
@@ -1331,6 +1321,60 @@ async function branched(f: Awaited<ReturnType<typeof fixture>>) {
   await settled()
   return { id, branch, from, later, settled }
 }
+it('lets a branch ask the user directly and leaves passive question and answer notes for @ultimate', async () => {
+  const f = await fixture()
+  const b = await branched(f)
+  const entries = async (kind: string) => {
+    const view = await f.opened.root.context(context)
+    const found = view.entries.filter((entry) => entry.kind === kind)
+    return found
+  }
+  const before = await f.opened.root.context(context)
+  const generations = before.entries.filter((entry) => entry.kind === 'pi.assistant').length
+  await b.later(
+    'SEND ' +
+      JSON.stringify({
+        to: 'user',
+        text: 'Choose the implementation',
+        questions: [{ text: 'Use the smaller change?', kind: 'confirm' }],
+      }),
+  )
+  const question = (await f.log())!.messages.find((m) => m.from === b.id && m.to === 'user')!
+  expect(question).toMatchObject({
+    reply: true,
+    state: 'delivered',
+    questions: [{ kind: 'confirm' }],
+  })
+  await until(async () => (await entries('board.asked')).length === 1)
+  const [asked] = await entries('board.asked')
+  expect(asked.data).toMatchObject({ message: question.id, from: b.id })
+  expect(asked.input).not.toBe(true)
+  expect(JSON.stringify(asked.model)).toContain('Use the smaller change?')
+  expect(
+    (await f.opened.harness.snapshot(LiveDoc, ROOT_CONVERSATION_ID, context))?.run,
+  ).toBeUndefined()
+  const after = await f.opened.root.context(context)
+  expect(after.entries.filter((entry) => entry.kind === 'pi.assistant')).toHaveLength(generations)
+
+  const text = 'Q: Use the smaller change?\nA: Yes'
+  await f.service().answer(question.id, text, context)
+  await until(async () => (await entries('board.answered')).length === 1)
+  await b.settled()
+  const [answered] = await entries('board.answered')
+  expect(answered.data).toMatchObject({ message: question.id, from: b.id })
+  expect(answered.input).not.toBe(true)
+  expect(JSON.stringify(answered.model)).toContain('A: Yes')
+  const reply = (await f.log())!.messages.find((m) => m.from === 'user' && m.re === question.id)!
+  expect(reply).toMatchObject({ to: b.id, text, state: 'answered', entry: expect.any(Number) })
+  expect(f.observed).toContainEqual(expect.stringContaining(`Message from user:\n${text}`))
+  // The user's answer is input, so the branch's final result still reports to its starter.
+  expect((await b.from()).find((m) => m.report)).toMatchObject({
+    to: 1,
+    text: expect.stringContaining('A: Yes'),
+  })
+  expect(await entries('board.asked')).toHaveLength(1)
+  expect(await entries('board.answered')).toHaveLength(1)
+})
 it('forwards images into a new branch with its prompt', async () => {
   const f = await fixture()
   const tool = (await f.opened.root.agent(context)).deferred.find((t) => t.name === 'branch')!
@@ -1358,15 +1402,14 @@ it("routes a branch's later final answer to its starter once, waking it when the
   await f.opened.root.waitForIdle(context)
   const [, routed] = await b.from()
   expect(routed).toMatchObject({ to: 1, text: 'Answer: Landed abc123', reply: false, report: true })
-  const view = await f.opened.root.viewState(context)
-  const input = view.value.entries.find(
+  const view = await f.opened.root.context(context)
+  const input = view.entries.find(
     (e) => e.kind === 'board.message' && (e.data as { id?: number })?.id === routed.id,
   )
   expect([input?.data, input?.input]).toEqual([
     expect.objectContaining({ delivery: 'followUp' }),
     true,
   ])
-  view.dispose()
   expect(f.observed).toContain(
     `Message from #${b.id}:\nAnswer: Landed abc123\nOne-way message: #${b.id} expects no answer, and your answer here is not sent to it. If it needs to hear from you, message it.`,
   )
@@ -1390,18 +1433,15 @@ it("leaves a branch's final answer as a note while its work is under way", async
   const [, routed] = await b.from()
   expect(routed).toMatchObject({ reply: false })
   expect(routed.report).toBeUndefined()
-  const view = await f.opened.root.viewState(context)
-  const note = view.value.entries.find(
+  const view = await f.opened.root.context(context)
+  const note = view.entries.find(
     (e) => e.kind === 'board.message' && (e.data as { id?: number })?.id === routed.id,
   )
   expect([note?.data, note?.input]).toEqual([
     expect.objectContaining({ delivery: 'note' }),
     undefined,
   ])
-  expect(
-    view.value.entries.filter((e) => e.id > note!.id && e.kind === 'pi.assistant'),
-  ).toHaveLength(0)
-  view.dispose()
+  expect(view.entries.filter((e) => e.id > note!.id && e.kind === 'pi.assistant')).toHaveLength(0)
 })
 it('leaves the final answer of a branch its landing concluded as a note, since the landing woke the starter', async () => {
   const f = await fixture()
@@ -1467,13 +1507,68 @@ it("places a branch's one-way message to its starter as a note", async () => {
     'SEND ' + JSON.stringify({ to: '#1', text: 'Progress: scouts running', reply: false }),
   )
   const sent = (await b.from()).find((m) => m.text === 'Progress: scouts running')!
-  const view = await f.opened.root.viewState(context)
-  const note = view.value.entries.find(
+  const view = await f.opened.root.context(context)
+  const note = view.entries.find(
     (e) => e.kind === 'board.message' && (e.data as { id?: number })?.id === sent.id,
   )
   expect(note?.data).toMatchObject({ delivery: 'note' })
   expect(note?.input).toBeUndefined()
-  view.dispose()
+})
+it("routes @ultimate's final answer to a branch's reply back to the branch, once", async () => {
+  // #468703 replied with its decisions; @ultimate's weigh-in, a final answer to that reply, stayed in its own transcript.
+  const f = await fixture()
+  const b = await branched(f, 'Explore, then WEIGH')
+  await until(async () => (await f.log())!.messages.some((m) => m.from === 1 && m.routed))
+  await b.settled()
+  await b.branch.waitForIdle(context)
+  await b.settled()
+  await f.opened.root.waitForIdle(context)
+  await b.settled()
+  const toBranch = (await f.log())!.messages.filter((m) => m.from === 1 && m.to === b.id)
+  expect(toBranch.map((m) => [m.reply, m.routed])).toEqual([
+    [true, undefined],
+    [false, expect.any(Number)],
+  ])
+  expect(toBranch[1].text).toContain('Reply from')
+  // The branch woke, and its answer to the routed weigh-in is an echo: @ultimate's answer to it stays local.
+  expect((await b.from()).map((m) => [m.re, m.report, m.echo])).toEqual([
+    [1, undefined, undefined],
+    [undefined, true, true],
+  ])
+})
+it("routes @ultimate's final answer to every branch whose reply shared its run", async () => {
+  // omarchy-config: #45921's reply started @ultimate's run, #46397's steered into it 14 s later; the weigh-in reached
+  // neither, and both branches waited on it.
+  const f = await fixture()
+  const a = await branched(f)
+  const b = await branched(f)
+  const ask = (to: number, text: string) =>
+    sendMessage(f.host, 1, { to: `#${to}`, text, reply: true }, context, { requestId: `ask:${to}` })
+  await ask(a.id, 'STALL')
+  await until(f.holding)
+  await ask(b.id, 'WEIGH')
+  await until(
+    async () =>
+      (await f.opened.harness.snapshot(InboxDoc, f.opened.root.id, context))!.items.length > 0,
+  )
+  f.hold.release()
+  await until(
+    async () => (await f.log())!.messages.filter((m) => m.from === 1 && m.routed).length === 2,
+  )
+  await b.settled()
+  const routed = (await f.log())!.messages.filter((m) => m.from === 1 && m.routed)
+  expect(new Set(routed.map((m) => m.to))).toEqual(new Set([a.id, b.id]))
+  expect(routed[0].text).toContain(`answers #${a.id} and #${b.id} together`)
+})
+it("marks only a branch's reply as awaiting @ultimate, never a standing agent's", async () => {
+  // life: @google answered @ultimate's question and showed as awaiting @ultimate, which no routed answer ever cleared.
+  const f = await fixture()
+  await f.send(`#${f.recipient.id}`)
+  await until(async () => (await replies(f)).length === 1)
+  const b = await branched(f)
+  const reply = async (id: number) => (await f.log())!.messages.find((m) => m.from === id && m.re)
+  expect((await reply(f.recipient.id))?.awaits).toBeUndefined()
+  expect((await reply(b.id))?.awaits).toBe(true)
 })
 it("does not route an answer to the starter's reply-enabled message", async () => {
   const f = await fixture()
@@ -1540,11 +1635,10 @@ it("routes an answer to the starter's one-way message, waking it for a decision 
   })
   expect(routed.re).toBeUndefined()
   // @ultimate woke and answered; that answer is to a one-way message, so nothing goes back to the branch.
-  const root = await f.opened.root.viewState(context)
-  const input = root.value.entries.find((e) => e.kind === 'board.message' && e.input === true)
+  const root = await f.opened.root.context(context)
+  const input = root.entries.find((e) => e.kind === 'board.message' && e.input === true)
   expect(input?.data).toMatchObject({ id: routed.id, delivery: 'followUp' })
-  expect(root.value.entries.at(-1)?.kind).toBe('pi.assistant')
-  root.dispose()
+  expect(root.entries.at(-1)?.kind).toBe('pi.assistant')
   expect((await f.log())!.messages.filter((m) => m.to === b.id)).toHaveLength(2)
   expect(await b.from()).toHaveLength(2)
 })

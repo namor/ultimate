@@ -1,21 +1,25 @@
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import {
+  cp,
   mkdtemp,
   mkdir,
+  readdir,
   readFile,
   realpath,
   rename,
   rm,
   stat,
+  symlink,
   unlink,
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve as resolvePath } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { setTimeout as sleep } from 'node:timers/promises'
 import type { Context } from '@earendil-works/chord'
-import { Type } from '@earendil-works/pi-ai'
+import { int, obj, opt, str } from '@earendil-works/pi-schema'
+import { strEnum } from '../../lib/schema.ts'
 import type { ConversationId, ToolExecutionApi } from '@earendil-works/pi-durable'
 import { defineExtension, defineTool, section } from '@earendil-works/pi-durable'
 import type { ExtensionAction } from '../../server/actions.ts'
@@ -26,6 +30,7 @@ import { WorkspacesApi } from '../workspaces/api.ts'
 import type { WorkspaceService } from '../workspaces/api.ts'
 import { cleanPreview, sweepPreviews } from './cleanup.ts'
 import { implementAction } from '../../lib/actions.ts'
+import { git, isolatable } from '../../lib/git.ts'
 import { spawnGroup, stopGroup } from '../../lib/process-group.ts'
 import type { Group, GroupProcess } from '../../lib/process-group.ts'
 import { Previews } from '../conversations/api.ts'
@@ -76,13 +81,110 @@ export async function previewModelSetting(
   return DEFAULT_PREVIEW_MODEL
 }
 
+/** What a preview's private user config starts as: copies, symlinks resolved, so its writes never reach the real files. */
+const COPIED = [
+  'settings.json',
+  'model-families.json',
+  'trust.json',
+  'onboarding.json',
+  'secrets.json',
+  'claude-accounts.json',
+  'agents',
+  'skills',
+]
 /**
- * A preview keeps ordinary parent variables, but gets its own host identity, no inherited cloud settings, and
- * `ULTIMATE_MODEL` only when `model` is set.
+ * Shared with the host through a link: user extensions are code the UI never writes (and some find their repository
+ * through their real path), and the Tailscale registry is how every server on the machine picks a distinct port.
+ */
+const LINKED = ['extensions', 'tailscale.json']
+
+/** Seed `<to>/.ultimate` from the user's `<from>/.ultimate`; what the user has not got is left out. */
+export async function seedUserHome(from: string, to: string) {
+  const source = join(from, '.ultimate')
+  const target = join(to, '.ultimate')
+  await mkdir(target, { recursive: true, mode: 0o700 })
+  const missing = (error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw error
+  }
+  for (const name of COPIED)
+    await cp(join(source, name), join(target, name), {
+      recursive: true,
+      dereference: true,
+      errorOnExist: true,
+      force: false,
+    }).catch(missing)
+  // Linked even when missing: the first server to register creates the one registry every server shares.
+  for (const name of LINKED) await symlink(join(source, name), join(target, name))
+}
+
+/**
+ * Make `to` a whole home: every entry of `from` but `.ultimate` is linked back, so logins, caches and dotfiles stay
+ * shared while `~/.ultimate` is the private copy. Entries already there are kept, so it runs on every start.
+ */
+export async function linkHome(from: string, to: string) {
+  for (const name of await readdir(from)) {
+    if (name === '.ultimate') continue
+    await symlink(join(from, name), join(to, name)).catch((error: NodeJS.ErrnoException) => {
+      // Already linked, or a private copy the preview wrote over the link: keep it.
+      if (error.code !== 'EEXIST') throw error
+    })
+  }
+}
+
+/** The branch a preview with this home lands on; it shares the prefix of the preview's workspace branches. */
+export const previewBranch = (home: string) =>
+  `ultimate/${createHash('sha256').update(home).digest('hex').slice(0, 6)}-preview`
+
+/**
+ * Git config for the previewed repository: every push goes to a transport that does not exist (`pushInsteadOf`, which
+ * `--no-verify` cannot skip), and a reference-transaction hook refuses any change to a branch or tag outside the
+ * preview's own `ultimate/<hash>-` branches.
+ */
+export function guardConfig(branch: string) {
+  const own = ` refs/heads/${branch.slice(0, branch.lastIndexOf('-') + 1)}`
+  const refs = `[ "$1" != prepared ] || ! grep -E ' refs/(heads|tags)/' | grep -qvF '${own}' || { echo 'A preview moves only its own branches.' >&2; exit 1; } #`
+  return [
+    '[url "ultimate-preview-never-pushes://"]',
+    '\tpushInsteadOf =',
+    '[hook "ultimate-preview"]',
+    '\tevent = reference-transaction',
+    `\tcommand = "${refs.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`,
+    '',
+  ].join('\n')
+}
+
+/**
+ * `GIT_CONFIG_*` variables after the parent's that include `config` for every git process in repository `common` (its
+ * main checkout and every linked worktree), and in no other, such as the fixtures a check creates.
+ */
+function includeIn(parent: NodeJS.ProcessEnv, common: string, config: string) {
+  let count = Number(parent.GIT_CONFIG_COUNT ?? 0)
+  const env: NodeJS.ProcessEnv = {}
+  for (const pattern of [common, `${common}/`]) {
+    env[`GIT_CONFIG_KEY_${count}`] = `includeIf.gitdir:${pattern}.path`
+    env[`GIT_CONFIG_VALUE_${count++}`] = config
+  }
+  env.GIT_CONFIG_COUNT = String(count)
+  return env
+}
+
+/**
+ * A preview keeps ordinary parent variables, but gets its own host identity, its own home (`HOME` and
+ * `ULTIMATE_USER_HOME`, linked back by `linkHome` so `~` reaches its private `.ultimate` and the shared rest), no
+ * inherited cloud settings, and `ULTIMATE_MODEL` only when `model` is set. In a git project (`git`: its real common
+ * dir, the preview's branch and its `guardConfig`) it never pushes and moves only its own branches; its lander lands on
+ * `ULTIMATE_PREVIEW_BRANCH`.
  */
 export function previewEnv(
   parent: NodeJS.ProcessEnv,
-  options: { home: string; project: string; userHome: string; ownerPid: number; model?: string },
+  options: {
+    home: string
+    project: string
+    userHome: string
+    ownerPid: number
+    model?: string
+    git?: { common: string; branch: string; config: string }
+  },
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...Object.fromEntries(
@@ -94,21 +196,30 @@ export function previewEnv(
             'ULTIMATE_GENERATION',
             'ULTIMATE_PREVIOUS_BUILD',
             'ULTIMATE_HOME',
+            'ULTIMATE_USER_HOME',
             'ULTIMATE_PORT',
             'ULTIMATE_CLOUD_URL',
             'ULTIMATE_CLOUD_TOKEN',
             'ULTIMATE_CLOUD_MACHINE',
             'ULTIMATE_MODEL',
+            'ULTIMATE_PREVIEW_BRANCH',
           ].includes(key),
       ),
     ),
     ULTIMATE_HOME: options.home,
     ULTIMATE_PROJECT: options.project,
     HOME: options.userHome,
+    ULTIMATE_USER_HOME: options.userHome,
     ULTIMATE_PORT: '0',
     ULTIMATE_NO_OPEN: '1',
     ULTIMATE_INSTANCE_OWNER: String(options.ownerPid),
     ...(options.model ? { ULTIMATE_MODEL: options.model } : {}),
+    ...(options.git
+      ? {
+          ULTIMATE_PREVIEW_BRANCH: options.git.branch,
+          ...includeIn(parent, options.git.common, options.git.config),
+        }
+      : {}),
   }
   return env
 }
@@ -253,6 +364,21 @@ export const actions: Record<string, ExtensionAction> = {
  * The workspace a preview of conversation `id` serves: its own, else the nearest owner's (a subagent without an isolate
  * works in its parent's worktree, at any depth); undefined means the host checkout.
  */
+/**
+ * The previewed repository, the branch a preview lands on (created at the project's tip unless a reused home made it
+ * already) and the guard config written into its home; none outside git or before a first commit.
+ */
+async function previewGit(project: string, home: string) {
+  const checkout = await isolatable(project)
+  if ('reason' in checkout) return undefined
+  const branch = previewBranch(home)
+  if (!(await git(project, 'branch', '--list', branch))) await git(project, 'branch', branch)
+  const common = await git(project, 'rev-parse', '--path-format=absolute', '--git-common-dir')
+  const config = join(home, 'preview.gitconfig')
+  await writeFile(config, guardConfig(branch))
+  return { common: await realpath(common), branch, config }
+}
+
 export async function previewWorkspace(
   host: Pick<ExtensionHost, 'harness'>,
   workspaces: Pick<WorkspaceService, 'get'>,
@@ -342,12 +468,17 @@ export default function instanceExtension(
       context.abortSignal?.throwIfAborted()
       // Explicit homes are retained even when their name matches the automatic sweep's prefix.
       if (args.home) await writeFile(join(home, 'instance-preserve'), '')
+      const userHome = join(home, 'user')
+      // A restarted explicit home keeps the config its preview changed.
+      if (!existsSync(userHome)) await seedUserHome(host.userHome, userHome)
+      await linkHome(host.userHome, userHome)
       const env = previewEnv(process.env, {
         home,
         project,
-        userHome: host.userHome,
+        userHome,
         ownerPid: process.pid,
         model: await previewModelSetting(host),
+        git: await previewGit(project, home),
       })
       // No pid file: a preview exits by itself once its owner is gone (ULTIMATE_INSTANCE_OWNER).
       const group = spawnGroup(process.execPath, ['server/main.ts'], {
@@ -500,24 +631,26 @@ export default function instanceExtension(
   return defineExtension({
     name: 'instance',
     sections: [
-      section('test_core_changes', () =>
-        ownSource
-          ? 'Before restarting after core changes, start a second instance, check its API and UI using browser/screenshot, then stop it. An instance runs every agent on the `instance.model` setting (default openai-codex/gpt-6.1-sol, fast) and spends tokens; drive it with real prompts. Instances are temporary and process-local.'
-          : "To check changes to this project's .ultimate/ extensions, agents or settings, start a second instance: it runs this Ultimate with your workspace as its project. Look at it with browser/screenshot, then stop it. It runs every agent on the `instance.model` setting (default openai-codex/gpt-6.1-sol, fast) and spends tokens. It does not run the project's own app.",
-      ),
+      section('test_core_changes', async () => {
+        const model = await previewModelSetting(host)
+        const runs = model
+          ? `every agent on ${model} (the \`instance.model\` setting)`
+          : 'the configured models (`instance.model` is null)'
+        return ownSource
+          ? `Before restarting after core changes, start a second instance, check its API and UI using browser/screenshot, then stop it. An instance runs ${runs} and spends tokens; drive it with real prompts. Instances are temporary and process-local.`
+          : `To check changes to this project's .ultimate/ extensions, agents or settings, start a second instance: it runs this Ultimate with your workspace as its project. Look at it with browser/screenshot, then stop it. It runs ${runs} and spends tokens. It does not run the project's own app.`
+      }),
     ],
     tools: [
       defineTool({
         name: 'instance',
         description:
-          'Start, inspect logs, list or stop isolated standalone Ultimate test servers (maximum three). Defaults to the calling workspace; set subagent to preview an owned child worktree. Instances run every agent on `instance.model` (default openai-codex/gpt-6.1-sol, fast).',
-        parameters: Type.Object({
-          action: Type.Union(
-            ['start', 'stop', 'logs', 'list'].map((action) => Type.Literal(action)),
-          ),
-          id: Type.Optional(Type.String()),
-          home: Type.Optional(Type.String()),
-          subagent: Type.Optional(Type.Integer({ minimum: 1 })),
+          'Start, inspect logs, list or stop isolated standalone Ultimate test servers (maximum three). Defaults to the calling workspace; set subagent to preview an owned child worktree.',
+        parameters: obj({
+          action: strEnum(['start', 'stop', 'logs', 'list']),
+          id: opt(str()),
+          home: opt(str()),
+          subagent: opt(int({ minimum: 1 })),
         }),
         async execute(args, api, context) {
           try {

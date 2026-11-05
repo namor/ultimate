@@ -8,7 +8,7 @@ Use this folder as a project extension under `<project>/.ultimate/extensions/pub
 pnpm install --frozen-lockfile --ignore-scripts --ignore-workspace
 ```
 
-The folder pins `@earendil-works/pi-mcp` to `1.4.0`. Ultimate supplies `pi-ai` and `pi-durable` through its normal extension loader; do not add duplicate copies or package shims.
+The folder pins `@earendil-works/pi-mcp` to `1.4.0`. Ultimate supplies `pi-schema` and `pi-durable` through its normal extension loader; do not add duplicate copies or package shims.
 
 ## Capabilities
 
@@ -45,6 +45,6 @@ node verify.mjs /absolute/path/to/ultimate
 
 The runner uses Ultimate's real Vite configuration, extension-resolution plugin, and `ssrLoadModule`, checks all four tool names, then runs the real Pi HTTP client against mocked HTTP and DNS. No agents, additional models, live providers, or network MCP calls are started. Core tests cover exact payloads/endpoints, absence of auth headers, defaults, bounded text conversion, remote tool errors, independent cancellation cleanup, pending initialize after a completed wrong-id HTTP reply, and URL/DNS security behavior.
 
-Run the same runner from a fresh folder outside the checkout with only this extension and its installed local dependency to verify personal-folder resolution. Plain Node test execution there cannot resolve Ultimate-provided `pi-ai`/`pi-durable`; use the Vite runner rather than installing duplicate packages.
+Run the same runner from a fresh folder outside the checkout with only this extension and its installed local dependency to verify personal-folder resolution. Plain Node test execution there cannot resolve Ultimate-provided `pi-schema`/`pi-durable`; use the Vite runner rather than installing duplicate packages.
 
 References: [Exa MCP official README](https://github.com/exa-labs/exa-mcp-server#readme), [Context7 official README](https://github.com/upstash/context7#readme).
