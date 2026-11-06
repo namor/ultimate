@@ -394,7 +394,7 @@ function globals(
     {
       name: 'entries',
       description:
-        'Newest-first fork-aware stored history, including before resets and compactions. before is an exclusive entry ID. Omits opaque thinking signatures; full: true returns original entries. Readable content and model/effort/usage stay intact.',
+        'Newest-first fork-aware history, even before resets/compactions. before is exclusive. Opaque thinking signatures omitted; full returns originals.',
       signature:
         '(conversationId: number, options?: { kinds?: string[]; limit?: number; before?: number; full?: boolean; project?: string; machine?: string; chapter?: string }): Promise<unknown[]>',
       execute: read('entries', 1),
@@ -402,7 +402,7 @@ function globals(
     {
       name: 'search',
       description:
-        'Case-sensitive substring search over all stored entry JSON, including history before resets and compactions. kinds keeps only those entry kinds. Hits are compact, about 200 characters of the entry JSON around the match; full returns whole entries, or read one with entries(conversation, {before: id + 1, limit: 1, full: true}).',
+        'Case-sensitive substring search of stored entry JSON, even before resets/compactions. kinds filters entry types. Hits include a ~200-character excerpt; full returns originals. Read one with entries(conversation, {before: id + 1, limit: 1, full: true}).',
       signature:
         '(text: string, options?: { conversationId?: number; kinds?: string[]; limit?: number; full?: boolean; project?: string; machine?: string; chapter?: string }): Promise<{ conversation: number; id: number; kind: string; at?: string; excerpt: string }[]>',
       execute: read('search', 1),
