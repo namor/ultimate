@@ -56,6 +56,8 @@ it('answers a decisions card with letters, arrows and Enter', async () => {
     ultimateRoot: resolve('.'),
     projectRoot: resolve('.'),
     userHome: home,
+    // Exercise the built-in card flow without the repository's model and agent policy.
+    localSetup: false,
     home: join(home, 'state'),
     port: 0,
   })
@@ -79,6 +81,9 @@ it('answers a decisions card with letters, arrows and Enter', async () => {
   })
   const ultimate = data.result as ConversationId
   const conversation = (await server.harness.conversation(ultimate, context))!
+  expect((await conversation.agent(context)).model?.provider).toBe(
+    server.host.faux!.getModel().provider,
+  )
   await (await conversation.submit({ type: 'input', content: 'ask' }, context)).wait(context)
   const log = () => server.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context)
   const ask = async () => (await log())?.messages.findLast((m) => m.to === 'user' && m.reply)
@@ -139,6 +144,9 @@ it('answers a decisions card with letters, arrows and Enter', async () => {
   await until(async () => (await answer())!.state === 'answered')
 
   // A fresh card: Accept picks, then a single Enter sends.
+  expect((await conversation.agent(context)).model?.provider).toBe(
+    server.host.faux!.getModel().provider,
+  )
   await (await conversation.submit({ type: 'input', content: 'ask' }, context)).wait(context)
   await until(async () => (await ask())!.id !== asked.id)
   const second = (await ask())!

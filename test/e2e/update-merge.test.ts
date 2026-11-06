@@ -1,6 +1,7 @@
 import { mkdir, realpath, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterAll, expect, it } from 'vitest'
+import { ProjectTrustStore } from '@earendil-works/pi-coding-agent'
 import { ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import { git } from '../../lib/git.ts'
 import { context } from '../../server/harness.ts'
@@ -35,13 +36,21 @@ async function diverged(home: string) {
 }
 
 async function serve(home: string, ultimateRoot: string, projectRoot: string) {
+  // These scripted update checks must not inherit the repository's real model pins.
+  new ProjectTrustStore(join(home, '.ultimate')).set(projectRoot, false)
   const server = await fauxServer({
     ultimateRoot,
     projectRoot,
     home: join(home, 'state'),
     userHome: home,
+    localSetup: false,
   })
   servers.push(server)
+  const { data } = await post(server, '/api/extensions/subagents/actions/standing', {
+    args: { name: 'ultimate' },
+  })
+  const agent = await (await server.harness.conversation(data.result, context))!.agent(context)
+  expect(agent.model?.provider).toBe(server.host.faux!.getModel().provider)
   return server
 }
 
