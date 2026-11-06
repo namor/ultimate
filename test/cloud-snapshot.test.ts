@@ -11,6 +11,8 @@ import { cloudStub, hashKey as project } from './cloud-stub.ts'
 import { temp } from './helpers.ts'
 
 const key = 'github.com/o/project'
+// Short fixture words can occur by chance in the 17 MiB ciphertext checked below.
+const machine = 'snapshot-machine-test'
 const stub = cloudStub()
 const stored = stub.objects
 const remote = { url: 'ws://127.0.0.1:8787', token: 'dev', secret: 'snapshot secret', key }
@@ -102,7 +104,7 @@ beforeAll(async () => {
   progress = []
   manifest = await uploadSnapshot({
     ...remote,
-    machine: 'desk',
+    machine,
     database,
     repo: source,
     progress: (done, total, uploaded) => progress.push([done, total, uploaded]),
@@ -114,7 +116,7 @@ afterAll(() => {
 })
 
 it('round-trips the database and fetches branches without force, keeping conflicting ones aside', async () => {
-  expect(manifest).toMatchObject({ key, machine: 'desk', database: { chunks: 2 } })
+  expect(manifest).toMatchObject({ key, machine, database: { chunks: 2 } })
   expect(manifest.bundle?.chunks).toBe(1)
   expect(await contentHash(database)).toBe(manifest.database.sha256)
   expect(progress.at(-1)).toEqual([
@@ -172,7 +174,7 @@ it('stores only ciphertext in R2', () => {
   )
   for (const bytes of stored.values()) {
     const text = Buffer.from(bytes)
-    for (const plain of ['SQLite format 3', 'git bundle', key, manifest.id, 'desk'])
+    for (const plain of ['SQLite format 3', 'git bundle', key, manifest.id, machine])
       expect(text.includes(plain)).toBe(false)
     expect(() => JSON.parse(text.toString())).toThrow(SyntaxError)
   }
@@ -286,7 +288,7 @@ it('never carries provider logins or secrets that sit next to the database', asy
   await git(repo, 'init', '-b', 'main')
   const uploaded = await uploadSnapshot({
     ...remote,
-    machine: 'desk',
+    machine,
     database: path,
     repo,
   })
@@ -322,7 +324,7 @@ it('carries a branch checked out in a source worktree, with commits of its own, 
   new DatabaseSync(path).close()
   const uploaded = await uploadSnapshot({
     ...remote,
-    machine: 'desk',
+    machine,
     database: path,
     repo,
   })

@@ -1,8 +1,8 @@
 import { fauxProvider } from '@earendil-works/pi-ai/providers/faux'
 import { cp, mkdir, readdir, readFile, writeFile, access, realpath, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
-import { ProjectTrustStore } from '@earendil-works/pi-coding-agent'
 import { obj } from '@earendil-works/pi-schema'
+import { ProjectTrustStore } from '@earendil-works/pi-coding-agent'
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux'
 import type { FauxResponseFactory } from '@earendil-works/pi-ai/providers/faux'
 import {
@@ -275,12 +275,15 @@ async function holdGit(path: string, command: string, fail = false) {
     `#!/bin/sh
 cat >/dev/null
 [ "$1" = prepared ] && [ ! -f '${started}' ] || exit 0
-# Apple's Git worktree delegates ref updates to git branch; inspect that parent too, never unrelated processes.
-matched=no
-for pid in "$PPID" "$(ps -p "$PPID" -o ppid=)"; do
-  case "$(ps -ww -p "$pid" -o args=)" in "git ${command} "*|*/"git ${command} "*) matched=yes; break ;; esac
-done
-[ "$matched" = yes ] || exit 0
+# Older Git creates the worktree's branch in a child; follow only that known Git parent.
+parent=$PPID
+if [ '${command}' = worktree ]; then
+  case "$(ps -ww -p "$parent" -o args=)" in
+    "git branch "*|*/"git branch "*) parent=$(ps -ww -p "$parent" -o ppid= | tr -d ' ') ;;
+  esac
+fi
+# macOS's launcher resolves Git to an absolute path.
+case "$(ps -ww -p "$parent" -o args=)" in "git ${command} "*|*/"git ${command} "*) ;; *) exit 0 ;; esac
 mkfifo '${gate}'
 touch '${started}'
 read release < '${gate}'

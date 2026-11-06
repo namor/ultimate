@@ -5,8 +5,9 @@ import { fauxAssistantMessage } from '@earendil-works/pi-ai/providers/faux'
 import { chromium } from 'playwright-core'
 import { afterEach, expect, it } from 'vitest'
 import { browserBinary } from '../../extensions/browser/server.ts'
+import { context as harnessContext } from '../../server/harness.ts'
 import { maxImageBytes } from '../../shared/protocol.ts'
-import { fauxServer, removeTemp, temp, until } from '../helpers.ts'
+import { fauxServer, post, removeTemp, temp, until } from '../helpers.ts'
 
 const cleanup: (() => Promise<void>)[] = []
 afterEach(async () => {
@@ -20,6 +21,7 @@ it('resizes a pasted image over the limit and sends it', async () => {
     ultimateRoot: resolve('.'),
     projectRoot: resolve('.'),
     userHome: home,
+    localSetup: false,
     home: join(home, 'state'),
     port: 0,
   })
@@ -40,7 +42,14 @@ it('resizes a pasted image over the limit and sends it', async () => {
   })
   cleanup.push(() => browser.close())
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
-  await page.goto(server.url)
+  const { data: standing } = await post(server, '/api/extensions/subagents/actions/standing', {
+    args: { name: 'ultimate' },
+  })
+  const agent = await (await server.harness.conversation(standing.result, harnessContext))!.agent(
+    harnessContext,
+  )
+  expect(agent.model?.provider).toBe(server.host.faux!.getModel().provider)
+  await page.goto(`${server.url}/?conversation=${standing.result}`)
   const editor = page.locator('#app [data-ui="composer"] textarea')
   await editor.waitFor()
   // A 3000×2400 PNG of noise: far over 2 MiB, as a phone photo or 5K screenshot would be. It takes a while to make,

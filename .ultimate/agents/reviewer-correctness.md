@@ -1,7 +1,7 @@
 ---
 name: reviewer-correctness
 description: Correctness, security and regressions review of an immutable commit range.
-family: review
+family: fast
 tools: [read, bash]
 ---
 

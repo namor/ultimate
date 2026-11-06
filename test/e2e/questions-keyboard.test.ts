@@ -57,6 +57,8 @@ async function openCard() {
     ultimateRoot: resolve('.'),
     projectRoot: resolve('.'),
     userHome: home,
+    // Exercise the built-in card flow without the repository's model and agent policy.
+    localSetup: false,
     home: join(home, 'state'),
     port: 0,
   })
@@ -80,6 +82,9 @@ async function openCard() {
   })
   const ultimate = data.result as ConversationId
   const conversation = (await server.harness.conversation(ultimate, context))!
+  expect((await conversation.agent(context)).model?.provider).toBe(
+    server.host.faux!.getModel().provider,
+  )
   await (await conversation.submit({ type: 'input', content: 'ask' }, context)).wait(context)
   const log = () => server.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context)
   const ask = async () => (await log())?.messages.findLast((m) => m.to === 'user' && m.reply)

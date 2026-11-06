@@ -9,6 +9,7 @@ import { fauxAssistantMessage } from '@earendil-works/pi-ai/providers/faux'
 import { chromium } from 'playwright-core'
 import { afterEach, expect, it } from 'vitest'
 import { browserBinary } from '../../extensions/browser/server.ts'
+import { context } from '../../server/harness.ts'
 import { fauxServer, post, removeTemp, temp, until } from '../helpers.ts'
 
 const cleanup: (() => Promise<void>)[] = []
@@ -29,6 +30,7 @@ it('attaches an image picked with the paperclip and sends it', async () => {
     ultimateRoot: resolve('.'),
     projectRoot: resolve('.'),
     userHome: home,
+    localSetup: false,
     home: join(home, 'state'),
     port: 0,
   })
@@ -52,6 +54,8 @@ it('attaches an image picked with the paperclip and sends it', async () => {
   const { data } = await post(server, '/api/extensions/subagents/actions/standing', {
     args: { name: 'ultimate' },
   })
+  const agent = await (await server.harness.conversation(data.result, context))!.agent(context)
+  expect(agent.model?.provider).toBe(server.host.faux!.getModel().provider)
   await page.goto(`${server.url}/?conversation=${data.result}`)
   const editor = page.locator(
     `#app [data-ui="composer"] textarea[data-conversation="${data.result}"]`,
@@ -76,6 +80,7 @@ it('uploads a PDF picked with the paperclip and sends its path, not its bytes', 
     ultimateRoot: resolve('.'),
     projectRoot: resolve('.'),
     userHome: home,
+    localSetup: false,
     home: join(home, 'state'),
     port: 0,
   })
@@ -97,6 +102,8 @@ it('uploads a PDF picked with the paperclip and sends its path, not its bytes', 
   const { data } = await post(server, '/api/extensions/subagents/actions/standing', {
     args: { name: 'ultimate' },
   })
+  const agent = await (await server.harness.conversation(data.result, context))!.agent(context)
+  expect(agent.model?.provider).toBe(server.host.faux!.getModel().provider)
   await page.goto(`${server.url}/?conversation=${data.result}`)
   const editor = page.locator(
     `#app [data-ui="composer"] textarea[data-conversation="${data.result}"]`,
