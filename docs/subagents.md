@@ -19,11 +19,9 @@ boundary. A missing contract calls for a bounded probe; a repeated failure calls
 build requests do not require another assessment permission loop. Use `design-checkpoint` for meaningful design
 uncertainty or an explicitly requested full EGM audit; ordinary features do not require it.
 
-Use the existing `start` call's `family` or `model` and `thinking` on named or ad hoc agents. Respect models and effort explicitly pinned for the task; otherwise explicitly select `thinking: 'medium'` for bounded discovery, implementation or review and
-`thinking: 'high'` for a named unresolved risk or high-risk review. Omitted effort can inherit the parent's setting.
-Pass a required model pin explicitly at start so an unavailable model fails instead of falling back. Check the returned
-model and available configuration evidence; unknown actual effort remains unknown. Stop and report a pin mismatch. This policy does not
-change global defaults or authorize replacing user pins.
+Use the existing `start` call's `family` or `model` and `thinking` on named or ad hoc agents. Follow
+[the coordinator's delegation policy](../agents/coordinator.md#delegation) for configured family defaults,
+task-specific effort, required pins and returned-identity checks; do not change global defaults or replace user pins.
 
 Briefs name the source revision, acceptance criteria, unresolved questions and source/check references rather than
 copying the transcript. Keep one behavior contract and its test obligations. Summaries are navigation aids, not proof;
