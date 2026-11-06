@@ -4,9 +4,12 @@
   },
   "modelFamilies": {
     "families": {
-      "lead": { "model": "claude-code/claude-opus-5-5", "thinking": "high", "color": "orange" },
+      "default": { "model": "openai-codex/gpt-6.1-sol", "thinking": "medium" },
+      "lead": { "model": "openai-codex/gpt-6.1-sol", "thinking": "xhigh", "color": "orange" },
       "review": { "model": "openai-codex/gpt-6-astra", "thinking": "high" },
-      "fast": { "model": "openai-codex/gpt-6.1-sol" }
+      "fast": { "model": "openai-codex/gpt-6.1-sol", "thinking": "high" },
+      "tiny": { "model": "openai-codex/gpt-6-luna", "thinking": "low" },
+      "design": { "model": "openai-codex/gpt-6.1-sol", "thinking": "high" }
     },
     "assign": {
       "preview": "fast"
