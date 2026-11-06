@@ -2,11 +2,12 @@ import assert from 'node:assert/strict'
 import dns from 'node:dns/promises'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
+import type { ToolRegistration } from '@earendil-works/pi-durable'
 import publicDocs from './server.ts'
 
 const exa = 'https://mcp.exa.ai/mcp?tools=web_search_exa,web_fetch_exa'
 const context7 = 'https://mcp.context7.com/mcp'
-const tools = publicDocs().tools!
+const tools: readonly ToolRegistration[] = publicDocs().tools!
 const failed = {
   isError: true,
   output: [{ type: 'text', text: 'Public documentation read failed.' }],
@@ -57,7 +58,7 @@ function lookup(t: TestContext, addresses: string[] | Error = ['93.184.215.14'])
 }
 
 async function run(index: number, args: Record<string, unknown>, signal?: AbortSignal) {
-  return tools[index].execute(args as never, {} as never, { abortSignal: signal } as never)
+  return tools[index].execute(args, {} as never, { abortSignal: signal } as never)
 }
 
 await test('four native tools use real Pi HTTP with exact endpoints/payloads and bounded text conversion', async (t) => {
