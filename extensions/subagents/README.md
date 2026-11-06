@@ -77,7 +77,7 @@ Coordinator behaviour lives in `agents/coordinator.md`, which branches run with;
 
 ### Review team
 
-The shipped `reviewer` reviews alone on the `review` family. For a team, add `reviewer-<name>.md` definitions: when any exist, the shipped `reviewer` leads them instead. It starts every one in parallel, only relays and merges, and returns one verdict, like this repository's `.ultimate/agents/reviewer-*.md`. Leaves need tools within the lead's (`read`, `bash`, `subagent`). Add a reviewer by copying a `reviewer-*` file under a new `reviewer-<name>` with another model; definitions are reread on every start, so no restart is needed.
+The shipped `reviewer` reviews on the `review` family and owns one verdict. `reviewer-<name>.md` definitions, like this repository's `.ultimate/agents/reviewer-*.md`, form a catalog of specialties: the lead selects one only for a named uncovered hazard and inspects its evidence. Installing definitions does not launch them all. First final review is independent; repairs return to the same reviewer with the new immutable range and affected checks. Leaves need tools within the lead's (`read`, `bash`, `subagent`). Add a specialty by copying a `reviewer-*` file under a new `reviewer-<name>`; definitions are reread on every start, so no restart is needed. See `docs/subagents.md` for risk screening, effort selection and evidence handling.
 
 ## History forks
 

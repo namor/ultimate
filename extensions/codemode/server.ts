@@ -180,9 +180,30 @@ function localReads(host: ExtensionHost, context: Context) {
     }
   return {
     conversations: history('conversations', 0, () => listed()),
-    entries: history('entries', 1, ([conversation, options]) =>
-      entries(conversation, options as Parameters<typeof entries>[1]),
-    ),
+    entries: async (args) => {
+      const found = (await history('entries', 1, ([conversation, options]) =>
+        entries(conversation, options as Parameters<typeof entries>[1]),
+      )(args)) as EntryRecord[]
+      if ((args[1] as { full?: boolean } | undefined)?.full) return found
+      // Provider replay payloads swamped history reads (#40988/41113); keep them in storage and in explicit full reads.
+      return found.map((entry) => ({
+        ...entry,
+        ...(entry.model && {
+          model: entry.model.map((message) =>
+            message.role === 'assistant'
+              ? {
+                  ...message,
+                  content: message.content.map((block) => {
+                    if (block.type !== 'thinking') return block
+                    const { thinkingSignature: _signature, ...content } = block
+                    return content
+                  }),
+                }
+              : message,
+          ),
+        }),
+      }))
+    },
     search: history('search', 1, ([text, options]) => search(text, options as SearchOptions)),
     trace: ([query]) => host.trace.query(query ?? {}),
     traceTree: ([traceId]) => {
@@ -373,15 +394,15 @@ function globals(
     {
       name: 'entries',
       description:
-        'Newest-first fork-aware stored history, including before resets and compactions. before is an exclusive entry ID.',
+        'Newest-first fork-aware history, even before resets/compactions. before is exclusive. Opaque thinking signatures omitted; full returns originals.',
       signature:
-        '(conversationId: number, options?: { kinds?: string[]; limit?: number; before?: number; project?: string; machine?: string; chapter?: string }): Promise<unknown[]>',
+        '(conversationId: number, options?: { kinds?: string[]; limit?: number; before?: number; full?: boolean; project?: string; machine?: string; chapter?: string }): Promise<unknown[]>',
       execute: read('entries', 1),
     },
     {
       name: 'search',
       description:
-        'Case-sensitive substring search over all stored entry JSON, including history before resets and compactions. kinds keeps only those entry kinds. Hits are compact, about 200 characters of the entry JSON around the match; full returns whole entries, or read one with entries(conversation, {before: id + 1, limit: 1}).',
+        'Case-sensitive substring search of stored entry JSON, even before resets/compactions. kinds filters entry types. Hits include a ~200-character excerpt; full returns originals. Read one with entries(conversation, {before: id + 1, limit: 1, full: true}).',
       signature:
         '(text: string, options?: { conversationId?: number; kinds?: string[]; limit?: number; full?: boolean; project?: string; machine?: string; chapter?: string }): Promise<{ conversation: number; id: number; kind: string; at?: string; excerpt: string }[]>',
       execute: read('search', 1),

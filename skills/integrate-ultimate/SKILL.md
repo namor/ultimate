@@ -45,7 +45,7 @@ Map the findings to Ultimate's building blocks:
 | A long-running process (dev server, render) | a server facet that manages a child process and cleans up `onClose`           |
 | An API key                                  | declare it with `secrets` and read it server-side only                        |
 | Recurring work                              | `automations`                                                                 |
-| Review by several models, one verdict       | a review team in `agents/` (see "Review team and lander")                     |
+| One review verdict, specialists as needed   | review specialties in `agents/` (see "Review team and lander")                |
 | Checks and a push on every landing          | `lander` settings, optionally a `lander` agent (see "Review team and lander") |
 | Which built-ins are on                      | `.ultimate/settings.json` `extensions.enable`                                 |
 
@@ -61,17 +61,18 @@ Ask the user to choose, offering defaults. Ask only questions whose answers chan
 
 ## Review team and lander
 
-Both work without setup: the shipped `reviewer` reviews alone on the review model family, or leads any `reviewer-*`
-definitions, and `workspace submit` merges and
+Both work without setup: the shipped `reviewer` owns one verdict on the review model family and selects a
+`reviewer-*` specialist only for a named uncovered hazard; `workspace submit` merges and
 fast-forwards with no checks and no push. Ultimate's own clone is the working example: the `adopt-ultimate-setup` skill
 tours its `.ultimate/` and adapts the chosen pieces (models, checks, review focus) to the project.
 Worker reports and submissions state divergence from the task as given (agreements, approach, scope), or "None";
 `workspace submit` requires that `divergence` string, and lander reports distinguish any additional changes.
 
-- **Review team:** agent definitions, so it can live in `<project>/.ultimate/agents/` or, for every project, in
-  `~/.ultimate/agents/` (a project's file wins by name). Add one `reviewer-<name>.md` per reviewer; the shipped
-  `reviewer` then starts them all in parallel and merges their reports, so never override `reviewer` itself. Each runs on a different model the
-  user is logged in to (a model family, ⌘K Model families…, or a `model` pin) and named after what it checks (`reviewer-correctness.md`, `reviewer-simplicity.md`,
+- **Review specialties:** agent definitions, so they can live in `<project>/.ultimate/agents/` or, for every project, in
+  `~/.ultimate/agents/` (a project's file wins by name). Add one `reviewer-<name>.md` per specialty; the shipped
+  `reviewer` treats them as a catalog, selects by an uncovered question and verifies their evidence, so never override
+  `reviewer` itself. Installing a specialty does not require launching it. Use models the user is logged in to
+  (a model family, ⌘K Model families…, or a `model` pin) and name each after what it checks (`reviewer-correctness.md`, `reviewer-simplicity.md`,
   `reviewer-architecture.md`). Details: "Review team" in
   `extensions/subagents/README.md`.
 - **Project tools or settings for a built-in agent** (@ultimate, the coordinator): never copy its definition. Add

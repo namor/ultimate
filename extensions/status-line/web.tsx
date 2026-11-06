@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   api,
   cn,
@@ -16,14 +17,15 @@ import {
   useSystem,
   useDoc,
   useTranscript,
+  useAction,
 } from '@/sdk'
 import type { AssistantMessage, EntryRecord, Usage } from '@/sdk'
 import { useWorkspaces } from '../workspaces/ui.tsx'
 import { ContextDoc } from '../conversations/ui.tsx'
 import { lastAssistant, promptTokens as prompt } from '../../lib/context-usage.ts'
 import { usageTotals } from './context.ts'
-import { RatesAction } from './refs.ts'
-import type { RateSample } from './refs.ts'
+import { RatesAction, UsageAction } from './refs.ts'
+import type { RateSample, UsageFigures } from './refs.ts'
 import { responseAfter, turnOf } from './turns.ts'
 
 /** A status-line item with a tooltip of details. */
@@ -233,6 +235,112 @@ function ModelRow({ label, bucket }: { label: string; bucket: Usage }) {
   )
 }
 
+const counted = (value: number | null) => (value === null ? '?' : formatTokens(value))
+
+function UsageValues({ value }: { value: UsageFigures }) {
+  return (
+    <span className="tabular-nums">
+      ↑{counted(value.input)} ↓{counted(value.output)} R{counted(value.cacheRead)} W
+      {counted(value.cacheWrite)} ${value.cost === null ? '?' : value.cost.toFixed(3)}
+    </span>
+  )
+}
+
+/** A checkpoint is fetched only when opened or refreshed; it adds no background polling or usage storage. */
+function TaskUsage() {
+  const { id } = useConversation()
+  const [open, setOpen] = useState(false)
+  const { data, error, loading, refetch } = useAction(
+    UsageAction,
+    { conversation: id },
+    {
+      enabled: open && id !== undefined,
+    },
+  )
+  if (id === undefined) return null
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="rounded-sm px-1 hover:bg-accent hover:text-foreground"
+          aria-label="Show usage for this conversation and its subagents"
+        >
+          task usage
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        side="top"
+        className="max-h-[70vh] w-[34rem] max-w-[calc(100vw-1rem)] overflow-auto p-3 font-mono text-[11px]"
+      >
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <span className="font-medium">#{id} and owned subagents</span>
+          <button
+            type="button"
+            disabled={loading}
+            className="rounded-sm px-1 hover:bg-accent disabled:opacity-50"
+            onClick={refetch}
+          >
+            {loading ? 'Reading…' : 'Refresh'}
+          </button>
+        </div>
+        {error ? (
+          <p className="text-error">Usage unavailable. Refresh to retry.</p>
+        ) : (
+          data && (
+            <>
+              <UsageValues value={data.totals} />
+              <p className="mt-1 text-muted-foreground">
+                {data.conversations.length}{' '}
+                {data.conversations.length === 1 ? 'conversation' : 'conversations'} · observed{' '}
+                {formatTime(data.observedAt, true)} · ? unknown
+              </p>
+              <div className="my-3 space-y-2 border-y py-2">
+                {data.conversations.map((row) => (
+                  <div key={row.id} className="flex flex-wrap justify-between gap-x-3 gap-y-1">
+                    <span className="min-w-0 truncate" title={row.title}>
+                      #{row.id}
+                      {row.label ? ` · ${row.label}` : ''}
+                    </span>
+                    <UsageValues value={row.totals} />
+                  </div>
+                ))}
+              </div>
+              <details>
+                <summary className="cursor-pointer">Model and tool buckets</summary>
+                {(['models', 'tools'] as const).flatMap((kind) =>
+                  Object.entries(data[kind]).map(([name, value]) => (
+                    <div key={`${kind}/${name}`} className="mt-2">
+                      <div className="break-all text-muted-foreground">
+                        {kind === 'tools' ? 'tool ' : ''}
+                        {name}
+                      </div>
+                      <UsageValues value={value} />
+                      <div className="text-muted-foreground">
+                        Reasoning {counted(value.reasoning)} · 1h cache write{' '}
+                        {counted(value.cacheWrite1h)}
+                      </div>
+                    </div>
+                  )),
+                )}
+              </details>
+              <details className="mt-2 text-muted-foreground">
+                <summary className="cursor-pointer">Coverage and limits</summary>
+                {data.coverage.map((line) => (
+                  <p key={line} className="mt-2">
+                    {line}
+                  </p>
+                ))}
+              </details>
+            </>
+          )
+        )}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function Context() {
   const { tokens: used, window, percent, estimated } = useDoc(ContextDoc) ?? {}
   if (!window) return null
@@ -369,7 +477,7 @@ function Connection() {
 export default defineWebExtension({
   messageDetails: [MessageUsage],
   slots: {
-    'composer.status': [Cwd, Tokens, Context],
+    'composer.status': [Cwd, Tokens, TaskUsage, Context],
     'statusline.left': [GlobalUsage],
     'statusline.right': [{ component: Connection, phone: true }],
   },

@@ -12,6 +12,8 @@ Every built-in is already on; this setup adds how the repository is landed and r
 
 ## Model policy
 
+`fastModels` requests the priority tier for Sol, Astra and Luna across conversations, subagents and summaries. Fast mode increases usage costs; it does not change reasoning effort.
+
 The standing @ultimate uses GPT-6.1 Sol at high effort for routing and recorded status.
 Tiny helpers remain Luna at low effort. Coordinators retain task ownership on GPT-6.1 Sol at extra-high effort. Optional workers,
 designers and early design readers use Sol at high effort; a named difficult or sensitive question uses Sol at

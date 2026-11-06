@@ -4,12 +4,31 @@
   },
   "modelFamilies": {
     "families": {
-      "default": { "model": "openai-codex/gpt-6.1-sol", "thinking": "medium" },
-      "lead": { "model": "openai-codex/gpt-6.1-sol", "thinking": "xhigh", "color": "orange" },
-      "review": { "model": "openai-codex/gpt-6-astra", "thinking": "high" },
-      "fast": { "model": "openai-codex/gpt-6.1-sol", "thinking": "high" },
-      "tiny": { "model": "openai-codex/gpt-6-luna", "thinking": "low" },
-      "design": { "model": "openai-codex/gpt-6.1-sol", "thinking": "high" }
+      "default": {
+        "model": "openai-codex/gpt-6.1-sol",
+        "thinking": "medium"
+      },
+      "lead": {
+        "model": "openai-codex/gpt-6.1-sol",
+        "thinking": "xhigh",
+        "color": "orange"
+      },
+      "review": {
+        "model": "openai-codex/gpt-6-astra",
+        "thinking": "high"
+      },
+      "fast": {
+        "model": "openai-codex/gpt-6.1-sol",
+        "thinking": "high"
+      },
+      "tiny": {
+        "model": "openai-codex/gpt-6-luna",
+        "thinking": "low"
+      },
+      "design": {
+        "model": "openai-codex/gpt-6.1-sol",
+        "thinking": "high"
+      }
     },
     "assign": {
       "preview": "fast"
@@ -22,12 +41,22 @@
   },
   "lander": {
     "checks": [
-      { "command": "pnpm check", "timeout": 120 },
+      {
+        "command": "pnpm check",
+        "timeout": 120
+      },
       [
-        { "command": "pnpm test", "timeout": 180 },
-        { "command": "pnpm test:e2e", "timeout": 180 }
+        {
+          "command": "pnpm test",
+          "timeout": 180
+        },
+        {
+          "command": "pnpm test:e2e",
+          "timeout": 180
+        }
       ]
     ],
     "push": "origin"
-  }
+  },
+  "fastModels": ["openai-codex/gpt-6.1-sol", "openai-codex/gpt-6-astra", "openai-codex/gpt-6-luna"]
 }

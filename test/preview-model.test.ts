@@ -13,6 +13,7 @@ import {
   previewModelSetting,
 } from '../extensions/instance/server.ts'
 import { temp } from './helpers.ts'
+import { summaryModelStatus } from '../extensions/conversations/summary-model.ts'
 
 afterEach(() => vi.unstubAllEnvs())
 
@@ -74,4 +75,19 @@ it('reads instance.model project over user, defaults to Sol and turns off with n
   const options = { home: '/h', project: '/p', userHome: '/u', ownerPid: 1 }
   expect(previewEnv({ ULTIMATE_MODEL: 'a/b' }, options)).not.toHaveProperty('ULTIMATE_MODEL')
   expect(previewEnv({}, { ...options, model: 'a/b' }).ULTIMATE_MODEL).toBe('a/b')
+})
+
+it('does not replace an unavailable preview summary model with a paid API model', async () => {
+  const runtime = await ModelRuntime.create()
+  const paid = runtime.getModel('openai', 'gpt-6-luna')!
+  expect(paid).toBeDefined()
+  vi.stubEnv('ULTIMATE_MODEL', DEFAULT_PREVIEW_MODEL)
+  const status = await summaryModelStatus({
+    userHome: await temp('ultimate-preview-summary-'),
+    projectSettings: async () => ({}),
+    notice: () => {},
+    modelRuntime: { getAvailableSnapshot: () => [paid] },
+  })
+  expect(status).toMatchObject({ configured: DEFAULT_PREVIEW_MODEL, problem: 'unavailable' })
+  expect(status.model).toBeUndefined()
 })

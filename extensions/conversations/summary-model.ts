@@ -137,7 +137,8 @@ export async function summaryModelStatus(host: SummaryModelHost): Promise<Summar
       configured,
       source,
     }
-  const fallback = source === 'default' ? fallbackModel(available) : undefined
+  // A preview's explicit model must not fall back to another provider (#43462).
+  const fallback = !preview && source === 'default' ? fallbackModel(available) : undefined
   if (!fallback) return { configured, source, problem: 'unavailable' }
   once(
     host,
