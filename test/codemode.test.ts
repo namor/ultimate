@@ -178,25 +178,21 @@ async function run(
   ])
   await server.root.submit({ type: 'input', content: prompt }, context)
   await server.harness.waitForIdle(context)
-  const state = await server.root.viewState(context)
-  try {
-    const entry = state.value.entries.findLast((item) => item.kind === 'pi.tool-result')!
-    return {
-      text: JSON.stringify(entry.model?.[0]?.role === 'toolResult' ? entry.model[0].content : []),
-      data: entry.model![0] as unknown as {
-        details: {
-          calls: { name: string; status: string; ms: number }[]
-          value?: unknown
-          error?: string
-          yielded?: boolean
-          pendingSubagents?: { conversationId: number; background?: boolean }[]
-          subagentAnswers?: number[]
-        }
-        isError: boolean
-      },
-    }
-  } finally {
-    state.dispose()
+  const state = await server.root.context(context)
+  const entry = state.entries.findLast((item) => item.kind === 'pi.tool-result')!
+  return {
+    text: JSON.stringify(entry.model?.[0]?.role === 'toolResult' ? entry.model[0].content : []),
+    data: entry.model![0] as unknown as {
+      details: {
+        calls: { name: string; status: string; ms: number }[]
+        value?: unknown
+        error?: string
+        yielded?: boolean
+        pendingSubagents?: { conversationId: number; background?: boolean }[]
+        subagentAnswers?: number[]
+      }
+      isError: boolean
+    },
   }
 }
 
