@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
-import { Type } from '@earendil-works/pi-ai'
+import { obj, str } from '@earendil-works/pi-schema'
 import { defineExtension, defineTool, section } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../../server/extensions.ts'
 import type { ActionContext } from '../../../server/actions.ts'
@@ -71,10 +71,7 @@ export default function cursorTask(host: ExtensionHost) {
         replay: 'unsafe',
         description:
           'Delegate a self-contained coding task to fresh autonomous Cursor Grok 4.6 Extra High (fast=false), using its native tools and normal user access, NOT an OS sandbox. Starts from committed HEAD in a detached worktree; excludes uncommitted source changes. No automatic commit, landing or push. Waits for completion/cleanup and returns artifact paths; one active task per host, 10 minute deadline. Existing Cursor login required; no new authentication authorized.',
-        parameters: Type.Object(
-          { task: Type.String({ minLength: 1, maxLength: 8000 }) },
-          { additionalProperties: false },
-        ),
+        parameters: obj({ task: str({ minLength: 1, maxLength: 8000 }) }, { open: false }),
         async execute(args, api, context) {
           if (processState.active) throw new Error('A Cursor task is already active on this host')
           if (!args.task.trim()) throw new Error('Task must not be blank')
