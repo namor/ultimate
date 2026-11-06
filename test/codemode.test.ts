@@ -747,6 +747,49 @@ it('reads stored history and documents from before a reset', async () => {
   expect((result.data.details.value as { old: number }).old).toBeGreaterThan(0)
 })
 
+it('keeps history readable within the output budget without changing stored replay signatures', async () => {
+  const { server } = await fixture()
+  const signature = 'opaque-replay-payload'.repeat(3000)
+  const message = fauxAssistantMessage([
+    { type: 'thinking', thinking: 'Check the boundary.', thinkingSignature: signature },
+    { type: 'text', text: 'Verified.', textSignature: 'text-metadata' },
+    fauxToolCall('read', { path: 'example.ts', thinkingSignature: 'user data' }),
+  ])
+  const entry = await server.harness.commit(
+    (tx) => tx.appendEntry(server.root.id, { kind: 'pi.assistant', model: [message] }),
+    context,
+  )
+  const options = { kinds: ['pi.assistant'], before: entry.id + 1, limit: 1 }
+  const compact = await run(
+    server,
+    `return await ultimate.entries(${server.root.id}, ${JSON.stringify(options)});`,
+  )
+  expect(compact.data.isError).toBe(false)
+  expect(compact.text).not.toContain('[Output truncated]')
+  expect(compact.data.details.value).toEqual([
+    {
+      ...entry,
+      model: [
+        {
+          ...message,
+          content: [
+            { type: 'thinking', thinking: 'Check the boundary.' },
+            message.content[1],
+            message.content[2],
+          ],
+        },
+      ],
+    },
+  ])
+  // The same action serves cross-project reads; full access and provider replay retain the original record.
+  const full = await post(server, '/api/extensions/codemode/actions/read', {
+    args: { op: 'entries', args: [server.root.id, { ...options, full: true }] },
+  })
+  expect(full.data).toEqual({ result: [entry] })
+  const stored = await server.root.entries({ maxEntryId: entry.id }, 1, undefined, context)
+  expect(stored.items).toEqual([entry])
+})
+
 it('searches compactly by default, filters kinds, and returns whole entries with full', async () => {
   const { server } = await fixture()
   await run(server, `return 1;`, `kinds-needle ${'padding '.repeat(500)}`)
