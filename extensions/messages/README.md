@@ -69,18 +69,21 @@ conversation that started you is a note, and stopping with nothing under way is 
 - **Everything else wakes.** Reply-enabled messages, and one-way messages from anyone who is not the recipient's
   child or branch (another branch, an automation's escalation, another project's Ultimate), are inputs.
 - **Answers back down.** The primary agent's runs get a `board.route` task too (`down`). When every input of the run
-  was a reply or one-way message (a report) from one branch it started, the branch is not concluded and the run sent
-  that branch no message, its final answer goes to the branch as a one-way message with `routed: true`, which wakes
-  it. So a weigh-in reaches the branch whether its decisions came as the reply to the branch's first message or as a
-  later report. User input, notes, landing cards and runs answering several branches (a fan-out) route nothing, and a
-  message to the user ends the run without a final answer.
+  was a reply or one-way message (a report) from branches it started, its final answer goes to each of them that is
+  not concluded and that the run sent no message, as a one-way message with `routed: true`, which wakes it. So a
+  weigh-in reaches the branch whether its decisions came as the reply to the branch's first message or as a later
+  report. A reply steers a busy starter, so replies arriving close together share one run: each branch in it gets the
+  answer, prefixed with which branches it answers together, or one would wait on it forever. User input, notes and
+  landing cards in the run route nothing, and a message to the user ends the run without a final answer.
 
 Routing cannot loop: a branch's report that answers only routed messages carries `echo: true`, and the starter's
 answer to an echo stays local, so it goes back and forth at most once without an explicit `message`. Request id
-`route:<answer entry>` deduplicates delivery in the sender's `board.requests`, so a restart never sends an answer
+`route:<answer entry>` (`route:<answer entry>:<branch>` going down) deduplicates delivery in the sender's `board.requests`, so a restart never sends an answer
 twice.
 
-A branch whose latest report, or reply to the starter's message, came after the starter's latest message to it shows
+A branch whose latest report, or reply to the starter's message (marked `awaits` when appended, since only a branch the
+replied-to conversation started gets its answer routed down; a standing agent's reply awaits nothing), came after the
+starter's latest message to it shows
 as `awaiting @ultimate` (`conversationState` in `data.tsx`), as does one with a reply-enabled message to @ultimate
 still open; @ultimate messaging the branch (a routed answer included), or concluding it, clears it.
 
@@ -97,11 +100,13 @@ A reply-enabled message to `user` stays open, and its sender shows as awaiting r
 message: a user Reply with `re` (an answer card, or a typed Reply) marks only that message answered, in the reply's
 commit. Plain input, new posts and answers to other questions leave it open. The service's `dismiss` closes it as
 `dismissed` instead, with a one-way user note to the sender (`re`, delivered as a note: no run starts) in the same
-commit.
+commit. When the user decides a question in @ultimate's chat instead, @ultimate settles it for them with the `settle`
+action (see Actions): the same answer or dismissal, recorded with `via`, so the card reads "@ultimate answered for you"
+with a link to the user's message, and the pointer "answered for you".
 
 While the sender has questions open, the input that starts its next run goes in after a `board.open` entry, placed
 by the patched `beforeInput` hook in the input's commit: one user-role line listing each open message's id, first
-line and age. It renders nothing in the transcript. It is per input rather than a system-prompt section, so the
+line and age. @ultimate's lists every open question to the user, each with its asker, and names `settle`. It renders nothing in the transcript. It is per input rather than a system-prompt section, so the
 prompt stays cached; nothing is added while nothing is open.
 
 A reply-expected agent message to `user` may carry `questions` (the `message` tool's argument, checked in
@@ -110,6 +115,12 @@ in its transcript shows them under the message body while it is open, as the que
 user-only `answer` action posts a normal user reply with `re` and the answers in the message's numbering, waking the
 sender. Its admission atomically checks that the original message is still open, preventing duplicate replies. See
 [Questions](../questions/README.md).
+
+A link `/?conversation=<c>&message=<m>`, such as a notification's (`m` is the message's id in the log, `c` the
+conversation that asked), opens at that question: while it is still open, the page shows the Agent surface with its
+card at the top of the view, as `messages:open {conversation, message}` does, then drops `message` from the address so
+a reload does not jump again. An unknown, answered or dismissed message, or one another conversation asked, only
+opens the conversation.
 
 In the sender's transcript a `message` call renders as an outgoing card: recipient, one-way or expects reply, and
 the message's live state from the messages log (sending, delivered, awaiting reply, awaiting your reply, answered,
@@ -215,6 +226,7 @@ type Message = {
   entry?: EntryId
   answer?: EntryId
   error?: string
+  via?: { conversation: number; entry?: number } // an answer @ultimate settled for the user, and their input it read
   remote?: { project: string; machine: string; key: string; id?: number } // the other Ultimate
   report?: true // a branch's routed final answer after it stopped with nothing under way
   questions?: Question[] // what a reply-expected message to the user asks (see Questions)
@@ -229,6 +241,13 @@ The reply's `answer` links to the recipient's assistant entry; the original also
 
 - `addresses({}) → { agents, conversations }`: resident names/descriptions with an id if already created, and up to
   50 recent top-level conversation summaries (including title and label).
+- `settle({ messageId, text, dismiss? }) → { id }`: @ultimate's conversation, or its side chat, settles the user's
+  open question for them from what they said in its chat. `text` is their answer (their words or the picks read from
+  them), sent to the asker as the user's reply, naming it settled by @ultimate; with `dismiss`, `text` is why it no
+  longer matters and the asker gets a note. The reply records `via`: the calling conversation and the user's input that
+  started its current run. It emits no `user.input` event, and @ultimate's `board.answered` note says it settled it.
+  Refused for any other caller and for a message that is no longer open. The model decides that the chat answered the
+  card; no code reads the user's words.
 
 Users type in @ultimate's conversation or answer a question card; there is no user posting action.
 Agents use the `message` tool. The prompt section is stable and lists resident names and descriptions.

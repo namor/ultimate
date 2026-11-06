@@ -3,46 +3,42 @@
  * the schema cannot express. Rejected questions come back to the agent as the tool's error, so a card never shows a
  * question it cannot answer.
  */
-import { Type } from '@earendil-works/pi-ai'
+import { arr, bool, int, obj, opt, str } from '@earendil-works/pi-schema'
+import { strEnum } from '../../lib/schema.ts'
 import { ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import type { ConversationId, Tx } from '@earendil-works/pi-durable'
 import { formatAgo } from '../../lib/ago.ts'
 import { Messages } from './api.ts'
+import { Standing } from '../subagents/api.ts'
 import type { Message } from './api.ts'
 import type { Question } from './refs.ts'
 
-const optionSchema = Type.Object({
-  label: Type.String({
+const optionSchema = obj({
+  label: str({
     minLength: 1,
     description: 'A few words; the reasoning goes in detail.',
   }),
-  key: Type.Optional(Type.String({ pattern: '^[a-z]$', description: 'Its letter, "a".' })),
-  detail: Type.Optional(Type.String()),
-  recommended: Type.Optional(Type.Boolean({ description: 'Your pick.' })),
-  preview: Type.Optional(Type.String({ description: 'Markdown shown beside the option.' })),
+  key: opt(str({ pattern: '^[a-z]$', description: 'Its letter, "a".' })),
+  detail: opt(str()),
+  recommended: opt(bool({ description: 'Your pick.' })),
+  preview: opt(str({ description: 'Markdown shown beside the option.' })),
 })
 /** The `questions` parameter of the `message` tool. */
-export const questionsParameter = Type.Array(
-  Type.Object({
-    text: Type.String({ minLength: 1 }),
-    kind: Type.Union([
-      Type.Literal('choice'),
-      Type.Literal('multi'),
-      Type.Literal('confirm'),
-      Type.Literal('text'),
-      Type.Literal('scale'),
-    ]),
-    ref: Type.Optional(Type.String({ pattern: '^\\d+$', description: 'Its number, "2".' })),
-    options: Type.Optional(Type.Array(optionSchema)),
-    scale: Type.Optional(
-      Type.Object({
-        min: Type.Integer(),
-        max: Type.Integer(),
-        low: Type.Optional(Type.String()),
-        high: Type.Optional(Type.String()),
+export const questionsParameter = arr(
+  obj({
+    text: str({ minLength: 1 }),
+    kind: strEnum(['choice', 'multi', 'confirm', 'text', 'scale']),
+    ref: opt(str({ pattern: '^\\d+$', description: 'Its number, "2".' })),
+    options: opt(arr(optionSchema)),
+    scale: opt(
+      obj({
+        min: int(),
+        max: int(),
+        low: opt(str()),
+        high: opt(str()),
       }),
     ),
-    placeholder: Type.Optional(Type.String()),
+    placeholder: opt(str()),
   }),
   {
     description:
@@ -134,13 +130,21 @@ export const gist = (message: Pick<Message, 'text' | 'questions'>) => {
  * open, so the agent treats them as unanswered. A per-input entry, not a system-prompt section, keeps the prompt cached.
  */
 export async function openQuestionsNote(tx: Tx, conversationId: ConversationId, now: number) {
+  // @ultimate sees every open question to the user, since it settles those the user decides in its chat.
+  const primary = (await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate === conversationId
   const open = (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages.filter(
-    (m) => openQuestion(m) && m.from === conversationId,
+    (m) => openQuestion(m) && (primary || m.from === conversationId),
   )
   if (!open.length) return undefined
+  const asker = (m: Message) => (m.from === conversationId ? '' : ` from #${m.from}`)
   const text = `Open questions to the user, unanswered until they answer or dismiss them:\n${open
-    .map((m) => `- message ${m.id}: ${gist(m)} (asked ${formatAgo(m.at, now, { ago: true })})`)
-    .join('\n')}`
+    .map(
+      (m) =>
+        `- message ${m.id}${asker(m)}: ${gist(m)} (asked ${formatAgo(m.at, now, { ago: true })})`,
+    )
+    .join(
+      '\n',
+    )}${primary ? `\nWhen the user decides one in your chat, settle it with ultimate.action('messages', 'settle', { messageId, text }).` : ''}`
   return {
     entries: [
       {
