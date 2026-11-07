@@ -119,7 +119,9 @@ once (`btrfs filesystem du`). Measuring takes seconds, so one runs at a time and
 
 The lander is the only way to a project's target branch, and it is code: no model runs in it. Each submission and its
 landing result appear in the submitting conversation as tool and outcome cards. The `@lander` conversation keeps the
-full log in `ultimate.lander` entries and refuses every input.
+full log in `ultimate.lander` entries and refuses every input. Before its first submission, it shows
+`No landings yet` instead of a model conversation's welcome. Its read-only footer names the source checkout and
+explains why each source has its own log.
 
 `workspace submit` requires a non-empty `divergence` string: how the delivered result differs from the original
 request (new agreements, different approach or library, changed scope), or "None" when it matches. It queues a

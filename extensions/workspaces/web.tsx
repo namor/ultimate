@@ -2,7 +2,15 @@ import type { ReactNode } from 'react'
 import { ChevronRightIcon, GitMergeIcon } from 'lucide-react'
 import { MentionText } from '@/components/ai/message'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { defineWebExtension, useConversation, useSystem, useTranscript } from '@/sdk'
+import { ConversationEmptyState } from '@/components/ai/conversation'
+import {
+  ConversationEmpty,
+  defineWebExtension,
+  provide,
+  useConversation,
+  useSystem,
+  useTranscript,
+} from '@/sdk'
 import { landerSource, useWorkspaceIndex } from './data.tsx'
 import { CommitCount, LandingCard, useGithubRepo } from './landing.tsx'
 import { LanderLogEntry, LanderReport, WorkspaceCall } from './log.tsx'
@@ -143,7 +151,23 @@ function LanderComposer({ core, dock }: { core: ReactNode; dock?: boolean }) {
   )
 }
 
+function useEmptyLander() {
+  const id = useConversation((conversation) => conversation.id)
+  const source = landerSource(useWorkspaceIndex(), id ?? -1, useSystem()?.project.root)
+  if (!source) return undefined
+  return (
+    <ConversationEmptyState className="min-h-[55vh]">
+      <GitMergeIcon className="mb-3 size-5 text-brand" />
+      <h2 className="text-[14px] font-medium text-foreground">No landings yet</h2>
+      <p className="mt-1 max-w-sm text-[13px] text-muted-foreground">
+        Submissions for this checkout will appear here with their checks and outcomes.
+      </p>
+    </ConversationEmptyState>
+  )
+}
+
 export default defineWebExtension({
+  provides: [provide(ConversationEmpty, useEmptyLander)],
   composer: LanderComposer,
   tools: { workspace: WorkspaceCall },
   entries: {

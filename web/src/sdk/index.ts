@@ -5,6 +5,7 @@
 export {
   attention,
   ConversationKind,
+  ConversationEmpty,
   defineWebExtension,
   definePoint,
   ErrorReport,

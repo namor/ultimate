@@ -1,11 +1,12 @@
 import { createElement } from 'react'
-import type { ComponentType } from 'react'
+import type { ComponentType, ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, expect, it, vi } from 'vitest'
 import type { WorkspaceIndex } from '../../extensions/workspaces/types.ts'
 
 const state = vi.hoisted(() => ({ id: 28, index: {} as WorkspaceIndex }))
-vi.mock('@/sdk', () => ({
+vi.mock('@/sdk', async () => ({
+  ...(await import('../../web/src/sdk/types.ts')),
   defineWebExtension: (facet: unknown) => facet,
   useConversation: (select: (conversation: { id: number }) => unknown) => select({ id: state.id }),
   useSystem: () => ({ project: { root: '/projects/my-app' } }),
@@ -55,6 +56,16 @@ it('distinguishes project and additional checkout landers without losing their s
   expect(render()).toContain('/tmp/my-app-integration')
   state.id = 99
   expect(render()).toBe('composer')
+})
+
+it('replaces only the lander’s empty welcome with log context, not model setup', () => {
+  const empty = () => facet.provides![0].use(null as never) as ReactNode
+  const html = renderToStaticMarkup(createElement(() => empty()))
+  expect(html).toContain('No landings yet')
+  expect(html).toContain('checks and outcomes')
+  expect(html).not.toMatch(/model|configure|prompt/)
+  state.id = 99
+  expect(empty()).toBeUndefined()
 })
 
 it('shows activity only for the log’s own source checkout', () => {
