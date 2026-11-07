@@ -32,6 +32,7 @@ import {
 import type { WorkspaceConversation as ConversationSummary } from '../workspaces/ui.tsx'
 import {
   PendingAction,
+  landerSource,
   useWorkspaceConversations as useConversations,
   useWorkspaceIndex,
 } from '../workspaces/ui.tsx'
@@ -262,6 +263,7 @@ function Tree({
     .filter((conversation) => pinned(conversation) && conversation.id !== ultimateId)
     .toSorted((a, b) => Number(b.label === 'lander') - Number(a.label === 'lander') || a.id - b.id)
   const workspaceIndex = useWorkspaceIndex()
+  const projectRoot = useSystem()?.project.root
   const listed = topLevel
     .filter((conversation) => !pinned(conversation) && !hiddenIds.has(conversation.id))
     .toSorted(byInput)
@@ -378,6 +380,7 @@ function Tree({
         conversation={conversation}
         key={conversation?.id ?? 'ultimate'}
         name={name}
+        context={lander ? landerSource(workspaceIndex, conversation.id, projectRoot) : undefined}
         presence={
           state === 'working' || landing ? 'working' : state === 'waits' ? 'waiting' : 'idle'
         }

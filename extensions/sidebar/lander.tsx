@@ -38,7 +38,7 @@ export function LanderState({
           className="ml-auto shrink-0 text-muted-foreground/80"
           title={new Date(at).toLocaleString()}
         >
-          {formatAgo(at, now)}
+          last {formatAgo(at, now)}
         </span>
       )}
     </>

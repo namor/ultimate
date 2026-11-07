@@ -376,6 +376,7 @@ export function saveTitle(id: number, value: string) {
 export function StandingRow({
   conversation,
   name,
+  context,
   shown,
   presence,
   onOpen,
@@ -385,6 +386,7 @@ export function StandingRow({
   conversation?: ConversationSummary
   /** The agent's name without `@`: `ultimate`, `lander`, `sync`, … */
   name: string
+  context?: { label: string; path: string }
   shown: boolean
   presence: Presence
   onOpen: () => void
@@ -404,6 +406,7 @@ export function StandingRow({
     >
       <button
         aria-current={shown ? 'true' : undefined}
+        title={context?.path}
         className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-md pr-2 pl-2 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
         onClick={onOpen}
         type="button"
@@ -424,7 +427,16 @@ export function StandingRow({
                 {title}
               </span>
             )}
-            <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">@{name}</span>
+            {context ? (
+              <span className="truncate text-[11px] text-muted-foreground">
+                {context.label}
+                <span className="sr-only"> · {context.path}</span>
+              </span>
+            ) : (
+              <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">
+                @{name}
+              </span>
+            )}
           </span>
           <span className="flex w-full min-w-0 items-center gap-2 pr-5 font-mono text-[10px] leading-4 text-muted-foreground">
             {children}

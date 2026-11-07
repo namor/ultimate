@@ -30,6 +30,19 @@ export function useWorkspaceConversations(): WorkspaceConversation[] {
   }))
 }
 
+/** The checkout behind a lander's log, named relative to the project rather than its detached worktree. */
+export function landerSource(index: WorkspaceIndex, id: number, projectRoot?: string) {
+  const source = Object.entries(index.landerConversations).find(([, lander]) => lander === id)?.[0]
+  if (!source) return undefined
+  return {
+    path: source,
+    label:
+      source === projectRoot
+        ? 'Project checkout'
+        : source.split('/').filter(Boolean).at(-1) || source,
+  }
+}
+
 export const stateLabel = (workspace: Workspace) =>
   ({ preparing: 'Setting up…', ready: 'Ready', failed: 'Setup failed', removed: 'Removed' })[
     workspace.state
