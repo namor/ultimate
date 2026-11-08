@@ -101,6 +101,8 @@ export const actions = {
         delete delivery.reason
         delivery.deadline = Date.now() + 60 * 60 * 1000
       } else throw new Error('Delivery stage changed; reload its card')
+      if (args.action === 'publish' || args.action === 'merge')
+        delivery.deadline = Date.now() + 60 * 60 * 1000
     }, context)
     await workspaces(host).resume(context)
     host.harness().resume()

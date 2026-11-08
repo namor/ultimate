@@ -1026,6 +1026,27 @@ async function lander(
   f.host.projectSettings = async () => ({ lander: settings })
   return f
 }
+it.concurrent('disables remote delivery without dropping effective local checks', async () => {
+  const f = await lander({
+    checks: ['echo LOCAL_CHECK_REQUIRED; false'],
+    push: 'must-not-be-contacted',
+  })
+  await mkdir(join(f.host.userHome, '.ultimate'), { recursive: true })
+  await writeFile(
+    join(f.host.userHome, '.ultimate/settings.json'),
+    JSON.stringify({ delivery: { [f.projectRoot]: false } }),
+  )
+  const base = await git(f.projectRoot, 'rev-parse', 'HEAD')
+  const id = await f.create()
+  await f.service.ready(id, context)
+  await commit((await f.service.get(id, context))!.path, 'checked.txt')
+  await f.service.submit(id, 'None', context)
+  const [report] = await submitted(f, id)
+  expect(report).toContain('check failed twice')
+  expect(report).toContain('LOCAL_CHECK_REQUIRED')
+  expect(await git(f.projectRoot, 'rev-parse', 'HEAD')).toBe(base)
+})
+
 it.concurrent('lets an ownerless history fork submit its own workspace', async () => {
   const f = await lander({ checks: ['test -f base.txt'] })
   const entry = await f.opened.harness.commit(

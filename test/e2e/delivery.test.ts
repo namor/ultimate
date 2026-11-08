@@ -9,6 +9,7 @@ import { context } from '../../server/harness.ts'
 import { projectDecision, projectSettings } from '../../server/project-setup.ts'
 import { git } from '../../lib/git.ts'
 import { browserBinary } from '../../extensions/browser/server.ts'
+import { fastForwardTarget } from '../../extensions/workspaces/lander.ts'
 import { setAutomaticSummaries } from '../../extensions/conversations/summary.ts'
 import type { WorkspaceIndex } from '../../extensions/workspaces/types.ts'
 import { fauxServer, post, removeTemp, sourceCopy, temp, until } from '../helpers.ts'
@@ -17,6 +18,30 @@ const cleanup: (() => Promise<void>)[] = []
 afterEach(async () => {
   for (const close of cleanup.splice(0).toReversed()) await close()
   vi.unstubAllEnvs()
+})
+
+it('advances the target worktree without touching the source after its checked-out branch changes', async () => {
+  const home = await temp('ultimate-delivery-target-')
+  cleanup.push(() => removeTemp(home))
+  const source = join(home, 'source')
+  await git(home, 'init', '-b', 'main', source)
+  await git(source, 'config', 'user.name', 'Fixture')
+  await git(source, 'config', 'user.email', 'fixture@example.invalid')
+  await git(source, 'commit', '--allow-empty', '-m', 'Baseline')
+  const base = await git(source, 'rev-parse', 'HEAD')
+  await git(source, 'switch', '-c', 'candidate')
+  await writeFile(join(source, 'feature.txt'), 'Candidate\n')
+  await git(source, 'add', 'feature.txt')
+  await git(source, 'commit', '-m', 'Candidate')
+  const candidate = await git(source, 'rev-parse', 'HEAD')
+  await git(source, 'switch', '-c', 'unrelated', base)
+  const target = join(home, 'main')
+  await git(source, 'worktree', 'add', target, 'main')
+  await fastForwardTarget(source, 'main', base, candidate)
+  expect(await git(source, 'symbolic-ref', '--short', 'HEAD')).toBe('unrelated')
+  expect(await git(source, 'rev-parse', 'HEAD')).toBe(base)
+  expect(await git(target, 'rev-parse', 'HEAD')).toBe(candidate)
+  expect(await git(source, 'rev-parse', 'main')).toBe(candidate)
 })
 
 it('keeps main unchanged and exposes a user-only candidate-bound publication gate with declined trust', async () => {
@@ -39,7 +64,7 @@ it('keeps main unchanged and exposes a user-only candidate-bound publication gat
   const gh = join(bin, 'gh')
   await writeFile(
     gh,
-    `#!${process.execPath}\nif (!process.argv.at(-1).endsWith('/branches/main')) throw new Error('Unexpected fixture request');\nconsole.log(JSON.stringify({commit:{sha:${JSON.stringify(baseline)}}}));\n`,
+    `#!${process.execPath}\nif (!process.argv.at(-1).endsWith('/branches/main')) throw new Error('Unexpected fixture request');\nconsole.log('HTTP/2.0 200 OK\\r\\n\\r\\n' + JSON.stringify({commit:{sha:${JSON.stringify(baseline)}}}));\n`,
   )
   await chmod(gh, 0o755)
   vi.stubEnv('PATH', `${bin}${delimiter}${process.env.PATH}`)
@@ -167,4 +192,14 @@ it('keeps main unchanged and exposes a user-only candidate-bound publication gat
     return value.queue[0]?.delivery?.stage === 'blocked'
   })
   expect(await git(remote, 'rev-parse', 'main')).toBe(baseline)
+  await card.getByRole('button', { name: /Stop delivery/ }).click()
+  await until(
+    async () =>
+      (await server.harness.snapshot(doc, 1 as ConversationId, context))?.queue.length === 0,
+  )
+  const stopped = (await server.harness.snapshot(doc, 1 as ConversationId, context))!.results[
+    entry.id
+  ]
+  expect(stopped.delivery?.candidate).toBe(delivery.candidate)
+  expect(stopped.reason).toContain('Stopped by user')
 })

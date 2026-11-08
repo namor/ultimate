@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { advanceDelivery, deliveryRuntime } from '../extensions/workspaces/delivery.ts'
+import {
+  advanceDelivery,
+  deliveryRuntime,
+  GithubRequestError,
+} from '../extensions/workspaces/delivery.ts'
 import type { Delivery, Github } from '../extensions/workspaces/delivery.ts'
 import { git } from '../lib/git.ts'
 
@@ -44,6 +48,59 @@ const protection = {
 }
 
 describe('PR delivery', () => {
+  it.each(['create', 'merge'] as const)(
+    'can retry a definitively rejected %s without retaining a false uncertain intent',
+    async (operation) => {
+      let saved: Delivery = {
+        ...makeDelivery(),
+        stage: operation === 'create' ? 'pr' : 'merge',
+        ...(operation === 'merge' ? { pr: 3 } : {}),
+      }
+      let writes = 0
+      let done = false
+      vi.mocked(git).mockImplementation(async (...args) =>
+        args.includes('rev-parse') ? baseline : '',
+      )
+      const api: Github = async (path, method) => {
+        if (path.includes('/pulls?')) return [] as never
+        if (path.endsWith('/protection')) return protection as never
+        if (path.includes('/check-runs'))
+          return {
+            total_count: 1,
+            check_runs: [
+              {
+                name: 'verify',
+                head_sha: candidate,
+                status: 'completed',
+                conclusion: 'success',
+                app: { id: 1, slug: 'github-actions' },
+              },
+            ],
+          } as never
+        if (method === 'POST' || method === 'PUT') {
+          writes++
+          if (writes === 1) throw new GithubRequestError(operation === 'create' ? 422 : 405)
+          done = true
+          return (operation === 'create' ? pull() : { merged: true, sha: merged }) as never
+        }
+        return pull(done) as never
+      }
+      const save = async (d: Delivery) => {
+        saved = structuredClone(d)
+      }
+      const signal = new AbortController().signal
+      await advanceDelivery('/project', saved, save, signal, api)
+      expect(saved.stage).toBe('blocked')
+      expect(saved.createIntent).toBeUndefined()
+      expect(saved.mergeIntent).toBeUndefined()
+      saved.stage = saved.resumeStage!
+      await advanceDelivery('/project', saved, save, signal, api)
+      if (operation === 'merge') await advanceDelivery('/project', saved, save, signal, api)
+      expect(saved.stage).toBe(operation === 'create' ? 'ci' : 'merged')
+      expect(writes).toBe(2)
+    },
+  )
+
   it.each(['publish', 'merge'] as const)(
     'reconciles an interrupted %s without repeating its external write',
     async (stage) => {

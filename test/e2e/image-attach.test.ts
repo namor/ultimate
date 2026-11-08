@@ -67,6 +67,7 @@ it('attaches an image picked with the paperclip and sends it', async () => {
     )
     .setInputFiles({ name: 'shot.png', mimeType: 'image/png', buffer: png })
   await page.locator('#app [data-ui="composer"] [aria-label="Remove image 1"]').waitFor()
+  await page.locator('#app [data-ui="composer"] button[aria-label="Send"]:enabled').waitFor()
   await editor.press('Enter')
   await until(async () => !!received)
   expect(received!.mimeType).toBe('image/png')
@@ -110,6 +111,12 @@ it('uploads a PDF picked with the paperclip and sends its path, not its bytes', 
   )
   await editor.waitFor()
   const pdf = Buffer.from('%PDF-1.7 report')
+  const upload = Promise.withResolvers<void>()
+  cleanup.push(async () => upload.resolve())
+  await page.route('**/api/extensions/attachments/actions/upload', async (route) => {
+    await upload.promise
+    await route.continue()
+  })
   await page
     .locator(
       '#app [data-ui="composer"] label[aria-label="Attach files"] input[type="file"]:enabled',
@@ -119,6 +126,12 @@ it('uploads a PDF picked with the paperclip and sends its path, not its bytes', 
     .locator('#app [data-ui="composer"] [data-ui="file-chip"]', { hasText: 'PDF' })
     .waitFor()
   await editor.fill('Summarise this')
+  // #45669: the filename already matches "PDF" while uploading; the chip alone made Enter race the upload.
+  expect(
+    await page.locator('#app [data-ui="composer"] button[aria-label="Send"]').isDisabled(),
+  ).toBe(true)
+  upload.resolve()
+  await page.locator('#app [data-ui="composer"] button[aria-label="Send"]:enabled').waitFor()
   await editor.press('Enter')
   await until(async () => received !== undefined)
   const text = typeof received === 'string' ? received : JSON.stringify(received)

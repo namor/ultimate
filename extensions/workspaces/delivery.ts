@@ -58,18 +58,39 @@ export type Github = <T>(
   method?: string,
   fields?: Record<string, string>,
 ) => Promise<T>
+export class GithubRequestError extends Error {
+  readonly definitive: boolean
+  constructor(status?: number) {
+    super(status ? `GitHub request rejected (HTTP ${status})` : 'GitHub request outcome is unknown')
+    this.definitive = status !== undefined && status >= 400 && status < 500
+  }
+}
+const responseStatus = (output: string) => {
+  const match = /^HTTP\/[\d.]+\s+(\d{3})\b/.exec(output)
+  return match ? Number(match[1]) : undefined
+}
 export const github =
   (cwd: string, signal: AbortSignal): Github =>
   async <T>(path: string, method = 'GET', fields: Record<string, string> = {}) => {
-    const args = ['api', '--method', method, path]
+    const args = ['api', '--include', '--method', method, path]
     for (const [key, value] of Object.entries(fields)) args.push('-f', `${key}=${value}`)
-    const { stdout } = await exec('gh', args, {
-      cwd,
-      signal,
-      timeout: 30000,
-      maxBuffer: 1024 * 1024,
-    })
-    return JSON.parse(stdout) as T
+    let output: string
+    try {
+      const result = await exec('gh', args, { cwd, signal, timeout: 30000, maxBuffer: 1024 * 1024 })
+      output = result.stdout
+    } catch (error) {
+      signal.throwIfAborted()
+      // #45669: retain HTTP rejection identity without exposing gh diagnostics or request bodies.
+      throw new GithubRequestError(responseStatus((error as { stdout?: string }).stdout ?? ''))
+    }
+    const boundary = /\r?\n\r?\n/.exec(output)
+    try {
+      if (!boundary) throw new Error('Missing HTTP headers')
+      return JSON.parse(output.slice(boundary.index + boundary[0].length)) as T
+    } catch {
+      // A successful HTTP response with an unreadable receipt is still an uncertain external write.
+      throw new GithubRequestError()
+    }
   }
 
 export function assertPull(delivery: Delivery, pull: Pull) {
@@ -129,6 +150,7 @@ export async function advanceDelivery(
     await save(d)
     return d
   }
+  let write: 'create' | 'merge' | undefined
   if (d.stage === 'blocked' || d.stage === 'merged' || d.stage === 'review') return d
   try {
     if (d.stage === 'publish') {
@@ -175,6 +197,7 @@ export async function advanceDelivery(
           throw new Error('PR creation outcome is uncertain; reconcile it before retrying')
         d.createIntent = true
         await persist()
+        write = 'create'
         pull = await api<Pull>(`${prefix}/pulls`, 'POST', {
           head: d.branch,
           base,
@@ -246,6 +269,7 @@ export async function advanceDelivery(
     await git(source, 'merge-base', '--is-ancestor', target, d.candidate)
     d.mergeIntent = true
     await persist()
+    write = 'merge'
     const merged = await api<{ merged: boolean; sha: string }>(
       `${prefix}/pulls/${d.pr}/merge`,
       'PUT',
@@ -254,11 +278,18 @@ export async function advanceDelivery(
         merge_method: 'merge',
       },
     )
-    if (!merged.merged) throw new Error('GitHub refused the merge')
+    if (!merged.merged) {
+      delete d.mergeIntent
+      throw new Error('GitHub refused the merge')
+    }
     // Confirm on the next transition, including after a lost response.
     return persist()
   } catch (error) {
     signal.throwIfAborted()
+    if (error instanceof GithubRequestError && error.definitive) {
+      if (write === 'create') delete d.createIntent
+      if (write === 'merge') delete d.mergeIntent
+    }
     d.resumeStage = d.stage as 'review' | 'publish' | 'pr' | 'ci' | 'merge'
     d.stage = 'blocked'
     // gh/git errors may include remote diagnostics; keep the durable user-facing reason bounded.

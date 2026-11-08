@@ -844,6 +844,7 @@ export function workspaces(host: Host) {
         queued.delivery.review = assessment.review
         queued.delivery.risk = assessment.risk
         queued.delivery.stage = 'publish'
+        queued.delivery.deadline = Date.now() + 60 * 60 * 1000
         delete queued.delivery.publishApproved
         delete queued.delivery.mergeApproved
       }

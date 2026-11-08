@@ -285,6 +285,21 @@ export const contains = (cwd: string, ancestor: string, descendant: string) =>
     () => true,
     () => false,
   )
+/** Advance only the named target, never an unrelated branch now checked out in the source. Caller holds its source queue. */
+export async function fastForwardTarget(
+  source: string,
+  target: string,
+  base: string,
+  integrated: string,
+) {
+  const worktree = (await git(source, 'worktree', 'list', '--porcelain'))
+    .split('\n\n')
+    .map((record) => record.split('\n'))
+    .find((record) => record.includes(`branch refs/heads/${target}`))?.[0]
+    .slice('worktree '.length)
+  if (worktree) await git(worktree, 'merge', '-q', '--ff-only', integrated)
+  else await git(source, 'update-ref', `refs/heads/${target}`, integrated, base)
+}
 const lines = (text: string) => text.split('\n').filter(Boolean)
 const failure = (error: unknown) => {
   const output = error as Error & { stdout?: string; stderr?: string }
@@ -424,7 +439,20 @@ export function createLander(
           runtime.commit(async (tx) => {
             const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
               (item) => item.id === id,
-            )!
+            )
+            if (!saved) return { status: 'running', checkpoint: { phase: 'next' } }
+            const delivery = saved.delivery
+            const waiting =
+              !delivery ||
+              delivery.stage === 'blocked' ||
+              delivery.stage === 'review' ||
+              (delivery.stage === 'publish' &&
+                delivery.risk === 'high' &&
+                !delivery.publishApproved) ||
+              (delivery.stage === 'merge' && delivery.risk !== 'low' && !delivery.mergeApproved)
+            // #45669: approval can commit while this invocation holds an older snapshot.
+            if (!waiting)
+              return { status: 'running', checkpoint: { phase: 'land', id, attempt: 1 } }
             saved.state = 'waiting'
             return { status: 'terminal', outcome: { status: 'completed', result: null } }
           }, context)
@@ -569,7 +597,7 @@ export function createLander(
           const settings: Settings = entry.delivery
             ? { checks: [], delivery: entry.delivery.settings }
             : entry.deliveryConfig === false
-              ? { checks: [] }
+              ? { checks: (await landerSettings(host)).checks }
               : entry.deliveryConfig
                 ? {
                     checks: entry.deliveryConfig.checks.map((command) => ({ command })),
@@ -591,16 +619,29 @@ export function createLander(
                 }
               }, context)
             const expired = Date.now() > (previous.deadline ?? previous.checkedAt + 60 * 60 * 1000)
-            const delivery =
-              expired && previous.stage !== 'blocked' && previous.stage !== 'merged'
-                ? {
-                    ...previous,
-                    stage: 'blocked' as const,
-                    resumeStage: previous.stage,
+            let delivery = previous
+            if (expired && previous.stage !== 'blocked' && previous.stage !== 'merged')
+              await runtime.commit(async (tx) => {
+                const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
+                  (item) => item.id === id,
+                )!
+                const current = saved.delivery!
+                // A fresh review/recheck may already have changed this stage or its deadline.
+                if (
+                  current.stage === previous.stage &&
+                  current.deadline === previous.deadline &&
+                  current.stage !== 'blocked' &&
+                  current.stage !== 'merged'
+                )
+                  saved.delivery = {
+                    ...current,
+                    stage: 'blocked',
+                    resumeStage: current.stage,
                     reason: 'Delivery waited over one hour; recheck explicitly',
                   }
-                : await advanceDelivery(source, previous, save, signal)
-            if (expired && delivery.stage === 'blocked') await save(delivery)
+                delivery = copyJson(saved.delivery!) as NonNullable<QueueEntry['delivery']>
+              }, context)
+            else delivery = await advanceDelivery(source, previous, save, signal)
             if (delivery.stage !== previous.stage || delivery.reason !== previous.reason)
               await step(
                 delivery.reason
@@ -623,7 +664,7 @@ export function createLander(
                 const current = await git(source, 'rev-parse', `refs/heads/${target}`)
                 if (!(await contains(source, current, sha)))
                   throw new Error('Local target advanced outside the merged delivery')
-                await git(source, 'merge', '--ff-only', sha)
+                await fastForwardTarget(source, target, current, sha)
               })
               return finish(`merged as ${sha.slice(0, 7)} through ${delivery.url}.`, {
                 outcome: 'landed',
@@ -680,6 +721,16 @@ export function createLander(
               context,
             )
           }
+          // Bind the attempt before any check memo can be reused after a runtime change (#45669).
+          const verification = settings.delivery
+            ? await runtime.memo(
+                `verification-runtime:${id}:${attempt}`,
+                { runtime: deliveryRuntime() },
+                context,
+              )
+            : undefined
+          if (verification && verification.runtime !== deliveryRuntime())
+            return fail('verification runtime changed; submit again')
           // An earlier lander task fast-forwarded this submission and then ended (a reload or fault before its push):
           // nothing to merge or check again, push exactly what landed and report that landing.
           if (
@@ -868,7 +919,7 @@ export function createLander(
                 base,
                 integrated: merged.sha,
                 flaky,
-                runtime: deliveryRuntime(),
+                runtime: verification?.runtime ?? deliveryRuntime(),
                 checkedAt: Date.now(),
               },
               context,
@@ -948,14 +999,7 @@ export function createLander(
             if (current === integrated) return false
             if (current !== base) return true
             try {
-              // Fast-forward the checkout that has the target checked out, so its files follow the branch.
-              const worktree = (await git(source, 'worktree', 'list', '--porcelain'))
-                .split('\n\n')
-                .map((record) => record.split('\n'))
-                .find((record) => record.includes(`branch refs/heads/${target}`))?.[0]
-                .slice('worktree '.length)
-              if (worktree) await git(worktree, 'merge', '-q', '--ff-only', integrated)
-              else await git(source, 'update-ref', `refs/heads/${target}`, integrated, base)
+              await fastForwardTarget(source, target, base, integrated)
             } catch (error) {
               refused = failure(error)
             }
