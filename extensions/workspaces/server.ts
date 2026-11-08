@@ -23,6 +23,7 @@ import { ConversationsApi, Release } from '../conversations/api.ts'
 import { Branches, WorkspacesApi } from './api.ts'
 import {
   DiskAction,
+  DeliveryAction,
   GithubAction,
   InfoAction,
   IsolationAction,
@@ -35,7 +36,7 @@ import { sweepChecks } from './lander.ts'
 import { Workspaces, workspaces } from './workspaces.ts'
 export const order = -200
 export const docs = [Workspaces]
-export const userActions = ['setupGit']
+export const userActions = ['setupGit', 'delivery']
 const finish = (value: unknown) => ({
   output: [{ type: 'text' as const, text: JSON.stringify(value) }],
 })
@@ -57,6 +58,54 @@ async function setupGit(host: ExtensionHost) {
 }
 
 export const actions = {
+  delivery: implementAction(DeliveryAction, async (args, { host }) => {
+    if (
+      !args ||
+      typeof args !== 'object' ||
+      Array.isArray(args) ||
+      typeof args.id !== 'string' ||
+      typeof args.candidate !== 'string' ||
+      typeof args.tree !== 'string' ||
+      typeof args.action !== 'string' ||
+      !['publish', 'merge', 'recheck', 'stop'].includes(args.action)
+    )
+      throw new Error('Expected an immutable delivery approval')
+    await host.harness().commit(async (tx) => {
+      const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+      const entry = index.queue.find((item) => item.id === args.id)
+      const delivery = entry?.delivery
+      if (!delivery || delivery.candidate !== args.candidate || delivery.tree !== args.tree)
+        throw new Error('Delivery candidate changed; approval refused')
+      if (args.action === 'stop' && delivery.stage === 'blocked') {
+        if ((delivery.createIntent && !delivery.pr) || delivery.mergeIntent)
+          throw new Error('Reconcile the uncertain write before stopping this delivery')
+        index.results[entry.id] = {
+          outcome: 'failed',
+          reason: 'Stopped by user; remote branch and PR were not changed',
+          delivery,
+          at: entry.at,
+          divergence: entry.divergence,
+          target: entry.target,
+          tip: entry.tip,
+          lander: index.landerConversations[entry.source],
+          steps: entry.steps,
+          conversationId: entry.conversationId,
+          ...(entry.subject ? { subject: entry.subject } : {}),
+        }
+        index.queue = index.queue.filter((item) => item.id !== entry.id)
+      } else if (args.action === 'publish' && delivery.stage === 'publish')
+        delivery.publishApproved = true
+      else if (args.action === 'merge' && delivery.stage === 'merge') delivery.mergeApproved = true
+      else if (args.action === 'recheck' && delivery.stage === 'blocked' && delivery.resumeStage) {
+        delivery.stage = delivery.resumeStage
+        delete delivery.reason
+        delivery.deadline = Date.now() + 60 * 60 * 1000
+      } else throw new Error('Delivery stage changed; reload its card')
+    }, context)
+    await workspaces(host).resume(context)
+    host.harness().resume()
+    return { ok: true as const }
+  }),
   /** `github.com/<owner>/<repo>` of the project's `origin`, or null off GitHub: landing cards link ranges. */
   github: implementAction(
     GithubAction,
@@ -231,6 +280,19 @@ export default function workspaceExtension(host: ExtensionHost) {
           'Inspect your workspace and source tips, or submit your clean, verified tip to the lander (submit requires divergence from the original request).',
         parameters: obj({
           action: strEnum(['status', 'submit']),
+          risk: opt(strEnum(['low', 'medium', 'high'])),
+          reviewedTree: opt(
+            str({
+              description:
+                'Tree SHA covered by the independent review. Defaults to this workspace tip tree; supply the integration tree when delivery requests renewed review.',
+            }),
+          ),
+          review: opt(
+            str({
+              description:
+                'PR mode requires independent final-review evidence for this exact tip: reviewer conversation and immutable range, with no blocking findings.',
+            }),
+          ),
           divergence: opt(
             str({
               description:
@@ -238,7 +300,7 @@ export default function workspaceExtension(host: ExtensionHost) {
             }),
           ),
         }),
-        async execute({ action, divergence }, api, caller) {
+        async execute({ action, divergence, risk, review, reviewedTree }, api, caller) {
           if (action === 'status')
             return finish({
               conversationId: api.conversationId,
@@ -255,7 +317,16 @@ export default function workspaceExtension(host: ExtensionHost) {
             )
               throw new Error(`Only a top-level main conversation can ${action} its own workspace`)
           }, caller)
-          return finish(await service.submit(api.conversationId, divergence ?? '', caller))
+          return finish(
+            await service.submit(
+              api.conversationId,
+              divergence ?? '',
+              caller,
+              risk && review
+                ? { risk, review, ...(reviewedTree ? { reviewedTree } : {}) }
+                : undefined,
+            ),
+          )
         },
       }),
     ],

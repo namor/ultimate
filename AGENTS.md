@@ -86,7 +86,7 @@ New UI is a new extension folder, not a change to `web/`: follow the `write-exte
 ## Push permission
 
 The top-level agent may commit verified work, land it and normally push the destination branch to `origin`
-(`HazAT/ultimate`), public or private, without asking. `workspace submit` runs checks and pushes. Subagents commit
+(verify the actual repository identity), public or private, without asking under its existing authority. With personal PR delivery enabled, `workspace submit` verifies the candidate before branch publication, creates/reconciles its PR and requires successful GitHub checks before merging; never push remote main directly. Medium/high risk requires user-only candidate-bound merge approval, and high risk also needs scope agreement before sensitive implementation/publication. Preserve the project's trust decision. Subagents commit
 and report, never push. Never force-push, rewrite history or push secrets. This permission does not cover other
 repositories, releases, publishing, deployments or GitHub issue/PR changes. A rejected push or remote advancement:
 see [integration details](docs/worktrees.md#standing-permission-to-push-this-repository).
@@ -106,7 +106,7 @@ see [integration details](docs/worktrees.md#standing-permission-to-push-this-rep
   properties), relative imports end in `.ts`.
 - Core server/web contracts live in `shared/protocol.ts`; extension-local types live with their extension.
 - Pin `@earendil-works/*` packages to exact versions; Pi Durable is experimental.
-- Checks: `pnpm check` (format, lint, types) and the tests covering your change must pass before a commit; the lander runs every suite. Keep `pnpm test` fast: no real-time waits, no spawned processes (those go to `test/e2e`), and fix or delete a flaky test rather than skipping it or raising its timeout. Lint enforces this with `ultimate/no-test-timeout` and `ultimate/no-real-wait-in-fast-tests` (`test/e2e` is exempt); justified exceptions need a `fast-test-reason:` comment. Use the real-deadline `until` from `test/helpers.ts` (`ultimate/no-local-test-polling`). `ultimate/no-retired-ui` keeps retired UI labels and surfaces out of extensions and web code.
+- Checks: `pnpm check` (format, lint, types) and the tests covering your change must pass before a commit. Before publication run `pnpm verify`: frozen installs, check, root fast/e2e suites and tracked project-extension suites, serially with a clean environment. The legacy lander runs only its effective configured checks; declined project trust makes tracked lander settings inert, so a local landing alone is not verification evidence. Keep `pnpm test` fast: no real-time waits, no spawned processes (those go to `test/e2e`), and fix or delete a flaky test rather than skipping it or raising its timeout. Lint enforces this with `ultimate/no-test-timeout` and `ultimate/no-real-wait-in-fast-tests` (`test/e2e` is exempt); justified exceptions need a `fast-test-reason:` comment. Use the real-deadline `until` from `test/helpers.ts` (`ultimate/no-local-test-polling`). `ultimate/no-retired-ui` keeps retired UI labels and surfaces out of extensions and web code.
 - Every user-visible result is designed, not dumped: status and outcomes (a subagent report, a landing, a failure) get a
   renderer that matches the existing cards (see `extensions/subagents/messages.tsx`, `extensions/workspaces/log.tsx`),
   never plain Markdown in a message. Look at the running app and recent screenshots first, write the expected look into

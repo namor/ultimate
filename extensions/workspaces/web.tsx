@@ -125,6 +125,7 @@ function LanderComposer({ core, dock }: { core: ReactNode; dock?: boolean }) {
   const queue = index.queue.filter((item) => item.source === source.path)
   const landing = queue.some((item) => item.state === 'landing')
   const queued = queue.filter((item) => item.state === 'queued').length
+  const waiting = queue.some((item) => item.state === 'waiting')
   return (
     <div className={`${dock ? 'w-full px-4' : 'mx-auto w-full max-w-[46rem] px-3 sm:px-6'} pb-3`}>
       <div
@@ -136,7 +137,7 @@ function LanderComposer({ core, dock }: { core: ReactNode; dock?: boolean }) {
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <span className="min-w-0 font-medium break-words text-foreground">{source.label}</span>
             <span className={landing ? 'text-brand' : undefined}>
-              {landing ? 'Landing' : 'Idle'}
+              {landing ? 'Landing' : waiting ? 'Waiting on delivery' : 'Idle'}
               {queued > 0 ? ` · ${queued} queued` : ''}
             </span>
           </div>

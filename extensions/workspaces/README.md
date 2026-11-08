@@ -115,6 +115,67 @@ unlanded branch history, including after explicit discard.
 changes; `disk` measures the worktrees directory with `du`, and on btrfs also the real size with shared blocks counted
 once (`btrfs filesystem du`). Measuring takes seconds, so one runs at a time and its result is reused for a minute.
 
+## Personal PR delivery
+
+A user can opt one project into PR-first delivery without trusting its project resources. In **personal** `~/.ultimate/settings.json` only:
+
+```json
+{
+  "delivery": {
+    "/projects/my-app": {
+      "repository": "example/my-app",
+      "remote": "origin",
+      "base": "main",
+      "checks": ["pnpm verify"],
+      "requiredChecks": ["verify"]
+    }
+  }
+}
+```
+
+The canonical main-checkout key is shared by managed worktrees. An entry replaces delivery configuration as a unit;
+`false` disables remote delivery for that project, an absent entry keeps legacy gated lander settings, and invalid entries
+fail closed. Activation needs separate user authority for that repository's publication, PR changes and merge policy.
+It does not enable project agents, extensions, skills or settings. Previews ignore the personal opt-in and never publish.
+The resolved configuration is frozen on submission, so a later settings change cannot retarget unfinished work.
+
+In this mode `workspace submit` also takes `risk` (`low`, `medium`, `high`) and `review` (independent reviewer and immutable
+range, with no blocking findings). Risk assessment and review judgment belong to the coordinator, not a code classifier.
+The lander prepares the candidate and runs every explicit local check serially. A flaky rerun does not qualify for publication.
+Here `pnpm verify` performs frozen installs, format/lint/types/dependency checks, root fast/e2e tests and the tracked project-extension
+suites, using a temporary HOME and an environment allowlist. It starts no real native Cursor work or external model requests.
+This is evidence for the checked tree, installed locked dependencies and runtime, not a hermetic guarantee about every machine.
+If integration changes the reviewed tree, publication waits for independent review of the reported candidate; resubmit the same
+workspace tip with `reviewedTree`, `risk` and `review`. No main-branch merge in the workspace is needed.
+
+Only then does delivery push the immutable SHA to its submission branch and create/reconcile a PR in the explicit repository.
+The queue record holds the candidate, tree, destination, check time, write intents and PR identity across replacement tasks.
+An interrupted push reconciles the exact remote ref. An uncertain PR creation/merge is reconciled before further writes;
+missing or conflicting evidence stops delivery rather than blindly repeating a create. Blocked records stay visible for a
+user-only **Recheck outcome**. Rechecking does not fabricate a new local-check timestamp or clear an uncertain-write intent.
+A known blocked delivery can be stopped while retaining its record and leaving its remote branch/PR unchanged; uncertain writes
+must be reconciled first.
+
+Automatic merge requires strict required-check protection including administrators, no force/deletion bypass, a PR requirement
+(with zero mandatory platform approvals allowed for a solo maintainer), and genuine successful named GitHub Actions checks on the
+candidate. Empty, missing, skipped, neutral, cancelled and timed-out checks are not success. The current base must descend from the
+recorded baseline and be contained in the checked candidate. An ordinary head-SHA-guarded merge preserves its tested tree; local main
+advances only after GitHub confirms that merge and its tree. Publication, CI and merge are distinct stages on the submit card.
+
+Low-risk work is eligible for automatic merge only after independent review. Medium/high risk requires the user's candidate-bound
+**Approve merge**; high risk also requires scope agreement before sensitive implementation and **Approve publication**. These are
+user-only actions, not approvals a hands-off goal can supply. New candidate content invalidates the prior evidence/approvals.
+Chat scope agreement is separate from GitHub's platform review requirements and cannot satisfy a required second GitHub approver.
+
+**Destination limitation:** GitHub's immediate merge API compares the head SHA, not the base ref. Before activating automatic merge,
+the user must explicitly accept that nobody retargets a delivery PR during its immediate validation/merge window. Fresh destination
+reads and strict checks remain, but this operational assumption is not an atomic enforced guarantee. No deferred native auto-merge
+or administrator bypass is used. See [GitHub's merge API](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request).
+
+Delivery uses the lander's durable 30-second sleeps, not model polling. After one hour it stops for an explicit recheck; stage changes
+and blocked outcomes are reported, without waking a model for each poll. Existing check/landing events remain available for bounded
+feedback automations; adding a delivery setting does not activate unrelated standing automations.
+
 ## Lander
 
 The lander is the only way to a project's target branch, and it is code: no model runs in it. Each submission and its

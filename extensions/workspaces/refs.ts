@@ -13,6 +13,12 @@ export type Isolation = { reason?: string; empty?: boolean }
 /** The worktree index on the root conversation: each conversation's isolate, the lander queue and recent outcomes. */
 export const WorkspacesDoc = docRef<WorkspaceIndex>('ultimate.workspaces')
 
+/** User-only: approve this immutable candidate for publication/merge, or recheck a blocked external outcome. */
+export const DeliveryAction = actionRef<
+  { id: string; candidate: string; tree: string; action: 'publish' | 'merge' | 'recheck' | 'stop' },
+  { ok: true }
+>('workspaces', 'delivery')
+
 /** `{ id }` → conversation `id`'s worktree with its branch, tip and changes, or null when it has none. */
 export const InfoAction = actionRef<{ id: number }, WorkspaceInfo | null>('workspaces', 'info')
 /**

@@ -28,6 +28,8 @@ import {
   treePath,
 } from './tree.ts'
 import { contains, createLander, landerCheckout, landerPath, log } from './lander.ts'
+import { deliverySettings } from './delivery-settings.ts'
+import type { DeliveryRisk } from './delivery.ts'
 import type {
   LandResult,
   SubmitResult,
@@ -796,6 +798,7 @@ export function workspaces(host: Host) {
     id: ConversationId,
     divergence: string,
     context: Context,
+    assessment?: { risk: DeliveryRisk; review: string; reviewedTree?: string },
   ): Promise<SubmitResult> {
     if (!divergence?.trim())
       throw new Error(
@@ -810,6 +813,16 @@ export function workspaces(host: Host) {
     if ((await git(workspace.path, 'symbolic-ref', '--short', 'HEAD')) !== workspace.branch)
       throw new Error('Workspace branch changed')
     const tip = await git(workspace.path, 'rev-parse', 'HEAD')
+    const reviewedTree =
+      assessment?.reviewedTree ?? (await git(workspace.path, 'rev-parse', 'HEAD^{tree}'))
+    if (!/^[a-f0-9]{40}$/.test(reviewedTree)) throw new Error('Expected a reviewed Git tree SHA')
+    const delivery = await deliverySettings(host.userHome, workspace.source)
+    if (
+      delivery &&
+      !process.env.ULTIMATE_PREVIEW_BRANCH &&
+      (!assessment || !assessment.review.trim())
+    )
+      throw new Error('PR delivery requires risk and independent final-review evidence')
     const path = await landerPath(host.home, workspace.source, await host.projectSettings())
     const subject = await host.need(ConversationsApi).subject(id, context)
     const result = await host.harness().commit(async (tx) => {
@@ -824,9 +837,16 @@ export function workspaces(host: Host) {
       // Reads first: a transaction cannot read tables after its first write.
       const stopped = await landerIdle(tx, index, source)
       const lander = await ensureLander(tx, index, source, target, path)
-      const queued = index.queue.find(
-        (item) => item.conversationId === id && item.tip === tip && item.state === 'queued',
-      )
+      const queued = index.queue.find((item) => item.conversationId === id && item.tip === tip)
+      if (queued?.delivery?.stage === 'review' && assessment) {
+        if (reviewedTree !== queued.delivery.tree)
+          throw new Error('Review does not cover the integration candidate tree')
+        queued.delivery.review = assessment.review
+        queued.delivery.risk = assessment.risk
+        queued.delivery.stage = 'publish'
+        delete queued.delivery.publishApproved
+        delete queued.delivery.mergeApproved
+      }
       const entry = queued ?? {
         id: `${id}-${tip.slice(0, 7)}-${Date.now().toString(36)}`,
         conversationId: id,
@@ -835,6 +855,10 @@ export function workspaces(host: Host) {
         tip,
         at,
         divergence,
+        ...(assessment ? { assessment: { ...assessment, reviewedTree } } : {}),
+        ...(delivery !== undefined && !process.env.ULTIMATE_PREVIEW_BRANCH
+          ? { deliveryConfig: delivery }
+          : {}),
         state: 'queued' as const,
         ...(subject ? { subject } : {}),
         steps: [],

@@ -1,4 +1,6 @@
 import type { ConversationSubject } from '../conversations/types.ts'
+import type { Delivery, DeliveryRisk } from './delivery.ts'
+import type { DeliverySettings } from './delivery-settings.ts'
 
 export type Workspace = {
   path: string
@@ -20,7 +22,10 @@ export type QueueEntry = {
   /** Latest submitting conversation entry when submit was called. */
   at: number
   divergence: string
-  state: 'queued' | 'landing'
+  state: 'queued' | 'landing' | 'waiting'
+  assessment?: { risk: DeliveryRisk; review: string; reviewedTree: string }
+  delivery?: Delivery
+  deliveryConfig?: DeliverySettings | false
   subject?: ConversationSubject
   step?: string
   /** What the lander did so far, as its conversation logs it. */
@@ -50,6 +55,8 @@ export type LanderStep = {
 }
 /** How a submission ended. A push that failed after landing locally is `landed` with a `reason`. */
 export type LanderOutcome = {
+  /** Retained when a user stops a blocked delivery; external PRs are not silently changed. */
+  delivery?: Delivery
   outcome: 'landed' | 'failed'
   divergence?: string
   sha?: string
@@ -60,6 +67,7 @@ export type LanderOutcome = {
   flaky?: string[]
   /** `<remote>/<target>` it was pushed to. */
   pushed?: string
+  pr?: string
   needsRestart?: boolean
   reason?: string
   /** Output tail behind the reason: conflicting paths, a check's output, git's error. */
