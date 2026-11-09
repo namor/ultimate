@@ -2,7 +2,8 @@ name: Verify
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    # #54086: no `edited`; a title or body edit restarted the run, and cancel-in-progress cancelled the one under way.
+    types: [opened, synchronize, reopened]
   push:
     branches: [main]
 
@@ -16,7 +17,8 @@ concurrency:
 jobs:
   verify:
     name: verify
-    runs-on: macos-latest
+    # #54086: the 3-CPU macos-latest runner timed out fixture-heavy tests at 30 s on every delivery (PRs 19-21).
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -27,5 +29,6 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '26'
+          cache: pnpm
       - name: Frozen installs, lint, types and all test suites
         run: pnpm verify
