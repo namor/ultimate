@@ -33,6 +33,7 @@ import {
 } from './refs.ts'
 import { githubRepo } from '../../lib/project-identity.ts'
 import { UserInputEvent } from '../../shared/events.ts'
+import { AGENT_RECHECKS } from './delivery.ts'
 import type { Approval } from './delivery.ts'
 import { sweepChecks } from './lander.ts'
 import { Workspaces, workspaces } from './workspaces.ts'
@@ -154,13 +155,19 @@ export const actions = {
       await host.harness().snapshot(Workspaces, ROOT_CONVERSATION_ID, context)
     )?.queue.find((item) => item.id === args.id)
     if (!seen || !bound(seen)) throw new Error('Delivery candidate changed; approval refused')
-    const approval = await approver(
-      host,
-      { conversationId, device },
-      action,
-      args.instruction,
-      seen.at,
-    )
+    // The submitting branch, or @ultimate, rechecks or stops a blocked delivery on its own: neither publishes nor merges.
+    const standing = host.doc('ultimate.standing-agents')
+    const ultimate =
+      standing && (await host.harness().snapshot(standing, ROOT_CONVERSATION_ID, context))?.ultimate
+    const agent =
+      !device &&
+      args.instruction === undefined &&
+      (action === 'recheck' || action === 'stop') &&
+      conversationId !== undefined &&
+      (conversationId === seen.conversationId || conversationId === ultimate)
+    const approval: Approval = agent
+      ? { action, at: Date.now(), by: 'agent', conversation: conversationId }
+      : await approver(host, { conversationId, device }, action, args.instruction, seen.at)
     await host.harness().commit(async (tx) => {
       const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
       const entry = index.queue.find((item) => item.id === args.id)
@@ -184,13 +191,30 @@ export const actions = {
         throw new Error(
           'instruction already decided another delivery; the user must decide this one',
         )
+      if (approval.by === 'agent' && action === 'recheck' && delivery.wake?.to === 'user')
+        throw new Error(`This block needs the user: ${delivery.wake.why}`)
+      if (
+        approval.by === 'agent' &&
+        action === 'recheck' &&
+        (delivery.approvals ?? []).filter((a) => a.by === 'agent' && a.action === 'recheck')
+          .length >= AGENT_RECHECKS
+      )
+        throw new Error(
+          `Agents already rechecked this candidate ${AGENT_RECHECKS} times; stop it, resubmit a repaired candidate, or ask the user`,
+        )
       delivery.approvals = [...(delivery.approvals ?? []), approval]
       if (action === 'stop' && delivery.stage === 'blocked') {
         if ((delivery.createIntent && !delivery.pr) || delivery.mergeIntent)
           throw new Error('Reconcile the uncertain write before stopping this delivery')
+        const by =
+          approval.by === 'user'
+            ? 'user'
+            : approval.by === 'agent'
+              ? `conversation #${approval.conversation}`
+              : "@ultimate on the user's instruction"
         index.results[entry.id] = {
           outcome: 'failed',
-          reason: `Stopped by ${approval.by === 'user' ? 'user' : "@ultimate on the user's instruction"}; remote branch and PR were not changed`,
+          reason: `Stopped by ${by}; remote branch and PR were not changed`,
           delivery,
           at: entry.at,
           divergence: entry.divergence,
@@ -208,6 +232,8 @@ export const actions = {
       else if (action === 'recheck' && delivery.stage === 'blocked' && delivery.resumeStage) {
         delivery.stage = delivery.resumeStage
         delete delivery.reason
+        // Its next block is a new one, reported once again.
+        delete delivery.wake
         delivery.deadline = Date.now() + 60 * 60 * 1000
       } else throw new Error('Delivery stage changed; reload its card')
       if (action === 'publish' || action === 'merge')

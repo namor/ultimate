@@ -12,6 +12,7 @@ import { Standing } from '../extensions/subagents/api.ts'
 import { actions, userActions } from '../extensions/workspaces/server.ts'
 import { deliveryRuntime } from '../extensions/workspaces/delivery.ts'
 import type { Delivery } from '../extensions/workspaces/delivery.ts'
+import { reportBlocked } from '../extensions/workspaces/lander.ts'
 import { Workspaces } from '../extensions/workspaces/workspaces.ts'
 import { UserInputEvent } from '../shared/events.ts'
 import { eventHost, temp } from './helpers.ts'
@@ -140,7 +141,7 @@ async function fixture() {
       signal: new AbortController().signal,
       ...ctx,
     } as ActionContext)
-  return { opened, ultimate, branch, earlier, entry, queued, call }
+  return { opened, host, ultimate, branch, submitter, earlier, entry, queued, call }
 }
 
 describe('delivery approval', () => {
@@ -312,5 +313,192 @@ describe('delivery approval', () => {
       f.call({ device: { device: 'desktop/chrome' } }, { tree: 'd'.repeat(40) }),
     ).rejects.toThrow('candidate changed')
     expect((await f.queued()).approvals).toBeUndefined()
+  })
+})
+
+describe('agents on a blocked delivery', () => {
+  /** The fixture's delivery, blocked in `ci` with `extra` fields. */
+  const block = async (f: Awaited<ReturnType<typeof fixture>>, extra: Partial<Delivery> = {}) =>
+    f.opened.harness.commit(async (tx) => {
+      const queued = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue[0]
+      queued.delivery = {
+        ...queued.delivery!,
+        risk: 'low',
+        stage: 'blocked',
+        resumeStage: 'ci',
+        reason: 'Required GitHub check verify: failure',
+        url: 'https://github.com/example/my-app/pull/3',
+        ...extra,
+      }
+      delete queued.delivery.wake
+    }, context)
+  const agent = (f: Awaited<ReturnType<typeof fixture>>, id: number, action: string) =>
+    f.call({ conversationId: id }, { action })
+
+  it('lets the submitting branch and @ultimate recheck and stop, recording who', async () => {
+    const f = await fixture()
+    await f.opened.harness.commit(async (tx) => {
+      ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).landerConversations['/fixture'] = 1
+    }, context)
+    await block(f)
+    await agent(f, f.submitter, 'recheck')
+    expect((await f.queued()).stage).toBe('ci')
+    await block(f)
+    await agent(f, f.ultimate, 'stop')
+    const index = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+    expect(index.queue).toEqual([])
+    const result = index.results.submission
+    expect(result.reason).toBe(
+      `Stopped by conversation #${f.ultimate}; remote branch and PR were not changed`,
+    )
+    // The record is kept, with the PR identity it had: nothing remote was touched.
+    expect(result.delivery).toMatchObject({ pr: 3, candidate, tree })
+    expect(result.delivery?.approvals).toEqual([
+      { action: 'recheck', at: expect.any(Number), by: 'agent', conversation: f.submitter },
+      { action: 'stop', at: expect.any(Number), by: 'agent', conversation: f.ultimate },
+    ])
+  })
+
+  it('refuses other conversations, publish and merge, a changed candidate and uncertain writes', async () => {
+    const f = await fixture()
+    await block(f)
+    await expect(agent(f, f.branch, 'recheck')).rejects.toThrow('Only the user or @ultimate')
+    await expect(agent(f, f.branch, 'stop')).rejects.toThrow('Only the user or @ultimate')
+    await expect(agent(f, f.submitter, 'merge')).rejects.toThrow('Only the user or @ultimate')
+    await expect(agent(f, f.ultimate, 'publish')).rejects.toThrow('Pass instruction')
+    await expect(
+      f.call({ conversationId: f.submitter }, { action: 'stop', candidate: 'd'.repeat(40) }),
+    ).rejects.toThrow('candidate changed')
+    await block(f, { mergeIntent: true })
+    await expect(agent(f, f.submitter, 'stop')).rejects.toThrow('Reconcile the uncertain write')
+    await block(f, { createIntent: true })
+    await f.opened.harness.commit(async (tx) => {
+      delete (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue[0].delivery!.pr
+    }, context)
+    await expect(agent(f, f.ultimate, 'stop')).rejects.toThrow('Reconcile the uncertain write')
+    expect((await f.queued()).approvals).toBeUndefined()
+  })
+
+  it('caps agent rechecks per candidate; the user can still recheck', async () => {
+    const f = await fixture()
+    for (let i = 0; i < 3; i++) {
+      await block(f)
+      await agent(f, i % 2 ? f.ultimate : f.submitter, 'recheck')
+    }
+    await block(f)
+    await expect(agent(f, f.ultimate, 'recheck')).rejects.toThrow('3 times')
+    await f.call({ device: { device: 'desktop/chrome' } }, { action: 'recheck' })
+    expect((await f.queued()).stage).toBe('ci')
+  })
+})
+
+describe('a blocked delivery report', () => {
+  /** reportBlocked with every send recorded instead of delivered. */
+  const report = async (f: Awaited<ReturnType<typeof fixture>>) => {
+    const sent: { to: number; type: string; requestId: string; content: string }[] = []
+    const host = {
+      ...f.host,
+      harness: () => ({
+        commit: f.opened.harness.commit.bind(f.opened.harness),
+        conversation: async (to: number) => ({
+          submit: async (request: {
+            type: string
+            requestId: string
+            content?: string
+            entry: { model?: { content: string }[] }
+          }) => {
+            sent.push({
+              to,
+              type: request.type,
+              requestId: request.requestId,
+              content: request.content ?? request.entry.model![0].content,
+            })
+          },
+        }),
+      }),
+    } as unknown as ExtensionHost
+    await reportBlocked(host, Workspaces, 'submission', context)
+    return sent
+  }
+  const block = (f: Awaited<ReturnType<typeof fixture>>, extra: Partial<Delivery> = {}) =>
+    f.opened.harness.commit(async (tx) => {
+      const queued = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue[0]
+      const { wake: _wake, ...rest } = queued.delivery!
+      queued.delivery = {
+        ...rest,
+        risk: 'low',
+        stage: 'blocked',
+        resumeStage: 'ci',
+        reason: 'Required GitHub check verify: failure',
+        url: 'https://github.com/example/my-app/pull/3',
+        ...extra,
+      }
+    }, context)
+
+  it('wakes the branch once with the reason, candidate and check logs', async () => {
+    const f = await fixture()
+    await block(f)
+    const sent = await report(f)
+    expect(sent).toEqual([
+      {
+        to: f.submitter,
+        type: 'input',
+        requestId: 'delivery-blocked:submission:1',
+        content: expect.stringContaining(candidate),
+      },
+    ])
+    expect(sent[0].content).toContain('verify: failure')
+    expect(sent[0].content).toContain('https://github.com/example/my-app/pull/3/checks')
+    // A second pass over the same block (a replay, another lander turn) sends the same request again, which the
+    // harness dedupes by id, and spends no further attempt.
+    expect((await report(f))[0].requestId).toBe('delivery-blocked:submission:1')
+    const index = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+    expect(index.queue[0].delivery!.wake).toEqual({ block: 1, to: 'branch' })
+  })
+
+  it('after three wakes stops waking the branch and puts a card before the user', async () => {
+    const f = await fixture()
+    await f.opened.harness.commit(async (tx) => {
+      ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).items[String(f.submitter)] = {
+        path: '/w',
+        branch: 'b',
+        base: 'b'.repeat(40),
+        source: '/fixture',
+        target: 'main',
+        state: 'ready',
+      }
+    }, context)
+    for (let i = 1; i <= 3; i++) {
+      await block(f)
+      expect((await report(f))[0]).toMatchObject({ to: f.submitter, type: 'input' })
+    }
+    await block(f)
+    const sent = await report(f)
+    expect(sent.map(({ to, type }) => ({ to, type }))).toEqual([
+      { to: f.submitter, type: 'write' },
+      { to: f.ultimate, type: 'write' },
+    ])
+    expect(sent[1].content).toContain('3 repair attempts')
+  })
+
+  it('escalates what needs the user at once, without spending an attempt', async () => {
+    for (const [extra, why] of [
+      [{ mergeIntent: true }, 'uncertain remote write'],
+      [{ reason: 'GitHub request rejected (HTTP 401)' }, 'login or credentials'],
+      [{ resumeStage: 'merge', risk: 'medium' }, 'your approval'],
+      [{ reason: 'PR merged outside this delivery; human reconciliation required' }, 'safety hold'],
+    ] as [Partial<Delivery>, string][]) {
+      const f = await fixture()
+      await block(f, extra)
+      const sent = await report(f)
+      expect(sent.map((s) => s.type)).toEqual(['write', 'write'])
+      expect(sent[1].content).toContain(why)
+      const index = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+      expect(index.queue[0].delivery!.wake).toMatchObject({ to: 'user' })
+      // The branch cannot recheck a block that is the user's.
+      await expect(f.call({ conversationId: f.submitter }, { action: 'recheck' })).rejects.toThrow(
+        'needs the user',
+      )
+    }
   })
 })

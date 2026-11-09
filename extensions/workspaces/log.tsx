@@ -547,6 +547,13 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
         </a>
       )}
       {delivery.reason && <p className="text-warning">{delivery.reason}</p>}
+      {delivery.stage === 'blocked' && delivery.wake && (
+        <p className="text-xs text-muted-foreground">
+          {delivery.wake.to === 'user'
+            ? `Needs you: ${delivery.wake.why}.`
+            : 'Its branch was asked to diagnose and repair it.'}
+        </p>
+      )}
       {delivery.approvals?.map((approval) => (
         <p
           className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground"
@@ -560,8 +567,12 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
                 : approval.action === 'recheck'
                   ? 'Recheck requested'
                   : 'Stopped'}{' '}
-            {approval.by === 'user' ? 'by you' : 'by @ultimate on your instruction'} ·{' '}
-            {time(approval.at)}
+            {approval.by === 'user'
+              ? 'by you'
+              : approval.by === 'agent'
+                ? `by #${approval.conversation}`
+                : 'by @ultimate on your instruction'}{' '}
+            · {time(approval.at)}
           </span>
           {approval.conversation !== undefined && (
             <Open id={approval.conversation} entry={approval.instruction} />
@@ -586,6 +597,11 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
                   ? 'Approve merge'
                   : 'Recheck outcome'}
           </Button>
+          {(action === 'publish' || action === 'merge') && (
+            <p className="text-xs text-purple-700 dark:text-purple-300">
+              or tell @ultimate in its chat
+            </p>
+          )}
         </>
       )}
       {delivery.stage === 'blocked' &&

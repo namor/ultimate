@@ -28,15 +28,46 @@ export type Delivery = {
   approvals?: Approval[]
   reason?: string
   resumeStage?: 'review' | 'publish' | 'pr' | 'ci' | 'merge' | 'merged'
+  /** How many blocks this delivery reported; numbers each block's one report. */
+  blocks?: number
+  /** Who the current block went to: the submitting branch to repair it, or the user (with why). Cleared on recheck. */
+  wake?: { block: number; to: 'branch' | 'user'; why?: string }
 }
-/** An audit record of one delivery action: the user's own click, or @ultimate acting on the user's instruction entry. */
+/**
+ * An audit record of one delivery action: the user's own click, @ultimate acting on the user's instruction entry, or an
+ * agent (the submitting branch or @ultimate) rechecking or stopping a blocked delivery on its own.
+ */
 export type Approval = {
   action: 'publish' | 'merge' | 'recheck' | 'stop'
   at: number
-  by: 'user' | 'ultimate'
-  /** @ultimate's conversation and the user's instruction entry in it, when @ultimate acted. */
+  by: 'user' | 'ultimate' | 'agent'
+  /** The acting conversation: @ultimate with the user's instruction entry in it, or the agent. */
   conversation?: number
   instruction?: number
+}
+/** Rechecks agents may request on their own per candidate; after that only the user (or their instruction) can. */
+export const AGENT_RECHECKS = 3
+/** Blocks of one branch's delivery chain that wake it to repair; later ones go to the user. */
+export const BRANCH_WAKES = 3
+
+/**
+ * Why a blocked delivery needs the user rather than a repair by its branch: an uncertain remote write, credentials, an
+ * approval only they give, or a safety hold. Undefined when the branch can diagnose and repair it.
+ */
+export function needsUser(d: Delivery): string | undefined {
+  if ((d.createIntent && !d.pr) || d.mergeIntent)
+    return 'an uncertain remote write must be reconciled'
+  if (
+    (d.resumeStage === 'merge' && d.risk !== 'low' && !d.mergeApproved) ||
+    (d.resumeStage === 'publish' && d.risk === 'high' && !d.publishApproved)
+  )
+    return 'it waits for your approval'
+  const reason = d.reason ?? ''
+  if (/outside this delivery|collision|authorized repository|human reconciliation/i.test(reason))
+    return 'a safety hold needs your decision'
+  if (/HTTP 40[13]|authenticat|credential|login|token/i.test(reason))
+    return 'GitHub access needs your login or credentials'
+  return undefined
 }
 
 export const deliveryRuntime = () => `${process.version}/${process.platform}/${process.arch}`
