@@ -35,6 +35,8 @@ export function checkName(name: unknown): string {
   if (name.length > MAX_NAME) throw new Error(`A preset name has at most ${MAX_NAME} characters`)
   // oxlint-disable-next-line no-control-regex -- control characters are what it rejects
   if (/[\u0000-\u001f\u007f]/.test(name)) throw new Error('A preset name has no control characters')
+  // A plain object would take it as its prototype, and the preset would silently not be saved.
+  if (name === '__proto__') throw new Error('A preset cannot be named __proto__')
   return name
 }
 
@@ -63,6 +65,9 @@ export function parsePreset(value: unknown, where = 'preset'): Preset {
   }
   // Only features are assigned in families (`saveFamilies`); an older agent assignment means nothing now.
   for (const user of Object.keys(assign)) if (!Object.hasOwn(FEATURES, user)) delete assign[user]
+  for (const [user, family] of Object.entries(assign))
+    if (!Object.hasOwn(families, family))
+      throw new Error(`${where}.assign.${user}: unknown family ${family}`)
   return { families, assign, pins }
 }
 
@@ -111,11 +116,12 @@ const modelsOf = (preset: Preset) => [
   ),
 ]
 
+/** The models with a login here, as `provider/id`. */
+const availableModels = async (host: ExtensionHost) =>
+  new Set((await host.modelRuntime.getAvailable()).map((model) => `${model.provider}/${model.id}`))
+
 /** The providers without a login here that a preset needs, with the models it names on each. */
-async function missingLogins(host: ExtensionHost, preset: Preset) {
-  const available = new Set(
-    (await host.modelRuntime.getAvailable()).map((model) => `${model.provider}/${model.id}`),
-  )
+function missingLogins(host: ExtensionHost, preset: Preset, available: Set<string>) {
   const missing = new Map<string, string[]>()
   for (const model of modelsOf(preset))
     if (!available.has(model)) {
@@ -152,26 +158,25 @@ export async function presetsView(host: ExtensionHost): Promise<PresetsView> {
     host.userHome,
     host.modelRuntime,
   )
-  const presets: PresetView[] = await Promise.all(
-    Object.entries(stored.presets)
-      .toSorted(([a], [b]) => a.localeCompare(b))
-      .map(async ([name, preset]) => ({
-        name,
-        preset,
-        current: !!current && same(preset, current),
-        missing: await missingLogins(host, preset),
-        // Agents naming a family the preset lacks fall back to the default family once it applies.
-        orphans: definitions
-          .filter(
-            (definition) =>
-              !definition.model &&
-              definition.family &&
-              definition.family !== DEFAULT_FAMILY &&
-              !Object.hasOwn(preset.families, definition.family),
-          )
-          .map((definition) => ({ agent: definition.name, family: definition.family! })),
-      })),
-  )
+  const available = await availableModels(host)
+  const presets: PresetView[] = Object.entries(stored.presets)
+    .toSorted(([a], [b]) => a.localeCompare(b))
+    .map(([name, preset]) => ({
+      name,
+      preset,
+      current: !!current && same(preset, current),
+      missing: missingLogins(host, preset, available),
+      // Agents naming a family the preset lacks fall back to the default family once it applies.
+      orphans: definitions
+        .filter(
+          (definition) =>
+            !definition.model &&
+            definition.family &&
+            definition.family !== DEFAULT_FAMILY &&
+            !Object.hasOwn(preset.families, definition.family),
+        )
+        .map((definition) => ({ agent: definition.name, family: definition.family! })),
+    }))
   return { presets }
 }
 
@@ -208,7 +213,7 @@ export async function applyPreset(host: ExtensionHost, name: unknown) {
   const stored = await readStored(presetsPath(host.userHome))
   if (!Object.hasOwn(stored.presets, checked)) throw new Error(`No preset ${checked}`)
   const preset = stored.presets[checked]
-  const missing = await missingLogins(host, preset)
+  const missing = missingLogins(host, preset, await availableModels(host))
   if (missing.length)
     throw new Error(
       `${checked} needs a login first: ${missing
