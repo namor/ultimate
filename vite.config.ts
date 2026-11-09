@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url'
+import { availableParallelism } from 'node:os'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite-plus'
@@ -200,7 +201,8 @@ export default defineConfig({
     // A hung hook or teardown fails within seconds and names its test, instead of stalling the run.
     hookTimeout: 5000,
     teardownTimeout: 5000,
-    maxWorkers: 8,
+    // #45669: eight workers oversubscribed the three-core macOS CI runner and fixture-heavy tests hit their deadlines.
+    maxWorkers: Math.min(8, availableParallelism()),
     // Under an agent (AI_AGENT, CLAUDECODE, …) Vitest picks its minimal reporter, which prints nothing for passing
     // files; the lander's stall watchdog then stops a passing run that is silent for two minutes.
     reporters: ['default'],
