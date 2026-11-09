@@ -203,6 +203,8 @@ export default defineConfig({
     teardownTimeout: 5000,
     // #45669: eight workers oversubscribed the three-core macOS CI runner and fixture-heavy tests hit their deadlines.
     maxWorkers: Math.min(8, availableParallelism()),
+    // #45669: cases boot cold Vite servers; parallelize files, not fixture bodies competing for the same CPUs.
+    maxConcurrency: 1,
     // Under an agent (AI_AGENT, CLAUDECODE, …) Vitest picks its minimal reporter, which prints nothing for passing
     // files; the lander's stall watchdog then stops a passing run that is silent for two minutes.
     reporters: ['default'],
