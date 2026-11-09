@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import { deliveryAsk } from '../../extensions/workspaces/ask.tsx'
+import type { Delivery } from '../../extensions/workspaces/delivery.ts'
 import {
+  asks,
   keyCard,
   newestAsked,
-  oldestWaiting,
   openQuestions,
   waiting,
 } from '../../extensions/questions/open.tsx'
@@ -57,16 +59,34 @@ describe('open questions in To-dos', () => {
 })
 
 describe('the waiting pill', () => {
-  it('jumps to the message waiting longest, moving on once it is answered', () => {
+  it('lists messages and deliveries waiting on the user oldest first, dropping answered ones', () => {
     const messages = [
-      { ...open, id: 4, state: 'answered' as const },
-      open,
-      { ...open, id: 6, from: 3 },
+      { ...open, id: 4, at: 10, state: 'answered' as const },
+      { ...open, at: 30 },
+      { ...open, id: 6, at: 50, from: 3 },
+      { ...open, id: 7, at: 5, from: 'remote' as const },
     ]
-    expect(oldestWaiting(messages)?.id).toBe(5)
-    expect(
-      oldestWaiting([messages[0], { ...open, state: 'dismissed' as const }, messages[2]])?.id,
-    ).toBe(6)
-    expect(oldestWaiting([messages[0]])).toBeUndefined()
+    const delivery = { conversation: 9, entry: 120, at: 40 }
+    expect(asks(messages, [delivery])).toEqual([
+      { at: 30, conversation: 2, message: 5 },
+      delivery,
+      { at: 50, conversation: 3, message: 6 },
+    ])
+    expect(asks([{ ...messages[1], state: 'dismissed' as const }], [])).toEqual([])
+  })
+})
+
+describe('deliveries waiting on the user', () => {
+  const base = { stage: 'publish', risk: 'high' } as Delivery
+  it('asks for a high-risk publication, a non-low merge and a blocked delivery until approved', () => {
+    expect(deliveryAsk(base)).toBe('publish')
+    expect(deliveryAsk({ ...base, publishApproved: true })).toBeUndefined()
+    expect(deliveryAsk({ ...base, risk: 'medium' })).toBeUndefined()
+    expect(deliveryAsk({ ...base, stage: 'merge', risk: 'medium' })).toBe('merge')
+    expect(deliveryAsk({ ...base, stage: 'merge', mergeApproved: true })).toBeUndefined()
+    expect(deliveryAsk({ ...base, stage: 'merge', risk: 'low' })).toBeUndefined()
+    expect(deliveryAsk({ ...base, stage: 'blocked' })).toBe('recheck')
+    expect(deliveryAsk({ ...base, stage: 'ci' })).toBeUndefined()
+    expect(deliveryAsk(undefined)).toBeUndefined()
   })
 })

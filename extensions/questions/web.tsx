@@ -1,16 +1,7 @@
-import { defineWebExtension, getState, provide } from '@/sdk'
-import { MessageAnswers, MessagesDoc } from '../messages/ui.tsx'
-import type { MessagesData } from '../messages/refs.ts'
+import { defineWebExtension, provide } from '@/sdk'
+import { MessageAnswers } from '../messages/ui.tsx'
 import { MessageQuestions } from './card.tsx'
-import { oldestWaiting } from './open.tsx'
-import { openMessage, WaitingPill } from './waiting.tsx'
-
-const oldestLocal = () =>
-  oldestWaiting(
-    (
-      (getState().docsOf[1]?.[MessagesDoc.kind] as MessagesData | null | undefined)?.messages ?? []
-    ).filter((message) => typeof message.from === 'number'),
-  ) as { id: number; from: number } | undefined
+import { currentAsks, openAsk, WaitingPill } from './waiting.tsx'
 
 export default defineWebExtension({
   entries: {
@@ -22,12 +13,12 @@ export default defineWebExtension({
   commands: [
     {
       id: 'questions.oldest',
-      title: 'Jump to the oldest message waiting on you',
+      title: 'Jump to the oldest thing waiting on you',
       keys: 'alt+w',
-      when: () => oldestLocal() !== undefined,
+      when: () => currentAsks().length > 0,
       run: (context) => {
-        const oldest = oldestLocal()
-        if (oldest) openMessage(oldest, context)
+        const [oldest] = currentAsks()
+        if (oldest) openAsk(oldest, context)
       },
     },
     {
