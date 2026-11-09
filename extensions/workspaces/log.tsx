@@ -444,15 +444,7 @@ function StatusChip({ state }: { state: Submission }) {
       return <span className={cn(chip, 'text-warning')}>Needs attention</span>
     if (state.delivery?.stage === 'review')
       return <span className={cn(chip, 'text-warning')}>Awaiting independent review</span>
-    if (
-      state.delivery &&
-      ((state.delivery.stage === 'publish' &&
-        state.delivery.risk === 'high' &&
-        !state.delivery.publishApproved) ||
-        (state.delivery.stage === 'merge' &&
-          state.delivery.risk !== 'low' &&
-          !state.delivery.mergeApproved))
-    )
+    if (deliveryAsk(state.delivery))
       return <span className={cn(chip, 'text-warning')}>Awaiting your approval</span>
     if (state.landing)
       return (

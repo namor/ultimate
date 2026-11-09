@@ -7,7 +7,6 @@ export {
   landerSource,
   stateLabel,
   useWorkspaceConversations,
-  useLanderQueue,
   useWorkspaceIndex,
   useWorkspaces,
 } from './data.tsx'
