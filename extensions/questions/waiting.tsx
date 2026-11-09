@@ -1,5 +1,5 @@
 import { MessageCircleQuestionIcon } from 'lucide-react'
-import { cn, events, useDocOf, useUltimate } from '@/sdk'
+import { events, useDocOf, useUltimate } from '@/sdk'
 import { MessagesDoc, emptyMessages } from '../messages/ui.tsx'
 import { oldestWaiting, waiting } from './open.tsx'
 
@@ -33,9 +33,7 @@ export function WaitingPill() {
       {count > 0 && (
         <button
           aria-label={`${label}: open the oldest`}
-          className={cn(
-            'flex h-6 cursor-pointer items-center gap-1.5 rounded-full border border-purple-500/40 bg-purple-500/10 px-2 font-mono text-[11px] text-purple-700 transition-colors outline-none hover:bg-purple-500/20 focus-visible:ring-2 focus-visible:ring-purple-500/60 max-md:h-7 dark:text-purple-300',
-          )}
+          className="flex h-6 cursor-pointer items-center gap-1.5 rounded-full border border-purple-500/40 bg-purple-500/10 px-2 font-mono text-[11px] text-purple-700 transition-colors outline-none hover:bg-purple-500/20 focus-visible:ring-2 focus-visible:ring-purple-500/60 max-md:h-7 dark:text-purple-300"
           data-waiting-pill={oldest?.id}
           onClick={() =>
             oldest
