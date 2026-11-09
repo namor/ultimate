@@ -845,8 +845,11 @@ export function workspaces(host: Host) {
         queued.delivery.risk = assessment.risk
         queued.delivery.stage = 'publish'
         queued.delivery.deadline = Date.now() + 60 * 60 * 1000
+        // A new assessment is a new decision: earlier approvals and instructions do not carry over.
+        queued.at = at
         delete queued.delivery.publishApproved
         delete queued.delivery.mergeApproved
+        delete queued.delivery.approvals
       }
       const entry = queued ?? {
         id: `${id}-${tip.slice(0, 7)}-${Date.now().toString(36)}`,

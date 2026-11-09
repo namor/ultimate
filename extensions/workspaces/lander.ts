@@ -611,11 +611,12 @@ export function createLander(
                 const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
                   (item) => item.id === id,
                 )!
-                // User approvals may arrive while the network request runs; never erase them.
+                // Approvals may arrive while the network request runs; never erase them or their audit records.
                 saved.delivery = {
                   ...delivery,
                   ...(saved.delivery?.publishApproved ? { publishApproved: true } : {}),
                   ...(saved.delivery?.mergeApproved ? { mergeApproved: true } : {}),
+                  ...(saved.delivery?.approvals ? { approvals: saved.delivery.approvals } : {}),
                 }
               }, context)
             const expired = Date.now() > (previous.deadline ?? previous.checkedAt + 60 * 60 * 1000)
