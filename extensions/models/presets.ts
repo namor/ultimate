@@ -26,6 +26,7 @@ type Stored = { version: number; presets: Record<string, Preset> }
 const isObject = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value)
 const levels = /:(off|minimal|low|medium|high|xhigh|max)$/
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /** A preset name: 1–40 characters, no control characters, no surrounding spaces. */
 export function checkName(name: unknown): string {
@@ -67,7 +68,11 @@ export function parsePreset(value: unknown, where = 'preset'): Preset {
 
 /** The presets file, checked whole: a corrupt or newer file throws and is never written over. */
 async function readStored(path: string): Promise<Stored> {
-  const value = await readJson<unknown>(path, { version: VERSION, presets: {} })
+  const value = await readJson<unknown>(path, { version: VERSION, presets: {} }).catch(
+    (error: unknown) => {
+      throw new Error(`${path} is not valid JSON; fix or move it (${errorText(error)})`)
+    },
+  )
   if (!isObject(value) || value.version !== VERSION || !isObject(value.presets))
     throw new Error(`${path}: not a version ${VERSION} presets file; fix or move it`)
   const presets: Record<string, Preset> = {}

@@ -43,18 +43,6 @@ function summary({ preset }: PresetView) {
     : models.join(' · ')
 }
 
-const providers = ({ preset }: PresetView) =>
-  [
-    ...new Set(
-      [
-        ...Object.values(preset.families).map((family) => family.model),
-        ...Object.values(preset.pins),
-      ]
-        .filter((model): model is string => !!model)
-        .map((model) => model.slice(0, model.indexOf('/'))),
-    ),
-  ].join(', ')
-
 /** Every family and pin of a preset, one per line, for a row's tooltip. */
 function details({ preset, orphans }: PresetView) {
   const lines = Object.entries(preset.families).map(
@@ -123,6 +111,7 @@ function PresetList({ close }: { close: () => void }) {
           setError(undefined)
           setDeleting(undefined)
         }}
+        disabled={!!loadError}
         placeholder={presets.length ? 'Search presets, or type a new name…' : 'Name a preset…'}
         value={query}
       />
@@ -192,9 +181,6 @@ function PresetList({ close }: { close: () => void }) {
                     )}
                   </div>
                 </div>
-                <span className="shrink-0 self-start pt-0.5 text-[10.5px] text-muted-foreground/70 max-sm:hidden">
-                  {providers(preset)}
-                </span>
                 <button
                   aria-label={
                     deleting === preset.name
@@ -257,7 +243,7 @@ function PresetList({ close }: { close: () => void }) {
           </span>
         ) : (
           <>
-            <span className="max-sm:hidden">
+            <span className="shrink-0 whitespace-nowrap max-sm:hidden">
               <Kbd>↵</Kbd> switch
             </span>
             <span className="min-w-0">
