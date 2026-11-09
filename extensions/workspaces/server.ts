@@ -33,7 +33,7 @@ import {
 } from './refs.ts'
 import { githubRepo } from '../../lib/project-identity.ts'
 import { UserInputEvent } from '../../shared/events.ts'
-import { AGENT_RECHECKS } from './delivery.ts'
+import { agentRefusal } from './delivery.ts'
 import type { Approval } from './delivery.ts'
 import { sweepChecks } from './lander.ts'
 import { Workspaces, workspaces } from './workspaces.ts'
@@ -159,12 +159,12 @@ export const actions = {
     const standing = host.doc('ultimate.standing-agents')
     const ultimate =
       standing && (await host.harness().snapshot(standing, ROOT_CONVERSATION_ID, context))?.ultimate
+    // Recheck or stop without the user's instruction is an agent's own call, judged by `agentRefusal` in the commit.
     const agent =
       !device &&
       args.instruction === undefined &&
       (action === 'recheck' || action === 'stop') &&
-      conversationId !== undefined &&
-      (conversationId === seen.conversationId || conversationId === ultimate)
+      conversationId !== undefined
     const approval: Approval = agent
       ? { action, at: Date.now(), by: 'agent', conversation: conversationId }
       : await approver(host, { conversationId, device }, action, args.instruction, seen.at)
@@ -191,17 +191,16 @@ export const actions = {
         throw new Error(
           'instruction already decided another delivery; the user must decide this one',
         )
-      if (approval.by === 'agent' && action === 'recheck' && delivery.wake?.to === 'user')
-        throw new Error(`This block needs the user: ${delivery.wake.why}`)
-      if (
-        approval.by === 'agent' &&
-        action === 'recheck' &&
-        (delivery.approvals ?? []).filter((a) => a.by === 'agent' && a.action === 'recheck')
-          .length >= AGENT_RECHECKS
-      )
-        throw new Error(
-          `Agents already rechecked this candidate ${AGENT_RECHECKS} times; stop it, resubmit a repaired candidate, or ask the user`,
+      if (approval.by === 'agent') {
+        const refusal = agentRefusal(
+          delivery,
+          action,
+          approval.conversation!,
+          entry.conversationId,
+          ultimate as number | undefined,
         )
+        if (refusal) throw new Error(refusal)
+      }
       delivery.approvals = [...(delivery.approvals ?? []), approval]
       if (action === 'stop' && delivery.stage === 'blocked') {
         if ((delivery.createIntent && !delivery.pr) || delivery.mergeIntent)

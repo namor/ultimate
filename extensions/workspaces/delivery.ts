@@ -51,6 +51,35 @@ export const AGENT_RECHECKS = 3
 export const BRANCH_WAKES = 3
 
 /**
+ * Why an agent (`actor`) may not take `action` on delivery `d` submitted by conversation `submitter`, or undefined when it
+ * may: only the submitting branch or @ultimate, only `recheck` or `stop` of a blocked delivery, no recheck of a block that
+ * is the user's (the same rule that decides the lander's wake), and at most `AGENT_RECHECKS` rechecks per candidate.
+ * Publish and merge are never an agent's own decision.
+ */
+export function agentRefusal(
+  d: Delivery,
+  action: Approval['action'],
+  actor: number,
+  submitter: number,
+  ultimate: number | undefined,
+): string | undefined {
+  if (actor !== submitter && actor !== ultimate)
+    return "Only the user or @ultimate on the user's instruction can act on a delivery"
+  if (action !== 'recheck' && action !== 'stop')
+    return "Pass instruction: the entry id of the user's input that told you to act on this delivery"
+  if (d.stage !== 'blocked') return 'Delivery stage changed; reload its card'
+  if (action === 'stop') return undefined
+  const why = d.wake?.to === 'user' ? d.wake.why : needsUser(d)
+  if (why) return `This block needs the user: ${why}`
+  if (
+    (d.approvals ?? []).filter((a) => a.by === 'agent' && a.action === 'recheck').length >=
+    AGENT_RECHECKS
+  )
+    return `Agents already rechecked this candidate ${AGENT_RECHECKS} times; stop it, resubmit a repaired candidate, or ask the user`
+  return undefined
+}
+
+/**
  * Why a blocked delivery needs the user rather than a repair by its branch: an uncertain remote write, credentials, an
  * approval only they give, or a safety hold. Undefined when the branch can diagnose and repair it.
  */
