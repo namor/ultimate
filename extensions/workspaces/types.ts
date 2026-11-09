@@ -1,5 +1,5 @@
 import type { ConversationSubject } from '../conversations/types.ts'
-import type { Delivery, DeliveryRisk, StandingGrant } from './delivery.ts'
+import type { Delivery, DeliveryRisk } from './delivery.ts'
 import type { DeliverySettings } from './delivery-settings.ts'
 
 export type Workspace = {
@@ -139,3 +139,16 @@ export type LandResult = {
   needsRestart?: boolean
 }
 export type SubmitResult = { text: string; id: string; position: number; lander: number }
+
+/**
+ * A time-boxed standing approval: the user's typed instruction `instruction` in @ultimate's conversation `conversation`
+ * let @ultimate approve publish and merge of verified, reviewed deliveries until `until`, unless revoked earlier.
+ */
+export type StandingGrant = {
+  instruction: number
+  conversation: number
+  at: number
+  until: number
+  revokedAt?: number
+  revokedBy?: 'user' | 'ultimate'
+}

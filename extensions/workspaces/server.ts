@@ -275,7 +275,8 @@ export const actions = {
       }, context)
       return { ok: true as const }
     }
-    if (device) throw new Error('Tell @ultimate to grant a standing approval; it records your words')
+    if (device)
+      throw new Error('Tell @ultimate to grant a standing approval; it records your words')
     const ultimate = await rootAgent(host, { conversationId })
     if (await goalOpen(host))
       throw new Error('A hands-off goal cannot grant a standing approval; it waits for the user')

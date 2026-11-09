@@ -14,7 +14,8 @@ import { Tool, ToolContent, ToolHeader, ToolOutput, ToolSection } from '@/compon
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Button } from '@/components/ui/button'
 import { DeliveryAction, StandingAction } from './refs.ts'
-import type { Delivery, StandingGrant } from './delivery.ts'
+import type { Delivery } from './delivery.ts'
+import type { StandingGrant } from './types.ts'
 import {
   formatDuration,
   formatTime,

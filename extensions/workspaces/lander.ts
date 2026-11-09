@@ -461,7 +461,7 @@ export function createLander(
          * it alone may approve, with its reason, under that grant.
          */
         const askStanding = async (delivery: NonNullable<QueueEntry['delivery']>) => {
-          const grant = (await host.harness().snapshot(Workspaces, ROOT_CONVERSATION_ID, context))
+          const grant = (await runtime.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))
             ?.standing
           const action = delivery.stage as 'publish' | 'merge'
           if (standingRefusal(grant, delivery, action, Date.now())) return

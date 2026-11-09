@@ -4,9 +4,14 @@
  */
 import { actionRef, docRef } from '../../shared/extension-api.ts'
 import { defineEvent } from '../../shared/events.ts'
-import type { WorkspaceDisk, WorkspaceIndex, WorkspaceInfo, WorkspaceStats } from './types.ts'
+import type {
+  StandingGrant,
+  WorkspaceDisk,
+  WorkspaceIndex,
+  WorkspaceInfo,
+  WorkspaceStats,
+} from './types.ts'
 import type { KeptWork } from '../conversations/types.ts'
-import type { StandingGrant } from './delivery.ts'
 
 /** Why the project cannot isolate conversations (`reason`, absent when it can), and whether its folder is empty. */
 export type Isolation = { reason?: string; empty?: boolean }

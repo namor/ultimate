@@ -1,6 +1,7 @@
 import { exec } from '../../lib/exec.ts'
 import { git } from '../../lib/git.ts'
 import type { DeliverySettings } from './delivery-settings.ts'
+import type { StandingGrant } from './types.ts'
 
 export type DeliveryRisk = 'low' | 'medium' | 'high'
 /** Kept on the queue across replacement lander tasks, including uncertain external writes. */
@@ -42,18 +43,6 @@ export type Approval = {
   instruction?: number
   standing?: number
   reason?: string
-}
-/**
- * A time-boxed standing approval: the user's typed instruction `instruction` in @ultimate's conversation `conversation`
- * let @ultimate approve publish and merge of verified, reviewed deliveries until `until`, unless revoked earlier.
- */
-export type StandingGrant = {
-  instruction: number
-  conversation: number
-  at: number
-  until: number
-  revokedAt?: number
-  revokedBy?: 'user' | 'ultimate'
 }
 
 /**

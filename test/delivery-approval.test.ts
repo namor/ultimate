@@ -311,7 +311,7 @@ describe('delivery approval', () => {
         host: f.host,
         conversationId: f.ultimate,
         signal: new AbortController().signal,
-      } as ActionContext)
+      } as unknown as ActionContext)
       return { ...f, instruction }
     }
     const approve = (f: Awaited<ReturnType<typeof granted>>, args = {}) =>
@@ -379,7 +379,7 @@ describe('delivery approval', () => {
           host: f.host,
           conversationId: f.ultimate,
           signal: new AbortController().signal,
-        } as ActionContext)
+        } as unknown as ActionContext)
       await expect(renew(f.instruction)).rejects.toThrow('newer instruction')
       await renew(await f.entry(f.ultimate, 'pi.user', { typed: true }))
       await f.opened.harness.commit(async (tx) => {
