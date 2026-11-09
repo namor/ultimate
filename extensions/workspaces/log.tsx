@@ -491,7 +491,15 @@ function StandingLine({ grant }: { grant?: StandingGrant }) {
     })
   return (
     <p className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-      <span>Standing approval until {time(grant.until)}</span>
+      <span>
+        Standing approval until{' '}
+        {new Date(grant.until).toLocaleString([], {
+          weekday: 'short',
+          hour: '2-digit',
+          minute: '2-digit',
+          hourCycle: 'h23',
+        })}
+      </span>
       <Open id={grant.conversation} entry={grant.instruction} />
       <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => void revoke()}>
         Revoke
