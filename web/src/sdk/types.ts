@@ -259,6 +259,8 @@ export const RunStart = definePoint<number | undefined, number | undefined>('ult
 export const ConversationKind = definePoint<ConversationSummary | undefined, string | undefined>(
   'ultimate.conversationKind',
 )
+/** An extension's empty transcript content; undefined keeps the generic conversation welcome. */
+export const ConversationEmpty = definePoint<null, ReactNode>('ultimate.conversationEmpty')
 /**
  * The text another conversation can follow to read message `id` of `conversation` (`codemode` provides it); a stored
  * message offers to copy it. No copy action while nothing provides it.

@@ -58,6 +58,16 @@ function useBranchState(
   const primary = useDocOf(1, StandingDoc)?.ultimate
   const concludedSince = useConcludedSince()(conversation.id)
   const queued = index.queue.find((item) => item.conversationId === conversation.id)
+  if (queued?.state === 'waiting')
+    return {
+      label:
+        queued.delivery?.stage === 'review'
+          ? 'needs review'
+          : queued.delivery?.stage === 'blocked'
+            ? 'delivery blocked'
+            : 'waits on you',
+      tone: 'waiting',
+    } as const
   if (queued?.state === 'landing') return { label: 'landing', tone: 'success' } as const
   if (queued) return { label: 'submitted', tone: 'success' } as const
   // A pause holds its run: nothing of it executes until Play.

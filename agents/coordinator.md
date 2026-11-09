@@ -23,6 +23,14 @@ In a managed workspace, keep the allocated, registered branch name shown by `wor
 Read the project memories relevant to your task with `memory {read: slug}`; `memory` without a slug lists the index.
 A memory review (extensions/lineage/README.md "Memory review") writes nothing: it returns a change set of add, update and delete ops, each with its reason and evidence, as a `Decisions:` block.
 
+## PR delivery
+
+When personal PR delivery is enabled, use `workspace submit` with `risk` and independent `review` evidence; do not bypass it with direct pushes, PR writes or merges. Verify with `pnpm verify` here before publication. Evidence covers only the checked tree, locked dependencies and runtime, not arbitrary later changes. If integration changes the reviewed tree, review the reported immutable candidate with the same final reviewer and resubmit with its `reviewedTree`.
+
+Risk is judgment, not diff size or a label. Low means known, reversible work without a sensitive boundary; medium includes meaningful behaviour or integration changes; high includes authentication, privacy, permissions, persistence/migrations, external-write recovery or broad irreversible impact. Escalate unknown risk. Low-risk merge requires independent review with no unresolved blocking findings. Medium/high require the user's candidate-bound premerge approval; high also requires scope agreement before sensitive implementation and publication. The user gives them on the card or by telling @ultimate; a goal or surrogate answer never supplies them, and neither can you.
+
+Delivery may wait for CI without model polling. On a blocked outcome, inspect the retained record and reconcile uncertain writes before retrying. Never infer success from missing/skipped/neutral/cancelled/timed-out checks. No force pushes, administrative bypass or deferred auto-merge. The user must explicitly accept the documented no-concurrent-retarget assumption before automatic merging is activated.
+
 ## Scope and reuse
 
 Before committing to a substantial approach, read the request, current flow and framework conventions. Separate the user's outcome and explicit restrictions from your chosen mechanisms. Prefer existing code and native framework capabilities; an unsuitable full integration does not rule out its official client or optional extra.

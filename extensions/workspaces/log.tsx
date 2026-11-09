@@ -12,9 +12,13 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { Tool, ToolContent, ToolHeader, ToolOutput, ToolSection } from '@/components/ai/tool'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { Button } from '@/components/ui/button'
+import { DeliveryAction } from './refs.ts'
+import type { Delivery } from './delivery.ts'
 import {
   formatDuration,
   formatTime,
+  api,
   useConversation,
   useNow,
   useToolDuration,
@@ -394,6 +398,7 @@ export function LanderLogEntry({ entry }: { entry: EntryRecord }) {
 }
 
 type Submission = {
+  delivery?: Delivery
   conversationId?: number
   subject?: ConversationSubject
   tip: string
@@ -433,6 +438,20 @@ const parse = (output: string) => {
 function StatusChip({ state }: { state: Submission }) {
   const chip = 'flex min-w-0 items-center gap-1 truncate'
   if (!state.outcome) {
+    if (state.delivery?.stage === 'blocked')
+      return <span className={cn(chip, 'text-warning')}>Needs attention</span>
+    if (state.delivery?.stage === 'review')
+      return <span className={cn(chip, 'text-warning')}>Awaiting independent review</span>
+    if (
+      state.delivery &&
+      ((state.delivery.stage === 'publish' &&
+        state.delivery.risk === 'high' &&
+        !state.delivery.publishApproved) ||
+        (state.delivery.stage === 'merge' &&
+          state.delivery.risk !== 'low' &&
+          !state.delivery.mergeApproved))
+    )
+      return <span className={cn(chip, 'text-warning')}>Awaiting your approval</span>
     if (state.landing)
       return (
         <span className={cn(chip, 'text-brand')}>
@@ -458,6 +477,130 @@ function StatusChip({ state }: { state: Submission }) {
       {landed}
       {outcome.pushed ? ' · pushed' : ''}
     </span>
+  )
+}
+
+function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string>()
+  const action =
+    delivery.stage === 'blocked'
+      ? 'recheck'
+      : delivery.stage === 'publish' && delivery.risk === 'high' && !delivery.publishApproved
+        ? 'publish'
+        : delivery.stage === 'merge' && delivery.risk !== 'low' && !delivery.mergeApproved
+          ? 'merge'
+          : undefined
+  const approve = async (
+    request: 'publish' | 'merge' | 'recheck' | 'stop' | undefined = action,
+  ) => {
+    if (!request) return
+    setPending(true)
+    setError(undefined)
+    try {
+      await api.action(DeliveryAction, {
+        id,
+        candidate: delivery.candidate,
+        tree: delivery.tree,
+        action: request,
+      })
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'Could not update delivery')
+    } finally {
+      setPending(false)
+    }
+  }
+  return (
+    <section
+      className="space-y-2 rounded-lg border border-border/70 p-3 text-sm"
+      aria-label="PR delivery"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <strong>
+          {action === 'recheck'
+            ? 'Delivery needs attention'
+            : delivery.stage === 'review'
+              ? 'Independent review is needed'
+              : action
+                ? 'Your approval is needed'
+                : 'PR delivery'}
+        </strong>
+        <span className="text-xs text-muted-foreground">{delivery.risk} risk</span>
+      </div>
+      <p className="break-words text-muted-foreground">
+        {delivery.settings.repository} → {delivery.settings.base} ·{' '}
+        <code title={delivery.candidate}>{short(delivery.candidate)}</code>
+      </p>
+      {delivery.stage === 'review' && (
+        <p className="break-words text-muted-foreground">
+          Review the integration candidate before publication. Tree: <code>{delivery.tree}</code>
+        </p>
+      )}
+      {delivery.url && (
+        <a
+          className="text-brand underline underline-offset-4"
+          href={delivery.url}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Open pull request
+        </a>
+      )}
+      {delivery.reason && <p className="text-warning">{delivery.reason}</p>}
+      {delivery.approvals?.map((approval) => (
+        <p
+          className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground"
+          key={`${approval.action}:${approval.at}`}
+        >
+          <span>
+            {approval.action === 'publish'
+              ? 'Publication approved'
+              : approval.action === 'merge'
+                ? 'Merge approved'
+                : approval.action === 'recheck'
+                  ? 'Recheck requested'
+                  : 'Stopped'}{' '}
+            {approval.by === 'user' ? 'by you' : 'by @ultimate on your instruction'} ·{' '}
+            {time(approval.at)}
+          </span>
+          {approval.conversation !== undefined && (
+            <Open id={approval.conversation} entry={approval.instruction} />
+          )}
+        </p>
+      ))}
+      {action && (
+        <>
+          <p>
+            {action === 'publish'
+              ? 'Allow this verified candidate to be published?'
+              : action === 'merge'
+                ? 'Required GitHub checks passed. Approve this candidate for merge?'
+                : 'The existing delivery record will be reconciled. Uncertain writes are not blindly repeated.'}
+          </p>
+          <Button size="sm" disabled={pending} onClick={() => void approve()}>
+            {pending
+              ? 'Saving…'
+              : action === 'publish'
+                ? 'Approve publication'
+                : action === 'merge'
+                  ? 'Approve merge'
+                  : 'Recheck outcome'}
+          </Button>
+        </>
+      )}
+      {delivery.stage === 'blocked' &&
+        !(delivery.createIntent && !delivery.pr) &&
+        !delivery.mergeIntent && (
+          <Button size="sm" variant="ghost" disabled={pending} onClick={() => void approve('stop')}>
+            Stop delivery · leave PR unchanged
+          </Button>
+        )}
+      {error && (
+        <p role="alert" className="text-error">
+          {error}
+        </p>
+      )}
+    </section>
   )
 }
 
@@ -493,6 +636,9 @@ export function WorkspaceCall({ call }: { call: ToolCallView }) {
       />
       {submitted && state && (
         <div className="space-y-1 border-t border-border/80 px-2.5 py-1.5">
+          {state.delivery && !state.outcome && (
+            <DeliveryCard id={submitted.id} delivery={state.delivery} />
+          )}
           {state.subject && state.conversationId !== undefined && (
             <Subject from={state.conversationId} subject={state.subject} />
           )}

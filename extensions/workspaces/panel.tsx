@@ -80,7 +80,14 @@ function Checkout({ conversation }: { conversation: WorkspaceConversation }) {
             queued && 'text-brand',
           )}
         >
-          · {queued ? (queued.state === 'landing' ? 'landing…' : 'queued') : stateLabel(recorded)}
+          ·{' '}
+          {queued
+            ? queued.state === 'landing'
+              ? 'landing…'
+              : queued.state === 'waiting'
+                ? 'waiting on delivery'
+                : 'queued'
+            : stateLabel(recorded)}
         </span>
         <button
           aria-label={`Refresh #${conversation.id}`}
@@ -161,7 +168,11 @@ function LanderQueue() {
                 item.state === 'landing' ? 'text-brand' : 'text-muted-foreground',
               )}
             >
-              {item.state === 'landing' ? (item.step ?? 'landing') : `queued for ${item.target}`}
+              {item.state === 'landing'
+                ? (item.step ?? 'landing')
+                : item.state === 'waiting'
+                  ? `waiting on delivery · ${item.target}`
+                  : `queued for ${item.target}`}
             </span>
           </li>
         ))}

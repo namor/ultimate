@@ -20,6 +20,7 @@ export function LanderState({
 }) {
   const source = Object.entries(index.landerConversations).find(([, lander]) => lander === id)?.[0]
   const landing = index.queue.some((item) => item.source === source && item.state === 'landing')
+  const waiting = index.queue.some((item) => item.source === source && item.state === 'waiting')
   const queued = index.queue.filter(
     (item) => item.source === source && item.state === 'queued',
   ).length
@@ -29,6 +30,8 @@ export function LanderState({
     <>
       {landing ? (
         <span className="shrink-0 text-brand">landing</span>
+      ) : waiting ? (
+        <span className="shrink-0 text-warning">waiting on delivery</span>
       ) : (
         <span className={cn('shrink-0', stateTone[state])}>{stateWord(state)}</span>
       )}
@@ -38,7 +41,7 @@ export function LanderState({
           className="ml-auto shrink-0 text-muted-foreground/80"
           title={new Date(at).toLocaleString()}
         >
-          {formatAgo(at, now)}
+          last {formatAgo(at, now)}
         </span>
       )}
     </>

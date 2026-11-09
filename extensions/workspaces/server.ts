@@ -13,7 +13,7 @@ import {
   section,
   ToolTask,
 } from '@earendil-works/pi-durable'
-import type { ConversationId } from '@earendil-works/pi-durable'
+import type { ConversationId, EntryId, SubmissionId, Tx } from '@earendil-works/pi-durable'
 import { implementAction } from '../../lib/actions.ts'
 import type { ActionInput } from '../../lib/actions.ts'
 import { empty, git, isolatable, noCommit, noRepository } from '../../lib/git.ts'
@@ -23,6 +23,7 @@ import { ConversationsApi, Release } from '../conversations/api.ts'
 import { Branches, WorkspacesApi } from './api.ts'
 import {
   DiskAction,
+  DeliveryAction,
   GithubAction,
   InfoAction,
   IsolationAction,
@@ -31,6 +32,8 @@ import {
   StatsAction,
 } from './refs.ts'
 import { githubRepo } from '../../lib/project-identity.ts'
+import { UserInputEvent } from '../../shared/events.ts'
+import type { Approval } from './delivery.ts'
 import { sweepChecks } from './lander.ts'
 import { Workspaces, workspaces } from './workspaces.ts'
 export const order = -200
@@ -56,7 +59,164 @@ async function setupGit(host: ExtensionHost) {
   await workspaces(host).standLander(context)
 }
 
+/**
+ * Who acts on a delivery. A call from the browser (it carries a `device`) is the user's own click. Any other call is an
+ * agent's: only @ultimate, the root standing agent, may make it, never while a hands-off goal is open, and only on the
+ * user's recorded instruction: an entry in its conversation that a `user.input` event after the submission names,
+ * carrying the browser `device` only the user's composer and answer card stamp. The entry's kind alone does not prove
+ * the user wrote it: `messages/settle` writes a `board.message` from "user" in @ultimate's name, watchdog, update and
+ * onboarding place plain `pi.user` inputs with text the server composed, and voice-live answers an open question with
+ * text its model composed (an event without a device). Branches, subagents, side chats and automations run under their
+ * own conversation ids, so they fail the first check. Docs are found by kind, not import: subagents and goal depend on
+ * workspaces.
+ */
+/** Whether a hands-off goal is open; `tx` reads inside a commit, where a snapshot would wait on that commit. */
+async function goalOpen(host: ExtensionHost, tx?: Tx) {
+  const goals = host.doc('goal')
+  if (!goals) return false
+  const open = tx
+    ? (await tx.doc(goals, ROOT_CONVERSATION_ID)).goals
+    : (await host.harness().snapshot(goals, ROOT_CONVERSATION_ID, context))?.goals
+  return Array.isArray(open) && open.some((goal) => !(goal as { ended?: unknown }).ended)
+}
+async function approver(
+  host: ExtensionHost,
+  ctx: Pick<ActionContext, 'conversationId' | 'device'>,
+  action: Approval['action'],
+  instruction: unknown,
+  submittedAt: number,
+): Promise<Approval> {
+  if (ctx.device) return { action, at: Date.now(), by: 'user' }
+  const harness = host.harness()
+  const standing = host.doc('ultimate.standing-agents')
+  const ultimate =
+    standing && (await harness.snapshot(standing, ROOT_CONVERSATION_ID, context))?.ultimate
+  if (ctx.conversationId === undefined || ctx.conversationId !== ultimate)
+    throw new Error("Only the user or @ultimate on the user's instruction can act on a delivery")
+  if (await goalOpen(host))
+    throw new Error('A hands-off goal cannot approve a delivery; it waits for the user')
+  if (typeof instruction !== 'number' || !Number.isSafeInteger(instruction))
+    throw new Error(
+      "Pass instruction: the entry id of the user's input that told you to act on this delivery",
+    )
+  const entry = await harness.commit((tx) => tx.entry(instruction as EntryId), context)
+  if (!entry || entry.conversationId !== ultimate || entry.id <= submittedAt)
+    throw new Error(
+      'instruction must be an entry of your conversation newer than this submission; the user decides on this candidate',
+    )
+  const message = entry.kind === 'board.message' ? (entry.data as { id?: unknown })?.id : undefined
+  // The input's event commits right after its placement (or admission, when queued), so it lies between the submission
+  // and the entries that followed the instruction; a bounded window keeps an old instruction findable.
+  const events = await host.eventLog.recent({
+    events: [UserInputEvent],
+    since: submittedAt,
+    before: entry.id + 1000,
+    limit: 1000,
+  })
+  let typed = false
+  for (const { data } of events) {
+    if (data.conversation !== ultimate || !data.device || data.kind === 'dismiss') continue
+    if (data.entry === entry.id || (message !== undefined && data.message === message)) typed = true
+    else if (data.submission !== undefined) {
+      const placed = await (
+        await harness.submission(data.submission as SubmissionId, context)
+      )?.status(context)
+      if (placed?.entry === entry.id) typed = true
+    }
+    if (typed) break
+  }
+  if (!typed)
+    throw new Error(
+      'instruction must be an input the user typed in your conversation or answered on your card, not one written in their name',
+    )
+  return { action, at: Date.now(), by: 'ultimate', conversation: ultimate, instruction: entry.id }
+}
+
 export const actions = {
+  delivery: implementAction(DeliveryAction, async (args, { host, conversationId, device }) => {
+    if (
+      !args ||
+      typeof args !== 'object' ||
+      Array.isArray(args) ||
+      typeof args.id !== 'string' ||
+      typeof args.candidate !== 'string' ||
+      typeof args.tree !== 'string' ||
+      typeof args.action !== 'string' ||
+      !['publish', 'merge', 'recheck', 'stop'].includes(args.action)
+    )
+      throw new Error('Expected an immutable delivery approval')
+    const action = args.action as Approval['action']
+    const bound = (entry: { delivery?: { candidate: string; tree: string } } | undefined) =>
+      entry?.delivery !== undefined &&
+      entry.delivery.candidate === args.candidate &&
+      entry.delivery.tree === args.tree
+    const seen = (
+      await host.harness().snapshot(Workspaces, ROOT_CONVERSATION_ID, context)
+    )?.queue.find((item) => item.id === args.id)
+    if (!seen || !bound(seen)) throw new Error('Delivery candidate changed; approval refused')
+    const approval = await approver(
+      host,
+      { conversationId, device },
+      action,
+      args.instruction,
+      seen.at,
+    )
+    await host.harness().commit(async (tx) => {
+      const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+      const entry = index.queue.find((item) => item.id === args.id)
+      const delivery = entry?.delivery
+      if (!entry || !delivery || !bound(entry))
+        throw new Error('Delivery candidate changed; approval refused')
+      // The instruction was judged against the snapshot's submission point; a reassessment in between moved it.
+      if (entry.at !== seen.at)
+        throw new Error('Delivery was reassessed; the user must decide on the new assessment')
+      if (approval.by === 'ultimate' && (await goalOpen(host, tx)))
+        throw new Error('A hands-off goal cannot approve a delivery; it waits for the user')
+      // One instruction decides one delivery: the user's words about this candidate approve no other.
+      if (
+        approval.instruction !== undefined &&
+        [...index.queue, ...Object.entries(index.results).map(([id, r]) => ({ id, ...r }))].some(
+          (item) =>
+            item.id !== entry.id &&
+            item.delivery?.approvals?.some((a) => a.instruction === approval.instruction),
+        )
+      )
+        throw new Error(
+          'instruction already decided another delivery; the user must decide this one',
+        )
+      delivery.approvals = [...(delivery.approvals ?? []), approval]
+      if (action === 'stop' && delivery.stage === 'blocked') {
+        if ((delivery.createIntent && !delivery.pr) || delivery.mergeIntent)
+          throw new Error('Reconcile the uncertain write before stopping this delivery')
+        index.results[entry.id] = {
+          outcome: 'failed',
+          reason: `Stopped by ${approval.by === 'user' ? 'user' : "@ultimate on the user's instruction"}; remote branch and PR were not changed`,
+          delivery,
+          at: entry.at,
+          divergence: entry.divergence,
+          target: entry.target,
+          tip: entry.tip,
+          lander: index.landerConversations[entry.source],
+          steps: entry.steps,
+          conversationId: entry.conversationId,
+          ...(entry.subject ? { subject: entry.subject } : {}),
+        }
+        index.queue = index.queue.filter((item) => item.id !== entry.id)
+      } else if (action === 'publish' && delivery.stage === 'publish')
+        delivery.publishApproved = true
+      else if (action === 'merge' && delivery.stage === 'merge') delivery.mergeApproved = true
+      else if (action === 'recheck' && delivery.stage === 'blocked' && delivery.resumeStage) {
+        delivery.stage = delivery.resumeStage
+        delete delivery.reason
+        delivery.deadline = Date.now() + 60 * 60 * 1000
+      } else throw new Error('Delivery stage changed; reload its card')
+      if (action === 'publish' || action === 'merge')
+        delivery.deadline = Date.now() + 60 * 60 * 1000
+    }, context)
+    await workspaces(host).resume(context)
+    host.harness().resume()
+    return { ok: true as const }
+  }),
   /** `github.com/<owner>/<repo>` of the project's `origin`, or null off GitHub: landing cards link ranges. */
   github: implementAction(
     GithubAction,
@@ -231,6 +391,19 @@ export default function workspaceExtension(host: ExtensionHost) {
           'Inspect your workspace and source tips, or submit your clean, verified tip to the lander (submit requires divergence from the original request).',
         parameters: obj({
           action: strEnum(['status', 'submit']),
+          risk: opt(strEnum(['low', 'medium', 'high'])),
+          reviewedTree: opt(
+            str({
+              description:
+                'Tree SHA covered by the independent review. Defaults to this workspace tip tree; supply the integration tree when delivery requests renewed review.',
+            }),
+          ),
+          review: opt(
+            str({
+              description:
+                'PR mode requires independent final-review evidence for this exact tip: reviewer conversation and immutable range, with no blocking findings.',
+            }),
+          ),
           divergence: opt(
             str({
               description:
@@ -238,7 +411,7 @@ export default function workspaceExtension(host: ExtensionHost) {
             }),
           ),
         }),
-        async execute({ action, divergence }, api, caller) {
+        async execute({ action, divergence, risk, review, reviewedTree }, api, caller) {
           if (action === 'status')
             return finish({
               conversationId: api.conversationId,
@@ -255,7 +428,16 @@ export default function workspaceExtension(host: ExtensionHost) {
             )
               throw new Error(`Only a top-level main conversation can ${action} its own workspace`)
           }, caller)
-          return finish(await service.submit(api.conversationId, divergence ?? '', caller))
+          return finish(
+            await service.submit(
+              api.conversationId,
+              divergence ?? '',
+              caller,
+              risk && review
+                ? { risk, review, ...(reviewedTree ? { reviewedTree } : {}) }
+                : undefined,
+            ),
+          )
         },
       }),
     ],

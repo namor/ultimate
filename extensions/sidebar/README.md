@@ -29,8 +29,10 @@ answer when that asks you questions), and the age of its latest
 message. Clicking it opens @ultimate on the Agent surface through `subagents.standing {name: 'ultimate'}`, also before
 its conversation exists. Below it, an Agents group lists the lander first, then the other ownerless top-level standing
 agents (label `agent`) by ID. These rows are never concluded or hidden and show no summary or feature:
-@lander shows its state (`landing` or `idle`), `queue N` while submissions wait,
-and the age of its latest landing (what landed is its Landed section's first row); other agents show `working` or `idle` and the age. Their menu only
+Each lander's row names its source: `Project checkout` for the running project, otherwise the source folder's name.
+The full path is available on hover, to screen readers and in the log's read-only footer, which explains why each
+source has its own log. @lander shows its state (`landing` or `idle`), `queue N` while submissions wait,
+and `last <age>` for its latest landing (what landed is its Landed section's first row); other agents show `working` or `idle` and the age. Their menu only
 compacts the context; they are never renamed, cleared or concluded.
 
 Beyond a phone the title bar's ULTIMATE wordmark (`titlebar.brand`) opens @ultimate too.

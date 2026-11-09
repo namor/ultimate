@@ -13,6 +13,22 @@ export type Isolation = { reason?: string; empty?: boolean }
 /** The worktree index on the root conversation: each conversation's isolate, the lander queue and recent outcomes. */
 export const WorkspacesDoc = docRef<WorkspaceIndex>('ultimate.workspaces')
 
+/**
+ * Approve this immutable candidate for publication/merge, recheck a blocked external outcome, or stop it. The user's
+ * own click from the card, or @ultimate (the root standing agent only) with `instruction`: the entry id of the user's
+ * input in its conversation that told it to, newer than the submission. Both are recorded on the delivery.
+ */
+export const DeliveryAction = actionRef<
+  {
+    id: string
+    candidate: string
+    tree: string
+    action: 'publish' | 'merge' | 'recheck' | 'stop'
+    instruction?: number
+  },
+  { ok: true }
+>('workspaces', 'delivery')
+
 /** `{ id }` → conversation `id`'s worktree with its branch, tip and changes, or null when it has none. */
 export const InfoAction = actionRef<{ id: number }, WorkspaceInfo | null>('workspaces', 'info')
 /**

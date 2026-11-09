@@ -2,8 +2,16 @@ import type { ReactNode } from 'react'
 import { ChevronRightIcon, GitMergeIcon } from 'lucide-react'
 import { MentionText } from '@/components/ai/message'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { defineWebExtension, useConversation, useTranscript } from '@/sdk'
-import { useWorkspaceIndex } from './data.tsx'
+import { ConversationEmptyState } from '@/components/ai/conversation'
+import {
+  ConversationEmpty,
+  defineWebExtension,
+  provide,
+  useConversation,
+  useSystem,
+  useTranscript,
+} from '@/sdk'
+import { landerSource, useWorkspaceIndex } from './data.tsx'
 import { CommitCount, LandingCard, useGithubRepo } from './landing.tsx'
 import { LanderLogEntry, LanderReport, WorkspaceCall } from './log.tsx'
 import { compareUrl } from '../../lib/compare.ts'
@@ -111,23 +119,56 @@ function LandingNote({ entry }: { entry: EntryRecord }) {
 /** The lander's conversation is its log: in place of a composer, a line saying what it is. */
 function LanderComposer({ core, dock }: { core: ReactNode; dock?: boolean }) {
   const id = useConversation((conversation) => conversation.id)
-  const landers = Object.values(useWorkspaceIndex().landerConversations)
-  if (id === undefined || !landers.includes(id)) return core
+  const index = useWorkspaceIndex()
+  const source = landerSource(index, id ?? -1, useSystem()?.project.root)
+  if (!source) return core
+  const queue = index.queue.filter((item) => item.source === source.path)
+  const landing = queue.some((item) => item.state === 'landing')
+  const queued = queue.filter((item) => item.state === 'queued').length
+  const waiting = queue.some((item) => item.state === 'waiting')
   return (
     <div className={`${dock ? 'w-full px-4' : 'mx-auto w-full max-w-[46rem] px-3 sm:px-6'} pb-3`}>
       <div
-        className="flex items-center gap-2.5 rounded-lg border border-border/70 bg-muted/30 px-3.5 py-2.5 text-[12.5px] text-muted-foreground"
+        className="flex items-start gap-2.5 rounded-lg border border-border/70 bg-muted/30 px-3.5 py-2.5 text-[12.5px] text-muted-foreground"
         data-lander-log={id}
       >
-        <GitMergeIcon className="size-4 shrink-0 text-brand" />
-        The landing log. The lander is code, not a model: each submission's outcome goes back to its
-        branch.
+        <GitMergeIcon className="mt-0.5 size-4 shrink-0 text-brand" />
+        <div className="min-w-0 space-y-1">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            <span className="min-w-0 font-medium break-words text-foreground">{source.label}</span>
+            <span className={landing ? 'text-brand' : undefined}>
+              {landing ? 'Landing' : waiting ? 'Waiting on delivery' : 'Idle'}
+              {queued > 0 ? ` · ${queued} queued` : ''}
+            </span>
+          </div>
+          <p className="font-mono text-[11px] break-all select-text">{source.path}</p>
+          <p>
+            One landing log per source checkout. The lander runs code, not a model; outcomes go back
+            to each submitting branch.
+          </p>
+        </div>
       </div>
     </div>
   )
 }
 
+function useEmptyLander() {
+  const id = useConversation((conversation) => conversation.id)
+  const source = landerSource(useWorkspaceIndex(), id ?? -1, useSystem()?.project.root)
+  if (!source) return undefined
+  return (
+    <ConversationEmptyState className="min-h-[55vh]">
+      <GitMergeIcon className="mb-3 size-5 text-brand" />
+      <h2 className="text-[14px] font-medium text-foreground">No landings yet</h2>
+      <p className="mt-1 max-w-sm text-[13px] text-muted-foreground">
+        Submissions for this checkout will appear here with their checks and outcomes.
+      </p>
+    </ConversationEmptyState>
+  )
+}
+
 export default defineWebExtension({
+  provides: [provide(ConversationEmpty, useEmptyLander)],
   composer: LanderComposer,
   tools: { workspace: WorkspaceCall },
   entries: {

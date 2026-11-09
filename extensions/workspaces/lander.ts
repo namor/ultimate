@@ -15,6 +15,8 @@ import { runGroup, sweepPidFiles } from '../../lib/process-group.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { CheckRan, SubmissionLanded } from './api.ts'
 import { setup } from './setup.ts'
+import type { DeliverySettings } from './delivery-settings.ts'
+import { advanceDelivery, deliveryRuntime, github } from './delivery.ts'
 import { addCheckout, treePath } from './tree.ts'
 import type { Landed, LanderEntry, LanderOutcome, QueueEntry, WorkspaceIndex } from './types.ts'
 
@@ -121,6 +123,7 @@ type Check = { command: string; timeout?: number }
 type Settings = {
   checks: (Check | Check[])[]
   push?: string
+  delivery?: DeliverySettings
 }
 /** Bounded retries when the target moves while a submission is integrated. */
 const attempts = 3
@@ -282,6 +285,21 @@ export const contains = (cwd: string, ancestor: string, descendant: string) =>
     () => true,
     () => false,
   )
+/** Advance only the named target, never an unrelated branch now checked out in the source. Caller holds its source queue. */
+export async function fastForwardTarget(
+  source: string,
+  target: string,
+  base: string,
+  integrated: string,
+) {
+  const worktree = (await git(source, 'worktree', 'list', '--porcelain'))
+    .split('\n\n')
+    .map((record) => record.split('\n'))
+    .find((record) => record.includes(`branch refs/heads/${target}`))?.[0]
+    .slice('worktree '.length)
+  if (worktree) await git(worktree, 'merge', '-q', '--ff-only', integrated)
+  else await git(source, 'update-ref', `refs/heads/${target}`, integrated, base)
+}
 const lines = (text: string) => text.split('\n').filter(Boolean)
 const failure = (error: unknown) => {
   const output = error as Error & { stdout?: string; stderr?: string }
@@ -294,6 +312,8 @@ const remote = (cwd: string, signal: AbortSignal, ...args: string[]) =>
   git({ cwd, signal, timeout: 300000 }, ...args)
 
 type Prepared = {
+  checkedAt: number
+  runtime: string
   base: string
   integrated: string
   flaky: string[]
@@ -310,6 +330,7 @@ type State =
   | { phase: 'next' }
   /** A rejected push integrates again once. */
   | { phase: 'land'; id: string; attempt: number; pushRetried?: boolean }
+  | { phase: 'delivery-wait'; id: string; until: number }
   | {
       phase: 'report'
       id: string
@@ -370,6 +391,12 @@ export function createLander(
           await log(tx, runtime.conversationId, entry, { step: 'started' })
           return { status: 'running', checkpoint: { phase: 'land', id: entry.id, attempt: 1 } }
         }, context),
+      'delivery-wait': (task, runtime, context) =>
+        runtime.sleepUntil(
+          task.state.checkpoint.until,
+          { phase: 'land', id: task.state.checkpoint.id, attempt: 1 },
+          context,
+        ),
       land: async (task, runtime, context) => {
         const { id, attempt, pushRetried } = task.state.checkpoint
         const { signal } = runtime
@@ -407,6 +434,27 @@ export function createLander(
                 result: ran.timedOut ? 'timeout' : result.result,
                 ms: Math.round(ran.ms),
               })
+          }, context)
+        const pauseDelivery = () =>
+          runtime.commit(async (tx) => {
+            const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
+              (item) => item.id === id,
+            )
+            if (!saved) return { status: 'running', checkpoint: { phase: 'next' } }
+            const delivery = saved.delivery
+            const waiting =
+              !delivery ||
+              delivery.stage === 'blocked' ||
+              delivery.stage === 'review' ||
+              (delivery.stage === 'publish' &&
+                delivery.risk === 'high' &&
+                !delivery.publishApproved) ||
+              (delivery.stage === 'merge' && delivery.risk !== 'low' && !delivery.mergeApproved)
+            // #45669: approval can commit while this invocation holds an older snapshot.
+            if (!waiting)
+              return { status: 'running', checkpoint: { phase: 'land', id, attempt: 1 } }
+            saved.state = 'waiting'
+            return { status: 'terminal', outcome: { status: 'completed', result: null } }
           }, context)
         /** Record the outcome, log it and report it to the submitter, in one commit. */
         const finish = (text: string, outcome: LanderOutcome) =>
@@ -546,7 +594,146 @@ export function createLander(
           )
         }
         try {
-          const settings = await landerSettings(host)
+          const settings: Settings = entry.delivery
+            ? { checks: [], delivery: entry.delivery.settings }
+            : entry.deliveryConfig === false
+              ? { checks: (await landerSettings(host)).checks }
+              : entry.deliveryConfig
+                ? {
+                    checks: entry.deliveryConfig.checks.map((command) => ({ command })),
+                    delivery: entry.deliveryConfig,
+                  }
+                : await landerSettings(host)
+          if (entry.delivery) {
+            const previous = entry.delivery
+            const save = (delivery: NonNullable<QueueEntry['delivery']>) =>
+              runtime.commit(async (tx) => {
+                const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
+                  (item) => item.id === id,
+                )!
+                // Approvals may arrive while the network request runs; never erase them or their audit records.
+                saved.delivery = {
+                  ...delivery,
+                  ...(saved.delivery?.publishApproved ? { publishApproved: true } : {}),
+                  ...(saved.delivery?.mergeApproved ? { mergeApproved: true } : {}),
+                  ...(saved.delivery?.approvals ? { approvals: saved.delivery.approvals } : {}),
+                }
+              }, context)
+            const expired = Date.now() > (previous.deadline ?? previous.checkedAt + 60 * 60 * 1000)
+            let delivery = previous
+            if (expired && previous.stage !== 'blocked' && previous.stage !== 'merged')
+              await runtime.commit(async (tx) => {
+                const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
+                  (item) => item.id === id,
+                )!
+                const current = saved.delivery!
+                // A fresh review/recheck may already have changed this stage or its deadline.
+                if (
+                  current.stage === previous.stage &&
+                  current.deadline === previous.deadline &&
+                  current.stage !== 'blocked' &&
+                  current.stage !== 'merged'
+                )
+                  saved.delivery = {
+                    ...current,
+                    stage: 'blocked',
+                    resumeStage: current.stage,
+                    reason: 'Delivery waited over one hour; recheck explicitly',
+                  }
+                delivery = copyJson(saved.delivery!) as NonNullable<QueueEntry['delivery']>
+              }, context)
+            else delivery = await advanceDelivery(source, previous, save, signal)
+            if (delivery.stage !== previous.stage || delivery.reason !== previous.reason)
+              await step(
+                delivery.reason
+                  ? `delivery blocked: ${delivery.reason}`
+                  : `delivery: ${delivery.stage}`,
+              )
+            if (delivery.stage === 'merged') {
+              await remote(
+                source,
+                signal,
+                'fetch',
+                '--no-tags',
+                delivery.settings.remote,
+                `refs/heads/${delivery.settings.base}`,
+              )
+              const sha = delivery.merged!
+              if ((await git(source, 'rev-parse', `${sha}^{tree}`)) !== delivery.tree)
+                throw new Error('GitHub merge tree differs from the verified candidate')
+              await serial(source, async () => {
+                const current = await git(source, 'rev-parse', `refs/heads/${target}`)
+                if (!(await contains(source, current, sha)))
+                  throw new Error('Local target advanced outside the merged delivery')
+                await fastForwardTarget(source, target, current, sha)
+              })
+              return finish(`merged as ${sha.slice(0, 7)} through ${delivery.url}.`, {
+                outcome: 'landed',
+                // Kept with the result so its approvals' instructions decide no later delivery.
+                delivery,
+                sha,
+                base: delivery.baseline,
+                commits: lines(
+                  await git(source, 'log', '--oneline', `${delivery.baseline}..${sha}`),
+                ),
+                paths: lines(await git(source, 'diff', '--name-only', delivery.baseline, sha)),
+                flaky: [],
+                pushed: `${delivery.settings.remote}/${target}`,
+                pr: delivery.url,
+              })
+            }
+            if (delivery.stage === 'blocked') {
+              host.notice(`Delivery ${id} blocked: ${delivery.reason}`)
+              await (
+                await host.harness().conversation(entry.conversationId as ConversationId, context)
+              )?.submit(
+                {
+                  type: 'input',
+                  whenBusy: 'followUp',
+                  requestId: `delivery-blocked:${id}:${delivery.reason}`,
+                  content: `Delivery ${id} is blocked: ${delivery.reason}. Its record is retained; inspect the delivery card before rechecking.`,
+                  entry: {
+                    kind: LanderReportEntry,
+                    data: {
+                      id,
+                      outcome: {
+                        outcome: 'failed',
+                        reason: delivery.reason ?? 'Delivery blocked',
+                        divergence: entry.divergence,
+                      },
+                    },
+                  },
+                },
+                context,
+              )
+              return pauseDelivery()
+            }
+            if (
+              delivery.stage === 'review' ||
+              (delivery.stage === 'publish' &&
+                delivery.risk === 'high' &&
+                !delivery.publishApproved) ||
+              (delivery.stage === 'merge' && delivery.risk !== 'low' && !delivery.mergeApproved)
+            )
+              return pauseDelivery()
+            return runtime.commit(
+              () => ({
+                status: 'running',
+                checkpoint: { phase: 'delivery-wait', id, until: runtime.now() + 30000 },
+              }),
+              context,
+            )
+          }
+          // Bind the attempt before any check memo can be reused after a runtime change (#45669).
+          const verification = settings.delivery
+            ? await runtime.memo(
+                `verification-runtime:${id}:${attempt}`,
+                { runtime: deliveryRuntime() },
+                context,
+              )
+            : undefined
+          if (verification && verification.runtime !== deliveryRuntime())
+            return fail('verification runtime changed; submit again')
           // An earlier lander task fast-forwarded this submission and then ended (a reload or fault before its push):
           // nothing to merge or check again, push exactly what landed and report that landing.
           if (
@@ -589,11 +776,10 @@ export function createLander(
                   return true
                 }
               }
-              if (settings.push) {
-                if (
-                  await remote(path, signal, 'ls-remote', settings.push, `refs/heads/${target}`)
-                ) {
-                  await remote(path, signal, 'fetch', '-q', settings.push, target)
+              const fetchRemote = settings.delivery?.remote ?? settings.push
+              if (fetchRemote) {
+                if (await remote(path, signal, 'ls-remote', fetchRemote, `refs/heads/${target}`)) {
+                  await remote(path, signal, 'fetch', '-q', fetchRemote, target)
                   const fetched = await git(path, 'rev-parse', 'FETCH_HEAD')
                   if (!(await contains(path, fetched, 'HEAD'))) {
                     await step(`merging ${settings.push}/${target}`)
@@ -732,11 +918,82 @@ export function createLander(
               )
             prepared = await runtime.memo<Prepared>(
               `prepared:${id}:${attempt}`,
-              { base, integrated: merged.sha, flaky },
+              {
+                base,
+                integrated: merged.sha,
+                flaky,
+                runtime: verification?.runtime ?? deliveryRuntime(),
+                checkedAt: Date.now(),
+              },
               context,
             )
           }
           const { base, integrated, flaky } = prepared
+          if (settings.delivery) {
+            if (prepared.runtime !== deliveryRuntime())
+              throw new Error('Verification runtime changed; submit again')
+            if (!entry.assessment)
+              throw new Error('PR delivery requires risk and independent review evidence')
+            if (settings.delivery.base !== target)
+              throw new Error('Delivery base differs from workspace target')
+            if (flaky.length)
+              throw new Error(
+                'PR delivery requires clean verification; fix flaky checks before publication',
+              )
+            const branch = `ultimate-delivery/${entry.id}`
+            const api = github(source, signal)
+            const remoteBase = await api<{ commit: { sha: string } }>(
+              `repos/${settings.delivery.repository}/branches/${encodeURIComponent(target)}`,
+            )
+            await git(source, 'merge-base', '--is-ancestor', remoteBase.commit.sha, integrated)
+            const tree = await git(source, 'rev-parse', `${integrated}^{tree}`)
+            await runtime.commit(async (tx) => {
+              const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
+                (item) => item.id === id,
+              )!
+              saved.delivery = {
+                settings: settings.delivery!,
+                ...entry.assessment!,
+                baseline: remoteBase.commit.sha,
+                candidate: integrated,
+                tree,
+                branch,
+                checkedAt: prepared.checkedAt,
+                runtime: prepared.runtime,
+                stage: entry.assessment!.reviewedTree === tree ? 'publish' : 'review',
+              }
+            }, context)
+            if (entry.assessment.reviewedTree !== tree) {
+              await (
+                await host.harness().conversation(entry.conversationId as ConversationId, context)
+              )?.submit(
+                {
+                  type: 'input',
+                  whenBusy: 'followUp',
+                  requestId: `delivery-review:${id}`,
+                  content: `Integration changed the reviewed tree. Independently review ${remoteBase.commit.sha}..${integrated}, then resubmit this same tip with reviewedTree ${tree}, risk and review evidence. No publication occurred.`,
+                  entry: {
+                    kind: LanderReportEntry,
+                    data: {
+                      id,
+                      outcome: {
+                        outcome: 'failed',
+                        reason: 'Integration needs independent review before publication',
+                        divergence: entry.divergence,
+                      },
+                    },
+                  },
+                },
+                context,
+              )
+            }
+            await step(
+              entry.assessment.reviewedTree === tree
+                ? 'delivery: publish'
+                : `delivery: review ${integrated}`,
+            )
+            return retry()
+          }
           await step('fast-forwarding')
           let refused: string | undefined
           const moved = await serial(source, async () => {
@@ -745,14 +1002,7 @@ export function createLander(
             if (current === integrated) return false
             if (current !== base) return true
             try {
-              // Fast-forward the checkout that has the target checked out, so its files follow the branch.
-              const worktree = (await git(source, 'worktree', 'list', '--porcelain'))
-                .split('\n\n')
-                .map((record) => record.split('\n'))
-                .find((record) => record.includes(`branch refs/heads/${target}`))?.[0]
-                .slice('worktree '.length)
-              if (worktree) await git(worktree, 'merge', '-q', '--ff-only', integrated)
-              else await git(source, 'update-ref', `refs/heads/${target}`, integrated, base)
+              await fastForwardTarget(source, target, base, integrated)
             } catch (error) {
               refused = failure(error)
             }
@@ -788,6 +1038,22 @@ export function createLander(
           return await landedReport(settings, landed, integrated)
         } catch (error) {
           if (signal.aborted) throw error
+          if (entry.delivery) {
+            await runtime.commit(async (tx) => {
+              const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
+                (item) => item.id === id,
+              )!
+              saved.delivery = {
+                ...saved.delivery!,
+                stage: 'blocked',
+                resumeStage:
+                  saved.delivery!.stage === 'merged' ? 'merged' : saved.delivery!.resumeStage,
+                reason: 'Delivery recovery failed; inspect the lander log',
+              }
+            }, context)
+            host.notice(`Delivery ${id} recovery failed: ${failure(error)}`)
+            return pauseDelivery()
+          }
           return fail('it failed', failure(error))
         }
       },
