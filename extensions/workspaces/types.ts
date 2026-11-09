@@ -1,5 +1,5 @@
 import type { ConversationSubject } from '../conversations/types.ts'
-import type { Delivery, DeliveryRisk } from './delivery.ts'
+import type { Delivery, DeliveryRisk, StandingGrant } from './delivery.ts'
 import type { DeliverySettings } from './delivery-settings.ts'
 
 export type Workspace = {
@@ -96,6 +96,8 @@ export type WorkspaceIndex = {
   landers: Record<string, number>
   /** The lander conversation per source checkout, where its task runs and logs. */
   landerConversations: Record<string, number>
+  /** The latest standing delivery approval, kept after it expires or is revoked as its audit record. */
+  standing?: StandingGrant
   /** Outcomes of the latest submissions by id, with their target and lander conversation, for the submitter's cards. */
   results: Record<
     string,

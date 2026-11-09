@@ -29,10 +29,12 @@ import {
   IsolationAction,
   PendingAction,
   ProgressAction,
+  StandingAction,
   StatsAction,
 } from './refs.ts'
 import { githubRepo } from '../../lib/project-identity.ts'
 import { UserInputEvent } from '../../shared/events.ts'
+import { standingRefusal } from './delivery.ts'
 import type { Approval } from './delivery.ts'
 import { sweepChecks } from './lander.ts'
 import { Workspaces, workspaces } from './workspaces.ts'
@@ -79,37 +81,43 @@ async function goalOpen(host: ExtensionHost, tx?: Tx) {
     : (await host.harness().snapshot(goals, ROOT_CONVERSATION_ID, context))?.goals
   return Array.isArray(open) && open.some((goal) => !(goal as { ended?: unknown }).ended)
 }
-async function approver(
-  host: ExtensionHost,
-  ctx: Pick<ActionContext, 'conversationId' | 'device'>,
-  action: Approval['action'],
-  instruction: unknown,
-  submittedAt: number,
-): Promise<Approval> {
-  if (ctx.device) return { action, at: Date.now(), by: 'user' }
-  const harness = host.harness()
+/** @ultimate's conversation id when `ctx` is @ultimate itself, else a refusal: no branch, side chat or automation. */
+async function rootAgent(host: ExtensionHost, ctx: Pick<ActionContext, 'conversationId'>) {
   const standing = host.doc('ultimate.standing-agents')
   const ultimate =
-    standing && (await harness.snapshot(standing, ROOT_CONVERSATION_ID, context))?.ultimate
+    standing && (await host.harness().snapshot(standing, ROOT_CONVERSATION_ID, context))?.ultimate
   if (ctx.conversationId === undefined || ctx.conversationId !== ultimate)
     throw new Error("Only the user or @ultimate on the user's instruction can act on a delivery")
-  if (await goalOpen(host))
-    throw new Error('A hands-off goal cannot approve a delivery; it waits for the user')
+  return ultimate as ConversationId
+}
+/**
+ * Whether entry `instruction` of @ultimate's conversation is an input the user typed or answered on a card, newer than
+ * `since` when given; returns the entry id or throws.
+ */
+async function typedInstruction(
+  host: ExtensionHost,
+  ultimate: ConversationId,
+  instruction: unknown,
+  since?: number,
+) {
+  const harness = host.harness()
   if (typeof instruction !== 'number' || !Number.isSafeInteger(instruction))
     throw new Error(
       "Pass instruction: the entry id of the user's input that told you to act on this delivery",
     )
   const entry = await harness.commit((tx) => tx.entry(instruction as EntryId), context)
-  if (!entry || entry.conversationId !== ultimate || entry.id <= submittedAt)
+  if (!entry || entry.conversationId !== ultimate || (since !== undefined && entry.id <= since))
     throw new Error(
-      'instruction must be an entry of your conversation newer than this submission; the user decides on this candidate',
+      since === undefined
+        ? 'instruction must be an entry of your conversation'
+        : 'instruction must be an entry of your conversation newer than this submission; the user decides on this candidate',
     )
   const message = entry.kind === 'board.message' ? (entry.data as { id?: unknown })?.id : undefined
   // The input's event commits right after its placement (or admission, when queued), so it lies between the submission
   // and the entries that followed the instruction; a bounded window keeps an old instruction findable.
   const events = await host.eventLog.recent({
     events: [UserInputEvent],
-    since: submittedAt,
+    ...(since !== undefined ? { since } : {}),
     before: entry.id + 1000,
     limit: 1000,
   })
@@ -129,8 +137,39 @@ async function approver(
     throw new Error(
       'instruction must be an input the user typed in your conversation or answered on your card, not one written in their name',
     )
-  return { action, at: Date.now(), by: 'ultimate', conversation: ultimate, instruction: entry.id }
+  return entry.id
 }
+async function approver(
+  host: ExtensionHost,
+  ctx: Pick<ActionContext, 'conversationId' | 'device'>,
+  action: Approval['action'],
+  args: { instruction?: unknown; standing?: unknown; reason?: unknown },
+  submittedAt: number,
+): Promise<Approval> {
+  if (ctx.device) return { action, at: Date.now(), by: 'user' }
+  const ultimate = await rootAgent(host, ctx)
+  if (await goalOpen(host))
+    throw new Error('A hands-off goal cannot approve a delivery; it waits for the user')
+  if (args.standing === true) {
+    if (typeof args.reason !== 'string' || !args.reason.trim())
+      throw new Error('A standing approval needs reason: why this candidate is ready')
+    // The grant and the delivery's evidence are judged together inside the approval's commit, which sets `standing`
+    // to the grant's instruction entry.
+    return {
+      action,
+      at: Date.now(),
+      by: 'ultimate',
+      conversation: ultimate,
+      standing: 0,
+      reason: args.reason.trim().slice(0, 240),
+    }
+  }
+  const instruction = await typedInstruction(host, ultimate, args.instruction, submittedAt)
+  return { action, at: Date.now(), by: 'ultimate', conversation: ultimate, instruction }
+}
+
+/** Most standing approval a grant may give: it is a temporary measure (#58492). */
+const standingMaxHours = 7 * 24
 
 export const actions = {
   delivery: implementAction(DeliveryAction, async (args, { host, conversationId, device }) => {
@@ -154,13 +193,7 @@ export const actions = {
       await host.harness().snapshot(Workspaces, ROOT_CONVERSATION_ID, context)
     )?.queue.find((item) => item.id === args.id)
     if (!seen || !bound(seen)) throw new Error('Delivery candidate changed; approval refused')
-    const approval = await approver(
-      host,
-      { conversationId, device },
-      action,
-      args.instruction,
-      seen.at,
-    )
+    const approval = await approver(host, { conversationId, device }, action, args, seen.at)
     await host.harness().commit(async (tx) => {
       const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
       const entry = index.queue.find((item) => item.id === args.id)
@@ -172,6 +205,11 @@ export const actions = {
         throw new Error('Delivery was reassessed; the user must decide on the new assessment')
       if (approval.by === 'ultimate' && (await goalOpen(host, tx)))
         throw new Error('A hands-off goal cannot approve a delivery; it waits for the user')
+      if (approval.standing !== undefined) {
+        const refusal = standingRefusal(index.standing, delivery, action, Date.now())
+        if (refusal) throw new Error(`Standing approval refused: ${refusal}`)
+        approval.standing = index.standing!.instruction
+      }
       // One instruction decides one delivery: the user's words about this candidate approve no other.
       if (
         approval.instruction !== undefined &&
@@ -216,6 +254,46 @@ export const actions = {
     await workspaces(host).resume(context)
     host.harness().resume()
     return { ok: true as const }
+  }),
+  /**
+   * Grant or revoke the standing delivery approval. Only @ultimate grants, on the user's typed instruction `instruction`
+   * (newer than the last grant's: no renewal without new words), for `hours` (default 24, at most a week). The user's
+   * click revokes; so may @ultimate, on the user's word. A hands-off goal can do neither.
+   */
+  standing: implementAction(StandingAction, async (args, { host, conversationId, device }) => {
+    if (!args || typeof args !== 'object' || Array.isArray(args))
+      throw new Error('Expected { grant } or { revoke }')
+    if (args.revoke === true) {
+      const by = device ? ('user' as const) : ('ultimate' as const)
+      if (!device) await rootAgent(host, { conversationId })
+      await host.harness().commit(async (tx) => {
+        const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+        if (index.standing && index.standing.revokedAt === undefined) {
+          index.standing.revokedAt = Date.now()
+          index.standing.revokedBy = by
+        }
+      }, context)
+      return { ok: true as const }
+    }
+    if (device) throw new Error('Tell @ultimate to grant a standing approval; it records your words')
+    const ultimate = await rootAgent(host, { conversationId })
+    if (await goalOpen(host))
+      throw new Error('A hands-off goal cannot grant a standing approval; it waits for the user')
+    const hours = args.hours ?? 24
+    if (typeof hours !== 'number' || !(hours > 0) || hours > standingMaxHours)
+      throw new Error(`hours must be more than 0 and at most ${standingMaxHours}`)
+    const instruction = await typedInstruction(host, ultimate, args.instruction)
+    const at = Date.now()
+    const grant = { instruction, conversation: ultimate, at, until: at + hours * 3600_000 }
+    await host.harness().commit(async (tx) => {
+      const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+      if (index.standing && index.standing.instruction >= instruction)
+        throw new Error('Renewing a standing approval needs a newer instruction from the user')
+      if (await goalOpen(host, tx))
+        throw new Error('A hands-off goal cannot grant a standing approval; it waits for the user')
+      index.standing = grant
+    }, context)
+    return grant
   }),
   /** `github.com/<owner>/<repo>` of the project's `origin`, or null off GitHub: landing cards link ranges. */
   github: implementAction(

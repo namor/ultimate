@@ -16,7 +16,7 @@ import type { ExtensionHost } from '../../server/extensions.ts'
 import { CheckRan, SubmissionLanded } from './api.ts'
 import { setup } from './setup.ts'
 import type { DeliverySettings } from './delivery-settings.ts'
-import { advanceDelivery, deliveryRuntime, github } from './delivery.ts'
+import { advanceDelivery, deliveryRuntime, github, standingRefusal } from './delivery.ts'
 import { addCheckout, treePath } from './tree.ts'
 import type { Landed, LanderEntry, LanderOutcome, QueueEntry, WorkspaceIndex } from './types.ts'
 
@@ -456,6 +456,27 @@ export function createLander(
             saved.state = 'waiting'
             return { status: 'terminal', outcome: { status: 'completed', result: null } }
           }, context)
+        /**
+         * While the user's standing approval is on and this delivery's evidence qualifies, wake @ultimate to decide it:
+         * it alone may approve, with its reason, under that grant.
+         */
+        const askStanding = async (delivery: NonNullable<QueueEntry['delivery']>) => {
+          const grant = (await host.harness().snapshot(Workspaces, ROOT_CONVERSATION_ID, context))
+            ?.standing
+          const action = delivery.stage as 'publish' | 'merge'
+          if (standingRefusal(grant, delivery, action, Date.now())) return
+          await (
+            await host.harness().conversation(grant!.conversation as ConversationId, context)
+          )?.submit(
+            {
+              type: 'input',
+              whenBusy: 'followUp',
+              requestId: `delivery-standing:${id}:${action}:${delivery.candidate}`,
+              content: `Delivery ${id} (${delivery.risk} risk, ${delivery.candidate}) awaits ${action} approval and qualifies under the user's standing approval until ${new Date(grant!.until).toISOString()}. Decide it: call workspaces/delivery with standing: true and your reason, or leave it for the user.`,
+            },
+            context,
+          )
+        }
         /** Record the outcome, log it and report it to the submitter, in one commit. */
         const finish = (text: string, outcome: LanderOutcome) =>
           runtime.commit(async (tx) => {
@@ -714,8 +735,10 @@ export function createLander(
                 delivery.risk === 'high' &&
                 !delivery.publishApproved) ||
               (delivery.stage === 'merge' && delivery.risk !== 'low' && !delivery.mergeApproved)
-            )
+            ) {
+              await askStanding(delivery)
               return pauseDelivery()
+            }
             return runtime.commit(
               () => ({
                 status: 'running',

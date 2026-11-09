@@ -29,7 +29,10 @@ export type Delivery = {
   reason?: string
   resumeStage?: 'review' | 'publish' | 'pr' | 'ci' | 'merge' | 'merged'
 }
-/** An audit record of one delivery action: the user's own click, or @ultimate acting on the user's instruction entry. */
+/**
+ * An audit record of one delivery action: the user's own click, @ultimate acting on the user's instruction entry, or
+ * @ultimate under the user's standing approval (`standing`: the grant's instruction entry) with its `reason`.
+ */
 export type Approval = {
   action: 'publish' | 'merge' | 'recheck' | 'stop'
   at: number
@@ -37,6 +40,49 @@ export type Approval = {
   /** @ultimate's conversation and the user's instruction entry in it, when @ultimate acted. */
   conversation?: number
   instruction?: number
+  standing?: number
+  reason?: string
+}
+/**
+ * A time-boxed standing approval: the user's typed instruction `instruction` in @ultimate's conversation `conversation`
+ * let @ultimate approve publish and merge of verified, reviewed deliveries until `until`, unless revoked earlier.
+ */
+export type StandingGrant = {
+  instruction: number
+  conversation: number
+  at: number
+  until: number
+  revokedAt?: number
+  revokedBy?: 'user' | 'ultimate'
+}
+
+/**
+ * Why @ultimate may not approve `action` on `delivery` under `grant` now, or undefined when it may. The delivery record
+ * is the evidence: the lander records it only after the configured local checks passed on the candidate without a flaky
+ * rerun, leaves the `review` stage only when the independent review covered its exact tree, and reaches `merge` only
+ * after the exact head's required GitHub checks passed (re-read again right before merging).
+ */
+export function standingRefusal(
+  grant: StandingGrant | undefined,
+  delivery: Delivery,
+  action: Approval['action'],
+  now: number,
+) {
+  if (!grant || grant.revokedAt !== undefined) return 'No standing approval is on'
+  if (now >= grant.until) return 'The standing approval expired'
+  if (action !== 'publish' && action !== 'merge')
+    return 'A standing approval covers publish and merge only'
+  if (delivery.runtime !== deliveryRuntime())
+    return 'Local verification ran on another runtime; verify a new delivery'
+  if (delivery.stage === 'review' || !delivery.review.trim())
+    return 'No independent review covers this exact tree'
+  if ((delivery.createIntent && !delivery.pr) || delivery.mergeIntent)
+    return 'An uncertain write is pending; reconcile it first'
+  if (delivery.stage !== action)
+    return action === 'merge'
+      ? 'Required GitHub checks have not passed on this exact head'
+      : 'Delivery is not awaiting publication'
+  return undefined
 }
 
 export const deliveryRuntime = () => `${process.version}/${process.platform}/${process.arch}`
