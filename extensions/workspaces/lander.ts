@@ -669,6 +669,8 @@ export function createLander(
               })
               return finish(`merged as ${sha.slice(0, 7)} through ${delivery.url}.`, {
                 outcome: 'landed',
+                // Kept with the result so its approvals' instructions decide no later delivery.
+                delivery,
                 sha,
                 base: delivery.baseline,
                 commits: lines(

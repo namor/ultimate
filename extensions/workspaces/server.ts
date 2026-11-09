@@ -105,10 +105,12 @@ async function approver(
       'instruction must be an entry of your conversation newer than this submission; the user decides on this candidate',
     )
   const message = entry.kind === 'board.message' ? (entry.data as { id?: unknown })?.id : undefined
-  // The input's event commits right after its placement (or admission, when queued), so it comes after the submission.
+  // The input's event commits right after its placement (or admission, when queued), so it lies between the submission
+  // and the entries that followed the instruction; a bounded window keeps an old instruction findable.
   const events = await host.eventLog.recent({
     events: [UserInputEvent],
     since: submittedAt,
+    before: entry.id + 1000,
     limit: 1000,
   })
   let typed = false

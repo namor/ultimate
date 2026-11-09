@@ -262,6 +262,26 @@ describe('delivery approval', () => {
     await expect(f.call({ conversationId: f.ultimate }, { instruction })).rejects.toThrow(
       'already decided another delivery',
     )
+    // Once the other delivery merged, its record (with the instruction) lives in the results.
+    await f.opened.harness.commit(async (tx) => {
+      const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+      const other = index.queue.find((item) => item.id === 'other')!
+      index.queue = index.queue.filter((item) => item !== other)
+      index.results.other = {
+        outcome: 'landed',
+        delivery: other.delivery,
+        at: other.at,
+        divergence: other.divergence,
+        target: other.target,
+        tip: other.tip,
+        lander: 1,
+        steps: [],
+        conversationId: other.conversationId,
+      }
+    }, context)
+    await expect(f.call({ conversationId: f.ultimate }, { instruction })).rejects.toThrow(
+      'already decided another delivery',
+    )
     expect((await f.queued()).mergeApproved).toBeUndefined()
   })
 
