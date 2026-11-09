@@ -406,6 +406,36 @@ describe('delivery approval', () => {
       ).rejects.toThrow('not one written in their name')
     })
 
+    it('grants only on the latest typed words, never reused or older ones', async () => {
+      const f = await fixture()
+      const grant = (instruction: number) =>
+        actions.standing({ instruction }, {
+          host: f.host,
+          conversationId: f.ultimate,
+          signal: new AbortController().signal,
+        } as unknown as ActionContext)
+      const older = await f.entry(f.ultimate, 'pi.user', { typed: true })
+      const used = await f.entry(f.ultimate, 'pi.user', { typed: true })
+      await f.call({ conversationId: f.ultimate }, { instruction: used })
+      await expect(grant(older)).rejects.toThrow("the user's latest input")
+      await expect(grant(used)).rejects.toThrow('already decided a delivery')
+    })
+
+    it('revoking withdraws a standing approval no write has used', async () => {
+      const f = await granted()
+      await approve(f)
+      expect((await f.queued()).mergeApproved).toBe(true)
+      await actions.standing({ revoke: true }, {
+        host: f.host,
+        conversationId: f.ultimate,
+        signal: new AbortController().signal,
+      } as unknown as ActionContext)
+      const delivery = await f.queued()
+      expect(delivery.mergeApproved).toBeUndefined()
+      // The audit record stays.
+      expect(delivery.approvals?.[0]).toMatchObject({ standing: f.instruction })
+    })
+
     it('refuses a non-root caller and an open hands-off goal', async () => {
       const f = await granted()
       await expect(

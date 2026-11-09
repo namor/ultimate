@@ -151,4 +151,6 @@ export type StandingGrant = {
   until: number
   revokedAt?: number
   revokedBy?: 'user' | 'ultimate'
+  /** The newest entry of `conversation` at revocation: a new grant needs words after it. */
+  boundary?: number
 }

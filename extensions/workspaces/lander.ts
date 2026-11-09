@@ -465,17 +465,23 @@ export function createLander(
             ?.standing
           const action = delivery.stage as 'publish' | 'merge'
           if (standingRefusal(grant, delivery, action, Date.now())) return
-          await (
-            await host.harness().conversation(grant!.conversation as ConversationId, context)
-          )?.submit(
-            {
-              type: 'input',
-              whenBusy: 'followUp',
-              requestId: `delivery-standing:${id}:${action}:${delivery.candidate}`,
-              content: `Delivery ${id} (${delivery.risk} risk, ${delivery.candidate}) awaits ${action} approval and qualifies under the user's standing approval until ${new Date(grant!.until).toISOString()}. Decide it: call workspaces/delivery with standing: true and your reason, or leave it for the user.`,
-            },
-            context,
-          )
+          const ultimate = await host
+            .harness()
+            .conversation(grant!.conversation as ConversationId, context)
+          // A failed wake leaves the delivery waiting for the user's card, as without a grant; it must not block it.
+          await ultimate
+            ?.submit(
+              {
+                type: 'input',
+                whenBusy: 'followUp',
+                requestId: `delivery-standing:${id}:${action}:${delivery.candidate}`,
+                content: `Delivery ${id} (${delivery.risk} risk, ${delivery.candidate}) awaits ${action} approval and qualifies under the user's standing approval until ${new Date(grant!.until).toISOString()}. Decide it: call workspaces/delivery with standing: true and your reason, or leave it for the user.`,
+              },
+              context,
+            )
+            .catch((error: unknown) =>
+              host.notice(`Delivery ${id} standing wake failed: ${failure(error)}`),
+            )
         }
         /** Record the outcome, log it and report it to the submitter, in one commit. */
         const finish = (text: string, outcome: LanderOutcome) =>

@@ -181,10 +181,13 @@ user waived the click, nothing else. The browser path trusts any same-origin req
 
 **Standing approval (temporary).** The `standing` action lets the user hand @ultimate a time-boxed standing approval to get
 work out the door. @ultimate grants it with `{ instruction, hours? }`: `instruction` is the user's typed entry that told it to,
-checked like a per-delivery instruction (browser-stamped `user.input`) but not bound to a submission; `hours` defaults to 24 and
-may be at most a week. The grant is stored on the root workspaces index (`standing`: instruction, conversation, granted and
-expiry time); renewing needs a newer instruction. The user revokes it with the card's **Revoke** button (or tells @ultimate,
-which calls `{ revoke: true }`); an expired or revoked grant is kept as its record and refuses like none. While it is on, the
+checked like a per-delivery instruction (browser-stamped `user.input`), and it must be the user's latest input in @ultimate's
+conversation, at most ten minutes old, newer than the previous grant and its revocation, and not one that already decided a
+delivery; `hours` defaults to 24 and may be at most a week. The grant is stored on the root workspaces index (`standing`:
+instruction, conversation, granted and expiry time). The user revokes it with the card's **Revoke** button (or tells @ultimate,
+which calls `{ revoke: true }`); revoking also withdraws standing approvals no write has used yet (a recorded merge intent is
+reconciled, never withdrawn). An expired or revoked grant is kept as its record and refuses like none. The server checks that a
+review covering the exact tree was submitted, not how independent it was: @ultimate judges that before approving. While it is on, the
 delivery card shows "Standing approval until <time>", and @ultimate may call `delivery` with `standing: true` and a `reason`
 instead of `instruction`, for `publish` and `merge` only. `standingRefusal` (`delivery.ts`) decides it inside the approval's
 commit, from the delivery record: on the verified runtime, past the `review` stage (the independent review covers the exact

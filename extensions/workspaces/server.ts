@@ -121,15 +121,17 @@ async function typedInstruction(
     before: entry.id + 1000,
     limit: 1000,
   })
-  let typed = false
-  for (const { data } of events) {
+  let typed: (typeof events)[number] | undefined
+  for (const event of events) {
+    const { data } = event
     if (data.conversation !== ultimate || !data.device || data.kind === 'dismiss') continue
-    if (data.entry === entry.id || (message !== undefined && data.message === message)) typed = true
+    if (data.entry === entry.id || (message !== undefined && data.message === message))
+      typed = event
     else if (data.submission !== undefined) {
       const placed = await (
         await harness.submission(data.submission as SubmissionId, context)
       )?.status(context)
-      if (placed?.entry === entry.id) typed = true
+      if (placed?.entry === entry.id) typed = event
     }
     if (typed) break
   }
@@ -137,7 +139,7 @@ async function typedInstruction(
     throw new Error(
       'instruction must be an input the user typed in your conversation or answered on your card, not one written in their name',
     )
-  return entry.id
+  return { id: entry.id, event: typed }
 }
 async function approver(
   host: ExtensionHost,
@@ -164,12 +166,14 @@ async function approver(
       reason: args.reason.trim().slice(0, 240),
     }
   }
-  const instruction = await typedInstruction(host, ultimate, args.instruction, submittedAt)
+  const { id: instruction } = await typedInstruction(host, ultimate, args.instruction, submittedAt)
   return { action, at: Date.now(), by: 'ultimate', conversation: ultimate, instruction }
 }
 
 /** Most standing approval a grant may give: it is a temporary measure (#58492). */
 const standingMaxHours = 7 * 24
+/** How fresh the user's words must be to grant: the grant follows what they just said, not an old remark. */
+const grantWindow = 10 * 60_000
 
 export const actions = {
   delivery: implementAction(DeliveryAction, async (args, { host, conversationId, device }) => {
@@ -256,9 +260,11 @@ export const actions = {
     return { ok: true as const }
   }),
   /**
-   * Grant or revoke the standing delivery approval. Only @ultimate grants, on the user's typed instruction `instruction`
-   * (newer than the last grant's: no renewal without new words), for `hours` (default 24, at most a week). The user's
-   * click revokes; so may @ultimate, on the user's word. A hands-off goal can do neither.
+   * Grant or revoke the standing delivery approval. Only @ultimate grants, outside a hands-off goal, for `hours` (default
+   * 24, at most a week), on `instruction`: the user's latest typed input in its conversation, at most ten minutes old,
+   * newer than the last grant or revocation and not already deciding a delivery, so no old or reused words renew it.
+   * The user's click revokes, and so may @ultimate on the user's word; revoking also withdraws standing approvals that
+   * no write has used yet.
    */
   standing: implementAction(StandingAction, async (args, { host, conversationId, device }) => {
     if (!args || typeof args !== 'object' || Array.isArray(args))
@@ -268,9 +274,30 @@ export const actions = {
       if (!device) await rootAgent(host, { conversationId })
       await host.harness().commit(async (tx) => {
         const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
-        if (index.standing && index.standing.revokedAt === undefined) {
-          index.standing.revokedAt = Date.now()
-          index.standing.revokedBy = by
+        const grant = index.standing
+        if (!grant || grant.revokedAt !== undefined) return
+        grant.revokedAt = Date.now()
+        grant.revokedBy = by
+        // Words up to now cannot grant again, the user's "revoke it" included.
+        grant.boundary = (
+          await tx.scanEntries({ conversationId: grant.conversation as ConversationId }, 1)
+        ).items[0]?.id
+        const standingLast = (
+          d: NonNullable<(typeof index.queue)[number]['delivery']>,
+          a: string,
+        ) => d.approvals?.findLast((approval) => approval.action === a)?.standing !== undefined
+        for (const { delivery: d } of index.queue) {
+          if (!d) continue
+          if (d.stage === 'publish' && d.publishApproved && standingLast(d, 'publish'))
+            delete d.publishApproved
+          // Once the merge intent is recorded the write may be under way; it is reconciled, never withdrawn.
+          if (
+            (d.stage === 'ci' || d.stage === 'merge') &&
+            d.mergeApproved &&
+            !d.mergeIntent &&
+            standingLast(d, 'merge')
+          )
+            delete d.mergeApproved
         }
       }, context)
       return { ok: true as const }
@@ -283,13 +310,27 @@ export const actions = {
     const hours = args.hours ?? 24
     if (typeof hours !== 'number' || !(hours > 0) || hours > standingMaxHours)
       throw new Error(`hours must be more than 0 and at most ${standingMaxHours}`)
-    const instruction = await typedInstruction(host, ultimate, args.instruction)
+    const { id: instruction, event } = await typedInstruction(host, ultimate, args.instruction)
+    const latest = (await host.eventLog.recent({ events: [UserInputEvent], limit: 1000 })).find(
+      ({ data }) => data.conversation === ultimate && data.device && data.kind !== 'dismiss',
+    )
+    if (latest?.id !== event.id || Date.now() - Date.parse(event.at) > grantWindow)
+      throw new Error(
+        "instruction must be the user's latest input, from the last ten minutes, asking for the standing approval",
+      )
     const at = Date.now()
     const grant = { instruction, conversation: ultimate, at, until: at + hours * 3600_000 }
     await host.harness().commit(async (tx) => {
       const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
-      if (index.standing && index.standing.instruction >= instruction)
+      const previous = index.standing
+      if (previous && Math.max(previous.instruction, previous.boundary ?? 0) >= instruction)
         throw new Error('Renewing a standing approval needs a newer instruction from the user')
+      if (
+        [...index.queue, ...Object.values(index.results)].some((item) =>
+          item.delivery?.approvals?.some((a) => a.instruction === instruction),
+        )
+      )
+        throw new Error('instruction already decided a delivery; it cannot also grant')
       if (await goalOpen(host, tx))
         throw new Error('A hands-off goal cannot grant a standing approval; it waits for the user')
       index.standing = grant
