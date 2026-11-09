@@ -30,5 +30,9 @@ jobs:
         with:
           node-version: '26'
           cache: pnpm
+      # #54086: Ubuntu 24.04 restricts unprivileged user namespaces, so Chromium's sandbox (kept on by the browser
+      # extension) aborts with "No usable sandbox!"; allow them instead of turning the sandbox off.
+      - name: Allow Chromium's user-namespace sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Frozen installs, lint, types and all test suites
         run: pnpm verify
