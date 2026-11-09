@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { keyCard, newestAsked, openQuestions, waiting } from '../../extensions/questions/open.tsx'
+import {
+  keyCard,
+  newestAsked,
+  oldestWaiting,
+  openQuestions,
+  waiting,
+} from '../../extensions/questions/open.tsx'
 
 const question = { text: 'Keep the preview?', kind: 'confirm' as const }
 const open = {
@@ -47,5 +53,20 @@ describe('open questions in To-dos', () => {
       { ...open, id: 10 },
     ]
     expect(waiting(messages).map((message) => message.id)).toEqual([10, 5])
+  })
+})
+
+describe('the waiting pill', () => {
+  it('jumps to the message waiting longest, moving on once it is answered', () => {
+    const messages = [
+      { ...open, id: 4, state: 'answered' as const },
+      open,
+      { ...open, id: 6, from: 3 },
+    ]
+    expect(oldestWaiting(messages)?.id).toBe(5)
+    expect(
+      oldestWaiting([messages[0], { ...open, state: 'dismissed' as const }, messages[2]])?.id,
+    ).toBe(6)
+    expect(oldestWaiting([messages[0]])).toBeUndefined()
   })
 })

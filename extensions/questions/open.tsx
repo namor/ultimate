@@ -23,6 +23,10 @@ export function openQuestions(message: Message) {
 export const waiting = <M extends Message>(messages: readonly M[]) =>
   messages.filter(waitsOnUser).toReversed()
 
+/** The message that has waited on the user longest, the one to answer first; undefined when none waits. */
+export const oldestWaiting = <M extends Message>(messages: readonly M[]) =>
+  messages.find(waitsOnUser)
+
 /** The newest message showing an answer card: only it takes the desktop 1–9 and Enter keys. */
 export function newestAsked(messages: readonly Message[]) {
   return messages.findLast((message) => openQuestions(message).length > 0)?.id
