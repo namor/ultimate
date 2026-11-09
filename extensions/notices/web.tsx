@@ -35,7 +35,9 @@ function Toasts() {
   return (
     <section
       aria-label="Notifications"
-      className="fixed inset-x-2 top-20 z-40 mx-auto flex max-h-[calc(100dvh-10rem)] flex-col gap-1.5 sm:w-[26rem]"
+      // top-38: below the conversation header and the context bar that pins under it (or the start card in its place),
+      // which the user reads; covering them was the complaint.
+      className="fixed inset-x-2 top-38 z-40 mx-auto flex max-h-[calc(100dvh-16rem)] flex-col gap-1.5 sm:w-[26rem]"
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) setHeld(false)
       }}
