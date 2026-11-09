@@ -314,7 +314,13 @@ export async function advanceDelivery(
     await git(source, 'merge-base', '--is-ancestor', d.baseline, target)
     await git(source, 'merge-base', '--is-ancestor', target, d.candidate)
     d.mergeIntent = true
-    await persist()
+    try {
+      await persist()
+    } catch (error) {
+      // Not recorded, so no write is uncertain: the approval was withdrawn before it.
+      delete d.mergeIntent
+      throw error
+    }
     write = 'merge'
     const merged = await api<{ merged: boolean; sha: string }>(
       `${prefix}/pulls/${d.pr}/merge`,

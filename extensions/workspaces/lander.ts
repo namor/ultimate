@@ -638,12 +638,22 @@ export function createLander(
                 const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
                   (item) => item.id === id,
                 )!
-                // Approvals may arrive while the network request runs; never erase them or their audit records.
+                // Approvals may arrive or be withdrawn (a standing approval revoked) while the network request runs:
+                // the saved record owns them and their audit records, never the transition's older copy.
+                const current = saved.delivery
+                if (
+                  delivery.mergeIntent &&
+                  !current?.mergeIntent &&
+                  delivery.risk !== 'low' &&
+                  !current?.mergeApproved
+                )
+                  throw new Error('Merge approval was withdrawn; approve again to merge')
+                const { publishApproved: _p, mergeApproved: _m, approvals: _a, ...rest } = delivery
                 saved.delivery = {
-                  ...delivery,
-                  ...(saved.delivery?.publishApproved ? { publishApproved: true } : {}),
-                  ...(saved.delivery?.mergeApproved ? { mergeApproved: true } : {}),
-                  ...(saved.delivery?.approvals ? { approvals: saved.delivery.approvals } : {}),
+                  ...rest,
+                  ...(current?.publishApproved ? { publishApproved: true } : {}),
+                  ...(current?.mergeApproved ? { mergeApproved: true } : {}),
+                  ...(current?.approvals ? { approvals: current.approvals } : {}),
                 }
               }, context)
             const expired = Date.now() > (previous.deadline ?? previous.checkedAt + 60 * 60 * 1000)
