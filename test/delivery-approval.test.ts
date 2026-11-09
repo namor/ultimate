@@ -106,7 +106,7 @@ async function fixture() {
   const entry = (
     conversationId: ConversationId,
     kind: string,
-    options: { data?: JsonValue; typed?: boolean | 'message' } = {},
+    options: { data?: JsonValue; typed?: boolean | 'message' | 'voice' } = {},
   ) =>
     opened.harness.commit(async (tx) => {
       const placed = await tx.appendEntry(conversationId, {
@@ -117,11 +117,13 @@ async function fixture() {
       if (options.typed)
         await events.emit(tx, UserInputEvent, {
           conversation: conversationId,
-          kind: options.typed === 'message' ? 'answer' : 'prompt',
-          ...(options.typed === 'message'
-            ? { message: (options.data as { id: number }).id }
-            : { entry: placed.id }),
+          kind: options.typed === true ? 'prompt' : 'answer',
+          ...(options.typed === true
+            ? { entry: placed.id }
+            : { message: (options.data as { id: number }).id }),
           length: 8,
+          // A voice-forwarded answer has no browser behind it; the composer and answer card always do.
+          ...(options.typed === 'voice' ? {} : { device: 'desktop/chrome' }),
         })
       return placed.id
     }, context)
@@ -211,6 +213,36 @@ describe('delivery approval', () => {
     const settled = await f.entry(f.ultimate, 'board.message', { data: { id: 9, from: 'user' } })
     await expect(f.call({ conversationId: f.ultimate }, { instruction: settled })).rejects.toThrow(
       'not one written in their name',
+    )
+    // An answer the voice model forwarded on the user's behalf: an event, but no device.
+    const voiced = await f.entry(f.ultimate, 'board.message', {
+      data: { id: 11, from: 'user' },
+      typed: 'voice',
+    })
+    await expect(f.call({ conversationId: f.ultimate }, { instruction: voiced })).rejects.toThrow(
+      'not one written in their name',
+    )
+    expect((await f.queued()).mergeApproved).toBeUndefined()
+  })
+
+  it('refuses an instruction judged before a reassessment moved the submission point', async () => {
+    const f = await fixture()
+    const instruction = await f.entry(f.ultimate, 'pi.user', { typed: true })
+    // The reassessment lands between the approver's snapshot and its commit.
+    const commit = f.opened.harness.commit.bind(f.opened.harness)
+    let moved = false
+    f.opened.harness.commit = async (update: unknown, ctx: unknown) => {
+      if (!moved) {
+        moved = true
+        await commit(async (tx) => {
+          const queued = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue[0]
+          queued.at = (await tx.appendEntry(f.branch, { kind: 'test.resubmit' })).id
+        }, context)
+      }
+      return commit(update as never, ctx as never)
+    }
+    await expect(f.call({ conversationId: f.ultimate }, { instruction })).rejects.toThrow(
+      'reassessed',
     )
     expect((await f.queued()).mergeApproved).toBeUndefined()
   })

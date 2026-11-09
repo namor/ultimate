@@ -169,10 +169,11 @@ requirements and cannot satisfy a required second GitHub approver.
 
 **Who may act.** The `delivery` action (`publish`, `merge`, `recheck`, `stop`) takes the user's own click on the card, or a
 codemode call from @ultimate, the root standing agent, when the user told it to in its chat. @ultimate passes `instruction`: the
-entry id of the user's input in its conversation that gave the order. The action checks that a `user.input` event names that
-entry (only the user's composer and answer card emit one, so a `pi.user` input the server placed or an answer @ultimate settled
-in the user's name does not count), that it came after the submission (a reassessment resets that point), and that it has not
-decided another delivery. Any other conversation (a branch, a subagent, a side chat, an automation run) is refused, as is
+entry id of the user's input in its conversation that gave the order. The action checks that a `user.input` event from a browser
+(`device` set) names that entry: only the user's composer and answer card emit one, so a `pi.user` input the server placed, an
+answer @ultimate settled in the user's name, a dismissal, or a request the voice model forwarded does not count. The entry must
+come after the submission (a reassessment resets that point, and one that lands mid-call refuses the approval), and must not
+have decided another delivery. Any other conversation (a branch, a subagent, a side chat, an automation run) is refused, as is
 @ultimate while a hands-off goal is open: the goal decides in the user's place elsewhere, never here. Every action is recorded on
 the delivery (`approvals`: who, when, and for @ultimate its conversation and instruction entry), and the card shows it with a link
 to the instruction. The candidate, tree, stage, uncertain-write and GitHub-check protections apply to both callers alike: the

@@ -13,7 +13,7 @@ import {
   section,
   ToolTask,
 } from '@earendil-works/pi-durable'
-import type { ConversationId, EntryId, SubmissionId } from '@earendil-works/pi-durable'
+import type { ConversationId, EntryId, SubmissionId, Tx } from '@earendil-works/pi-durable'
 import { implementAction } from '../../lib/actions.ts'
 import type { ActionInput } from '../../lib/actions.ts'
 import { empty, git, isolatable, noCommit, noRepository } from '../../lib/git.ts'
@@ -63,12 +63,22 @@ async function setupGit(host: ExtensionHost) {
  * Who acts on a delivery. A call from the browser (it carries a `device`) is the user's own click. Any other call is an
  * agent's: only @ultimate, the root standing agent, may make it, never while a hands-off goal is open, and only on the
  * user's recorded instruction: an entry in its conversation that a `user.input` event after the submission names,
- * which only the user's composer and answer card emit. The entry's kind alone does not prove the user wrote it:
- * `messages/settle` writes a `board.message` from "user" in @ultimate's name, and watchdog, update and onboarding place
- * plain `pi.user` inputs with text the server composed. Branches, subagents, side chats and automations run under their
+ * carrying the browser `device` only the user's composer and answer card stamp. The entry's kind alone does not prove
+ * the user wrote it: `messages/settle` writes a `board.message` from "user" in @ultimate's name, watchdog, update and
+ * onboarding place plain `pi.user` inputs with text the server composed, and voice-live answers an open question with
+ * text its model composed (an event without a device). Branches, subagents, side chats and automations run under their
  * own conversation ids, so they fail the first check. Docs are found by kind, not import: subagents and goal depend on
  * workspaces.
  */
+/** Whether a hands-off goal is open; `tx` reads inside a commit, where a snapshot would wait on that commit. */
+async function goalOpen(host: ExtensionHost, tx?: Tx) {
+  const goals = host.doc('goal')
+  if (!goals) return false
+  const open = tx
+    ? (await tx.doc(goals, ROOT_CONVERSATION_ID)).goals
+    : (await host.harness().snapshot(goals, ROOT_CONVERSATION_ID, context))?.goals
+  return Array.isArray(open) && open.some((goal) => !(goal as { ended?: unknown }).ended)
+}
 async function approver(
   host: ExtensionHost,
   ctx: Pick<ActionContext, 'conversationId' | 'device'>,
@@ -83,9 +93,7 @@ async function approver(
     standing && (await harness.snapshot(standing, ROOT_CONVERSATION_ID, context))?.ultimate
   if (ctx.conversationId === undefined || ctx.conversationId !== ultimate)
     throw new Error("Only the user or @ultimate on the user's instruction can act on a delivery")
-  const goals = host.doc('goal')
-  const open = goals && (await harness.snapshot(goals, ROOT_CONVERSATION_ID, context))?.goals
-  if (Array.isArray(open) && open.some((goal) => !(goal as { ended?: unknown }).ended))
+  if (await goalOpen(host))
     throw new Error('A hands-off goal cannot approve a delivery; it waits for the user')
   if (typeof instruction !== 'number' || !Number.isSafeInteger(instruction))
     throw new Error(
@@ -105,7 +113,7 @@ async function approver(
   })
   let typed = false
   for (const { data } of events) {
-    if (data.conversation !== ultimate) continue
+    if (data.conversation !== ultimate || !data.device || data.kind === 'dismiss') continue
     if (data.entry === entry.id || (message !== undefined && data.message === message)) typed = true
     else if (data.submission !== undefined) {
       const placed = await (
@@ -157,6 +165,11 @@ export const actions = {
       const delivery = entry?.delivery
       if (!entry || !delivery || !bound(entry))
         throw new Error('Delivery candidate changed; approval refused')
+      // The instruction was judged against the snapshot's submission point; a reassessment in between moved it.
+      if (entry.at !== seen.at)
+        throw new Error('Delivery was reassessed; the user must decide on the new assessment')
+      if (approval.by === 'ultimate' && (await goalOpen(host, tx)))
+        throw new Error('A hands-off goal cannot approve a delivery; it waits for the user')
       // One instruction decides one delivery: the user's words about this candidate approve no other.
       if (
         approval.instruction !== undefined &&
