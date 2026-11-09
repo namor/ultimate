@@ -24,8 +24,19 @@ export type Delivery = {
   merged?: string
   publishApproved?: boolean
   mergeApproved?: boolean
+  /** Who approved each stage, newest last: the user's own click, or @ultimate on the user's recorded instruction. */
+  approvals?: Approval[]
   reason?: string
   resumeStage?: 'review' | 'publish' | 'pr' | 'ci' | 'merge' | 'merged'
+}
+/** An audit record of one delivery action: the user's own click, or @ultimate acting on the user's instruction entry. */
+export type Approval = {
+  action: 'publish' | 'merge' | 'recheck' | 'stop'
+  at: number
+  by: 'user' | 'ultimate'
+  /** @ultimate's conversation and the user's instruction entry in it, when @ultimate acted. */
+  conversation?: number
+  instruction?: number
 }
 
 export const deliveryRuntime = () => `${process.version}/${process.platform}/${process.arch}`

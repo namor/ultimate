@@ -541,6 +541,27 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
         </a>
       )}
       {delivery.reason && <p className="text-warning">{delivery.reason}</p>}
+      {delivery.approvals?.map((approval) => (
+        <p
+          className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground"
+          key={`${approval.action}:${approval.at}`}
+        >
+          <span>
+            {approval.action === 'publish'
+              ? 'Publication approved'
+              : approval.action === 'merge'
+                ? 'Merge approved'
+                : approval.action === 'recheck'
+                  ? 'Recheck requested'
+                  : 'Stopped'}{' '}
+            {approval.by === 'user' ? 'by you' : 'by @ultimate on your instruction'} ·{' '}
+            {time(approval.at)}
+          </span>
+          {approval.conversation !== undefined && (
+            <Open id={approval.conversation} entry={approval.instruction} />
+          )}
+        </p>
+      ))}
       {action && (
         <>
           <p>
