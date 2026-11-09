@@ -19,7 +19,15 @@ import { LoginDialog } from './login.tsx'
 import { familyTitle } from '../../lib/families.ts'
 import { agentsPanel, FamilyDot, familyOf, useFamilies } from './families.tsx'
 import { ModelPicker } from './picker.tsx'
-import { nextThinking, openLogin, openPicker, thinkingDialog, useCurrentModel } from './state.tsx'
+import { PresetsDialog } from './presets.tsx'
+import {
+  dialogs,
+  nextThinking,
+  openLogin,
+  openPicker,
+  thinkingDialog,
+  useCurrentModel,
+} from './state.tsx'
 import type { ThinkingLevel } from './state.tsx'
 import { switchAt } from './switches.ts'
 import type { Fallback } from './refs.ts'
@@ -227,12 +235,20 @@ function FellBack({ entry }: { entry: EntryRecord }) {
 
 export default defineWebExtension({
   entries: { 'pi.assistant': Switched, 'models.fallback': FellBack },
-  slots: { 'composer.toolbar': [ModelButton, ThinkingButton], overlay: [ModelPicker, LoginDialog] },
+  slots: {
+    'composer.toolbar': [ModelButton, ThinkingButton],
+    overlay: [ModelPicker, LoginDialog, PresetsDialog],
+  },
   commands: [
     {
       id: 'model.families',
       title: 'Model families…',
       run: (context) => context.openPanel(agentsPanel),
+    },
+    {
+      id: 'model.presets',
+      title: 'Switch model preset…',
+      run: (context) => context.open(dialogs.presets),
     },
     {
       id: 'model.pick',
