@@ -66,7 +66,7 @@ export function agentRefusal(
   if (actor !== submitter && actor !== ultimate)
     return "Only the user or @ultimate on the user's instruction can act on a delivery"
   if (action !== 'recheck' && action !== 'stop')
-    return "Pass instruction: the entry id of the user's input that told you to act on this delivery"
+    return 'Agents may only recheck or stop a blocked delivery; publish and merge are the user\'s'
   if (d.stage !== 'blocked') return 'Delivery stage changed; reload its card'
   if (action === 'stop') return undefined
   const why = d.wake?.to === 'user' ? d.wake.why : needsUser(d)

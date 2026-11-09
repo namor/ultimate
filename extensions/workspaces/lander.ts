@@ -369,6 +369,7 @@ export async function reportBlocked(
     const entry = index.queue.find((item) => item.id === id)
     const delivery = entry?.delivery
     if (!entry || !delivery || delivery.stage !== 'blocked') return undefined
+    const fresh = !delivery.wake
     if (!delivery.wake) {
       const block = (delivery.blocks ?? 0) + 1
       const item = index.items[String(entry.conversationId)]
@@ -383,6 +384,7 @@ export async function reportBlocked(
     }
     const standing = host.doc('ultimate.standing-agents')
     return {
+      fresh,
       entry: copyJson(entry) as QueueEntry,
       lander: index.landerConversations[entry.source],
       wake: { ...delivery.wake },
@@ -392,10 +394,10 @@ export async function reportBlocked(
     }
   }, context)
   if (!decided) return
-  const { entry, wake, ultimate, lander } = decided
+  const { fresh, entry, wake, ultimate, lander } = decided
   const delivery = entry.delivery!
   const reason = delivery.reason ?? 'Delivery blocked'
-  host.notice(`Delivery ${id} blocked: ${reason}`)
+  if (fresh) host.notice(`Delivery ${id} blocked: ${reason}`)
   const logs = delivery.url
     ? ` Failing check logs: ${delivery.url}/checks.`
     : ' Details are in the lander log.'
