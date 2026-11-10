@@ -203,7 +203,7 @@ export default defineConfig({
     teardownTimeout: 5000,
     // #45669, #62393: each worker boots servers and Vite builds, so more workers oversubscribe the CPUs and
     // fixture-heavy tests hit their deadlines. On a 10-CPU Mac 8 workers took 326 s with 5 timeouts under background
-    // load; 4 passed in 87-89 s, 6 in 80-82 s at nearly twice the load. A 3-CPU CI runner keeps 3.
+    // load; 4 passed in 87-89 s, 6 in 80-82 s at nearly twice the load. CI runners with at most 4 CPUs are unaffected.
     maxWorkers: Math.min(4, availableParallelism()),
     // #45669: cases boot cold Vite servers; parallelize files, not fixture bodies competing for the same CPUs.
     maxConcurrency: 1,
