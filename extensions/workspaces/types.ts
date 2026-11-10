@@ -55,7 +55,7 @@ export type LanderStep = {
 }
 /** How a submission ended. A push that failed after landing locally is `landed` with a `reason`. */
 export type LanderOutcome = {
-  /** Retained when a user stops a blocked delivery; external PRs are not silently changed. */
+  /** Retained when a delivery merged or was stopped: its approvals' instructions decide no later delivery. */
   delivery?: Delivery
   outcome: 'landed' | 'failed'
   divergence?: string

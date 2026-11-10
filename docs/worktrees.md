@@ -21,7 +21,8 @@ Read worker reports and diffs; rerun checks only for missing or thin evidence, r
 workers, `server/` or `shared/` changes, or surprises in the diff, then land and call `workspace submit`.
 The lander is code, not a model. With [personal PR delivery](../extensions/workspaces/README.md#personal-pr-delivery),
 it runs the explicit serial checks on an immutable candidate before publishing a branch, reconciles a PR, waits for successful
-required GitHub checks and the applicable user-only approvals, then merges through GitHub before advancing local main.
+required GitHub checks and the applicable user approvals (the card, or @ultimate on the user's recorded instruction), then
+merges through GitHub before advancing local main.
 Here `pnpm verify` covers frozen installs, lint/types and all identified suites with a clean environment.
 Without that opt-in, the legacy path runs only its effective `lander.checks`, retries a failing check once, then fast-forwards
 locally and optionally pushes to `lander.push`. Tracked project settings do not apply when project trust is declined;
