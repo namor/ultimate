@@ -44,7 +44,7 @@ it('advances the target worktree without touching the source after its checked-o
   expect(await git(source, 'rev-parse', 'main')).toBe(candidate)
 })
 
-it('keeps main unchanged and exposes a user-only candidate-bound publication gate with declined trust', async () => {
+it('keeps main unchanged and exposes a candidate-bound publication gate with declined trust', async () => {
   const home = await temp('ultimate-delivery-')
   cleanup.push(() => removeTemp(home))
   const project = join(home, 'project')
@@ -162,8 +162,9 @@ it('keeps main unchanged and exposes a user-only candidate-bound publication gat
     args,
     conversationId: id,
   })
+  // The probe runs as the submitting conversation, not @ultimate: an agent other than the root standing agent.
   expect(denied.status).toBe(500)
-  expect(JSON.stringify(denied.data)).toContain('user-only')
+  expect(JSON.stringify(denied.data)).toContain('Only the user or @ultimate')
   const stale = await post(server, '/api/extensions/workspaces/actions/delivery', {
     args: { ...args, candidate: baseline },
   })
@@ -191,6 +192,7 @@ it('keeps main unchanged and exposes a user-only candidate-bound publication gat
     )) as WorkspaceIndex
     return value.queue[0]?.delivery?.stage === 'blocked'
   })
+  await card.getByText('Publication approved by you').waitFor()
   expect(await git(remote, 'rev-parse', 'main')).toBe(baseline)
   await card.getByRole('button', { name: /Stop delivery/ }).click()
   await until(

@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll } from 'vitest'
@@ -17,6 +17,11 @@ for (const key of Object.keys(process.env))
   if (/_API_KEY$|_OAUTH_TOKEN$/.test(key)) delete process.env[key]
 // Test servers, and the previews they start, must never publish on this machine's tailnet: they find no Tailscale CLI.
 process.env.TAILSCALE_COMMAND = join(testTmpdir, 'no-tailscale')
+// #54086: Git reads only this global config, as on a fresh CI runner, plus a commit identity; without one, tests that
+// commit failed on GitHub's runner with "Author identity unknown". Repository config set by a test still wins.
+const gitConfig = join(testTmpdir, 'gitconfig')
+writeFileSync(gitConfig, '[user]\n\tname = Test User\n\temail = test@example.com\n')
+process.env.GIT_CONFIG_GLOBAL = gitConfig
 // Instance startup sweeps must never inspect the machine's real preview homes during tests.
 const previousTmpdir = process.env.TMPDIR
 process.env.TMPDIR = testTmpdir

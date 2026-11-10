@@ -151,8 +151,8 @@ workspace tip with `reviewedTree`, `risk` and `review`. No main-branch merge in 
 Only then does delivery push the immutable SHA to its submission branch and create/reconcile a PR in the explicit repository.
 The queue record holds the candidate, tree, destination, check time, write intents and PR identity across replacement tasks.
 An interrupted push reconciles the exact remote ref. An uncertain PR creation/merge is reconciled before further writes;
-missing or conflicting evidence stops delivery rather than blindly repeating a create. Blocked records stay visible for a
-user-only **Recheck outcome**. Rechecking does not fabricate a new local-check timestamp or clear an uncertain-write intent.
+missing or conflicting evidence stops delivery rather than blindly repeating a create. Blocked records stay visible for
+**Recheck outcome**. Rechecking does not fabricate a new local-check timestamp or clear an uncertain-write intent.
 A known blocked delivery can be stopped while retaining its record and leaving its remote branch/PR unchanged; uncertain writes
 must be reconciled first.
 
@@ -163,9 +163,21 @@ recorded baseline and be contained in the checked candidate. An ordinary head-SH
 advances only after GitHub confirms that merge and its tree. Publication, CI and merge are distinct stages on the submit card.
 
 Low-risk work is eligible for automatic merge only after independent review. Medium/high risk requires the user's candidate-bound
-**Approve merge**; high risk also requires scope agreement before sensitive implementation and **Approve publication**. These are
-user-only actions, not approvals a hands-off goal can supply. New candidate content invalidates the prior evidence/approvals.
-Chat scope agreement is separate from GitHub's platform review requirements and cannot satisfy a required second GitHub approver.
+**Approve merge**; high risk also requires scope agreement before sensitive implementation and **Approve publication**. New
+candidate content invalidates the prior evidence/approvals. Chat scope agreement is separate from GitHub's platform review
+requirements and cannot satisfy a required second GitHub approver.
+
+**Who may act.** The `delivery` action (`publish`, `merge`, `recheck`, `stop`) takes the user's own click on the card, or a
+codemode call from @ultimate, the root standing agent, when the user told it to in its chat. @ultimate passes `instruction`: the
+entry id of the user's input in its conversation that gave the order. The action checks that a `user.input` event from a browser
+(`device` set) names that entry: only the user's composer and answer card emit one, so a `pi.user` input the server placed, an
+answer @ultimate settled in the user's name, a dismissal, or a request the voice model forwarded does not count. The entry must
+come after the submission (a reassessment resets that point, and one that lands mid-call refuses the approval), and must not
+have decided another delivery. Any other conversation (a branch, a subagent, a side chat, an automation run) is refused, as is
+@ultimate while a hands-off goal is open: the goal decides in the user's place elsewhere, never here. Every action is recorded on
+the delivery (`approvals`: who, when, and for @ultimate its conversation and instruction entry), and the card shows it with a link
+to the instruction. The candidate, tree, stage, uncertain-write and GitHub-check protections apply to both callers alike: the
+user waived the click, nothing else. The browser path trusts any same-origin request as the user's click, as it did before.
 
 **Destination limitation:** GitHub's immediate merge API compares the head SHA, not the base ref. Before activating automatic merge,
 the user must explicitly accept that nobody retargets a delivery PR during its immediate validation/merge window. Fresh destination
