@@ -1,3 +1,4 @@
+import { availableParallelism } from 'node:os'
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
@@ -6,7 +7,8 @@ export default defineConfig({
     setupFiles: ['test/setup.ts'],
     include: ['test/e2e/**/*.test.ts'],
     testTimeout: 60_000,
-    maxWorkers: 4,
+    // #45669: the macOS CI runner has three CPUs; keep the browser pool within that budget too.
+    maxWorkers: Math.min(4, availableParallelism()),
     // Like vite.config.ts: under an agent Vitest's minimal reporter is silent for passing files.
     reporters: ['default'],
   },

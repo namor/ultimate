@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { availableParallelism, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 // #45669: verification must not inherit the host's credentials or live-server configuration.
@@ -55,6 +55,9 @@ const commands: [string, string[]][] = [
   [process.execPath, ['.ultimate/extensions/public-docs/verify.mjs', process.cwd()]],
 ]
 try {
+  console.log(
+    `Verification runtime: ${process.version} ${process.platform}/${process.arch}; ${availableParallelism()} CPUs`,
+  )
   for (const [command, args] of commands) {
     console.log(`\nVerifying: ${command} ${args.join(' ')}`)
     const result = spawnSync(command, args, { env, stdio: 'inherit', timeout: 10 * 60 * 1000 })

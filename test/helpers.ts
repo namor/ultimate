@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { constants, existsSync } from 'node:fs'
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { setImmediate as yieldIO } from 'node:timers/promises'
@@ -140,8 +140,16 @@ export async function sourceCopy(parent: string) {
   const root = await temp('source-', parent)
   await cp(resolve('.'), root, {
     recursive: true,
-    filter: (path) =>
-      !['.git', 'node_modules'].includes(path.slice(resolve('.').length + 1).split('/')[0]),
+    // Copy-on-write clones where the filesystem has them (APFS, btrfs); plain copies elsewhere.
+    mode: constants.COPYFILE_FICLONE,
+    // Dependencies are linked below; build and cache output is never source.
+    filter: (path) => {
+      const parts = path.slice(resolve('.').length + 1).split('/')
+      return !parts.some(
+        (part) =>
+          part === '.git' || part === 'node_modules' || part.startsWith('.vite') || part === 'dist',
+      )
+    },
   })
   await linkDependencies(root)
   const config = join(root, 'vite.config.ts')
