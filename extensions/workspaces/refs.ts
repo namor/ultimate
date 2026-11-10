@@ -4,7 +4,13 @@
  */
 import { actionRef, docRef } from '../../shared/extension-api.ts'
 import { defineEvent } from '../../shared/events.ts'
-import type { WorkspaceDisk, WorkspaceIndex, WorkspaceInfo, WorkspaceStats } from './types.ts'
+import type {
+  StandingGrant,
+  WorkspaceDisk,
+  WorkspaceIndex,
+  WorkspaceInfo,
+  WorkspaceStats,
+} from './types.ts'
 import type { KeptWork } from '../conversations/types.ts'
 
 /** Why the project cannot isolate conversations (`reason`, absent when it can), and whether its folder is empty. */
@@ -25,9 +31,20 @@ export const DeliveryAction = actionRef<
     tree: string
     action: 'publish' | 'merge' | 'recheck' | 'stop'
     instruction?: number
+    /** @ultimate only: approve publish or merge under the standing approval, with `reason`. */
+    standing?: boolean
+    reason?: string
   },
   { ok: true }
 >('workspaces', 'delivery')
+/**
+ * `{ instruction, hours? }` grants the time-boxed standing delivery approval (@ultimate only, on the user's typed
+ * instruction entry; default 24 hours); `{ revoke: true }` revokes it (the user's click, or @ultimate).
+ */
+export const StandingAction = actionRef<
+  { instruction?: number; hours?: number; revoke?: boolean },
+  { ok: true } | StandingGrant
+>('workspaces', 'standing')
 
 /** `{ id }` → conversation `id`'s worktree with its branch, tip and changes, or null when it has none. */
 export const InfoAction = actionRef<{ id: number }, WorkspaceInfo | null>('workspaces', 'info')

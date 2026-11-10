@@ -16,7 +16,7 @@ import type { ExtensionHost } from '../../server/extensions.ts'
 import { CheckRan, SubmissionLanded } from './api.ts'
 import { setup } from './setup.ts'
 import type { DeliverySettings } from './delivery-settings.ts'
-import { advanceDelivery, deliveryRuntime, github } from './delivery.ts'
+import { advanceDelivery, deliveryRuntime, github, standingRefusal } from './delivery.ts'
 import { addCheckout, treePath } from './tree.ts'
 import type { Landed, LanderEntry, LanderOutcome, QueueEntry, WorkspaceIndex } from './types.ts'
 
@@ -456,6 +456,33 @@ export function createLander(
             saved.state = 'waiting'
             return { status: 'terminal', outcome: { status: 'completed', result: null } }
           }, context)
+        /**
+         * While the user's standing approval is on and this delivery's evidence qualifies, wake @ultimate to decide it:
+         * it alone may approve, with its reason, under that grant.
+         */
+        const askStanding = async (delivery: NonNullable<QueueEntry['delivery']>) => {
+          const grant = (await runtime.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))
+            ?.standing
+          const action = delivery.stage as 'publish' | 'merge'
+          if (standingRefusal(grant, delivery, action, Date.now())) return
+          const ultimate = await host
+            .harness()
+            .conversation(grant!.conversation as ConversationId, context)
+          // A failed wake leaves the delivery waiting for the user's card, as without a grant; it must not block it.
+          await ultimate
+            ?.submit(
+              {
+                type: 'input',
+                whenBusy: 'followUp',
+                requestId: `delivery-standing:${id}:${action}:${delivery.candidate}`,
+                content: `Delivery ${id} (${delivery.risk} risk, ${delivery.candidate}) awaits ${action} approval and qualifies under the user's standing approval until ${new Date(grant!.until).toISOString()}. Decide it: call workspaces/delivery with standing: true and your reason, or leave it for the user.`,
+              },
+              context,
+            )
+            .catch((error: unknown) =>
+              host.notice(`Delivery ${id} standing wake failed: ${failure(error)}`),
+            )
+        }
         /** Record the outcome, log it and report it to the submitter, in one commit. */
         const finish = (text: string, outcome: LanderOutcome) =>
           runtime.commit(async (tx) => {
@@ -611,12 +638,22 @@ export function createLander(
                 const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
                   (item) => item.id === id,
                 )!
-                // Approvals may arrive while the network request runs; never erase them or their audit records.
+                // Approvals may arrive or be withdrawn (a standing approval revoked) while the network request runs:
+                // the saved record owns them and their audit records, never the transition's older copy.
+                const current = saved.delivery
+                if (
+                  delivery.mergeIntent &&
+                  !current?.mergeIntent &&
+                  delivery.risk !== 'low' &&
+                  !current?.mergeApproved
+                )
+                  throw new Error('Merge approval was withdrawn; approve again to merge')
+                const { publishApproved: _p, mergeApproved: _m, approvals: _a, ...rest } = delivery
                 saved.delivery = {
-                  ...delivery,
-                  ...(saved.delivery?.publishApproved ? { publishApproved: true } : {}),
-                  ...(saved.delivery?.mergeApproved ? { mergeApproved: true } : {}),
-                  ...(saved.delivery?.approvals ? { approvals: saved.delivery.approvals } : {}),
+                  ...rest,
+                  ...(current?.publishApproved ? { publishApproved: true } : {}),
+                  ...(current?.mergeApproved ? { mergeApproved: true } : {}),
+                  ...(current?.approvals ? { approvals: current.approvals } : {}),
                 }
               }, context)
             const expired = Date.now() > (previous.deadline ?? previous.checkedAt + 60 * 60 * 1000)
@@ -714,8 +751,10 @@ export function createLander(
                 delivery.risk === 'high' &&
                 !delivery.publishApproved) ||
               (delivery.stage === 'merge' && delivery.risk !== 'low' && !delivery.mergeApproved)
-            )
+            ) {
+              await askStanding(delivery)
               return pauseDelivery()
+            }
             return runtime.commit(
               () => ({
                 status: 'running',

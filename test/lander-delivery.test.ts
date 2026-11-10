@@ -46,6 +46,7 @@ function fixture(delivery?: Delivery) {
   const runtime = {
     signal: new AbortController().signal,
     conversationId: 28,
+    now: () => 0,
     snapshot: async () => structuredClone(index),
     memo: async () => ({ runtime: 'runtime-A' }),
     commit: async (update: (transaction: typeof tx) => unknown) => {
@@ -100,6 +101,39 @@ it('continues when approval commits after its snapshot but before the transactio
   })
   expect(f.index.queue[0].delivery?.mergeApproved).toBe(true)
   expect(f.index.queue[0].state).toBe('landing')
+})
+
+it('refuses to record a merge intent once its approval was withdrawn mid-transition (#58492)', async () => {
+  const f = fixture({
+    settings: {
+      repository: 'example/my-app',
+      remote: 'origin',
+      base: 'main',
+      checks: ['verify'],
+      requiredChecks: ['verify'],
+    },
+    candidate: 'a'.repeat(40),
+    baseline: 'b'.repeat(40),
+    tree: 'c'.repeat(40),
+    branch: 'delivery/test',
+    checkedAt: Date.now(),
+    runtime: deliveryRuntime(),
+    stage: 'merge',
+    risk: 'medium',
+    review: 'fixture',
+    pr: 3,
+    mergeApproved: true,
+  })
+  let saved: unknown
+  vi.mocked(advanceDelivery).mockImplementation(async (_source, snapshot, save) => {
+    // A revoke commits while the transition still holds its approved copy.
+    delete f.index.queue[0].delivery!.mergeApproved
+    saved = await save({ ...snapshot, mergeIntent: true }).catch((error: Error) => error.message)
+    return snapshot
+  })
+  await f.run()
+  expect(saved).toBe('Merge approval was withdrawn; approve again to merge')
+  expect(f.index.queue[0].delivery?.mergeIntent).toBeUndefined()
 })
 
 it('rejects a changed runtime before reading cached check results or touching Git', async () => {
