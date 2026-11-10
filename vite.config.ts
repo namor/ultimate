@@ -201,8 +201,10 @@ export default defineConfig({
     // A hung hook or teardown fails within seconds and names its test, instead of stalling the run.
     hookTimeout: 5000,
     teardownTimeout: 5000,
-    // #45669: eight workers oversubscribed the three-core macOS CI runner and fixture-heavy tests hit their deadlines.
-    maxWorkers: Math.min(8, availableParallelism()),
+    // #45669, #62393: each worker boots servers and Vite builds, so more workers oversubscribe the CPUs and
+    // fixture-heavy tests hit their deadlines. On a 10-CPU Mac 8 workers took 326 s with 5 timeouts under background
+    // load; 4 passed in 87-89 s, 6 in 80-82 s at nearly twice the load. A 3-CPU CI runner keeps 3.
+    maxWorkers: Math.min(4, availableParallelism()),
     // #45669: cases boot cold Vite servers; parallelize files, not fixture bodies competing for the same CPUs.
     maxConcurrency: 1,
     // Under an agent (AI_AGENT, CLAUDECODE, …) Vitest picks its minimal reporter, which prints nothing for passing
