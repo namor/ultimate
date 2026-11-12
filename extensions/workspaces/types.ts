@@ -96,6 +96,8 @@ export type WorkspaceIndex = {
   landers: Record<string, number>
   /** The lander conversation per source checkout, where its task runs and logs. */
   landerConversations: Record<string, number>
+  /** The latest standing delivery approval, kept after it expires or is revoked as its audit record. */
+  standing?: StandingGrant
   /** Outcomes of the latest submissions by id, with their target and lander conversation, for the submitter's cards. */
   results: Record<
     string,
@@ -137,3 +139,18 @@ export type LandResult = {
   needsRestart?: boolean
 }
 export type SubmitResult = { text: string; id: string; position: number; lander: number }
+
+/**
+ * A time-boxed standing approval: the user's typed instruction `instruction` in @ultimate's conversation `conversation`
+ * let @ultimate approve publish and merge of verified, reviewed deliveries until `until`, unless revoked earlier.
+ */
+export type StandingGrant = {
+  instruction: number
+  conversation: number
+  at: number
+  until: number
+  revokedAt?: number
+  revokedBy?: 'user' | 'ultimate'
+  /** The newest entry of `conversation` at revocation: a new grant needs words after it. */
+  boundary?: number
+}

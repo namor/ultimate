@@ -179,6 +179,23 @@ the delivery (`approvals`: who, when, and for @ultimate its conversation and ins
 to the instruction. The candidate, tree, stage, uncertain-write and GitHub-check protections apply to both callers alike: the
 user waived the click, nothing else. The browser path trusts any same-origin request as the user's click, as it did before.
 
+**Standing approval (temporary).** The `standing` action lets the user hand @ultimate a time-boxed standing approval to get
+work out the door. @ultimate grants it with `{ instruction, hours? }`: `instruction` is the user's typed entry that told it to,
+checked like a per-delivery instruction (browser-stamped `user.input`), and it must be the user's latest input in @ultimate's
+conversation, at most ten minutes old, newer than the previous grant and its revocation, and not one that already decided a
+delivery; `hours` defaults to 24 and may be at most a week. The grant is stored on the root workspaces index (`standing`:
+instruction, conversation, granted and expiry time). The user revokes it with the card's **Revoke** button (or tells @ultimate,
+which calls `{ revoke: true }`); revoking also withdraws standing approvals no write has used yet (a recorded merge intent is
+reconciled, never withdrawn). An expired or revoked grant is kept as its record and refuses like none. The server checks that a
+review covering the exact tree was submitted, not how independent it was: @ultimate judges that before approving. While it is on, the
+delivery card shows "Standing approval until <time>", and @ultimate may call `delivery` with `standing: true` and a `reason`
+instead of `instruction`, for `publish` and `merge` only. `standingRefusal` (`delivery.ts`) decides it inside the approval's
+commit, from the delivery record: on the verified runtime, past the `review` stage (the independent review covers the exact
+tree), at the requested stage (`merge` is reached only when the exact head's required GitHub checks passed, and they are re-read
+right before merging), and with no uncertain write. The approval records `standing` (the grant's instruction entry) and
+`reason`, and the card shows it. When a delivery pauses for an approval that qualifies, the lander wakes @ultimate with a
+follow-up input naming it. Branches, subagents, side chats, automations, browser calls and hands-off goals cannot grant or use it.
+
 **Destination limitation:** GitHub's immediate merge API compares the head SHA, not the base ref. Before activating automatic merge,
 the user must explicitly accept that nobody retargets a delivery PR during its immediate validation/merge window. Fresh destination
 reads and strict checks remain, but this operational assumption is not an atomic enforced guarantee. No deferred native auto-merge

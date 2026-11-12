@@ -140,7 +140,7 @@ async function fixture() {
       signal: new AbortController().signal,
       ...ctx,
     } as ActionContext)
-  return { opened, ultimate, branch, earlier, entry, queued, call }
+  return { opened, host, ultimate, branch, earlier, entry, queued, call }
 }
 
 describe('delivery approval', () => {
@@ -300,6 +300,159 @@ describe('delivery approval', () => {
     await expect(f.call({ conversationId: f.ultimate }, { instruction })).rejects.toThrow(
       'hands-off goal',
     )
+  })
+
+  describe('standing approval', () => {
+    /** The user's typed grant, then a submission after it awaiting merge. */
+    const granted = async (hours?: number) => {
+      const f = await fixture()
+      const instruction = await f.entry(f.ultimate, 'pi.user', { typed: true })
+      await actions.standing({ instruction, ...(hours ? { hours } : {}) }, {
+        host: f.host,
+        conversationId: f.ultimate,
+        signal: new AbortController().signal,
+      } as unknown as ActionContext)
+      return { ...f, instruction }
+    }
+    const approve = (f: Awaited<ReturnType<typeof granted>>, args = {}) =>
+      f.call({ conversationId: f.ultimate }, { standing: true, reason: 'verified', ...args })
+    const set = (f: { opened: OpenHost }, change: (delivery: Delivery) => void) =>
+      f.opened.harness.commit(async (tx) => {
+        change((await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue[0].delivery!)
+      }, context)
+
+    it('lets @ultimate approve verified, reviewed, CI-green work and records the grant and reason', async () => {
+      const f = await granted()
+      await approve(f)
+      const delivery = await f.queued()
+      expect(delivery.mergeApproved).toBe(true)
+      expect(delivery.approvals).toEqual([
+        {
+          action: 'merge',
+          at: expect.any(Number),
+          by: 'ultimate',
+          conversation: f.ultimate,
+          standing: f.instruction,
+          reason: 'verified',
+        },
+      ])
+    })
+
+    it('refuses without verification on this runtime, review, green CI or a settled write', async () => {
+      const f = await granted()
+      await set(f, (d) => void (d.runtime = 'other'))
+      await expect(approve(f)).rejects.toThrow('another runtime')
+      await set(f, (d) => {
+        d.runtime = deliveryRuntime()
+        d.stage = 'review'
+      })
+      await expect(approve(f)).rejects.toThrow('No independent review')
+      // CI not yet green: the lander keeps the delivery in `ci` until the exact head's required checks pass.
+      await set(f, (d) => void (d.stage = 'ci'))
+      await expect(approve(f)).rejects.toThrow('GitHub checks have not passed')
+      await set(f, (d) => {
+        d.stage = 'merge'
+        d.mergeIntent = true
+      })
+      await expect(approve(f)).rejects.toThrow('uncertain write')
+      await expect(approve(f, { action: 'stop' })).rejects.toThrow('publish and merge only')
+      expect((await f.queued()).approvals).toBeUndefined()
+    })
+
+    it('refuses on a changed candidate or tree', async () => {
+      const f = await granted()
+      await expect(approve(f, { tree: 'd'.repeat(40) })).rejects.toThrow('candidate changed')
+      await expect(approve(f, { candidate: 'd'.repeat(40) })).rejects.toThrow('candidate changed')
+      expect((await f.queued()).mergeApproved).toBeUndefined()
+    })
+
+    it('refuses once revoked by the user, or expired, and needs new words to renew', async () => {
+      const f = await granted()
+      await actions.standing({ revoke: true }, {
+        host: f.host,
+        device: { device: 'desktop/chrome' },
+        signal: new AbortController().signal,
+      } as ActionContext)
+      await expect(approve(f)).rejects.toThrow('No standing approval')
+      const renew = (instruction: number) =>
+        actions.standing({ instruction }, {
+          host: f.host,
+          conversationId: f.ultimate,
+          signal: new AbortController().signal,
+        } as unknown as ActionContext)
+      await expect(renew(f.instruction)).rejects.toThrow('newer instruction')
+      await renew(await f.entry(f.ultimate, 'pi.user', { typed: true }))
+      await f.opened.harness.commit(async (tx) => {
+        ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).standing!.until = Date.now() - 1
+      }, context)
+      await expect(approve(f)).rejects.toThrow('expired')
+      expect((await f.queued()).mergeApproved).toBeUndefined()
+    })
+
+    it('defaults to 24 hours and is granted only by @ultimate on typed words', async () => {
+      const f = await granted()
+      const grant = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+        .standing!
+      expect(grant.until - grant.at).toBe(24 * 3600_000)
+      const ctx = (extra: object) =>
+        ({ host: f.host, signal: new AbortController().signal, ...extra }) as ActionContext
+      const typed = await f.entry(f.ultimate, 'pi.user', { typed: true })
+      await expect(
+        actions.standing({ instruction: typed }, ctx({ conversationId: f.branch })),
+      ).rejects.toThrow('Only the user or @ultimate')
+      const placed = await f.entry(f.ultimate, 'pi.user')
+      await expect(
+        actions.standing({ instruction: placed }, ctx({ conversationId: f.ultimate })),
+      ).rejects.toThrow('not one written in their name')
+    })
+
+    it('grants only on the latest typed words, never reused or older ones', async () => {
+      const f = await fixture()
+      const grant = (instruction: number) =>
+        actions.standing({ instruction }, {
+          host: f.host,
+          conversationId: f.ultimate,
+          signal: new AbortController().signal,
+        } as unknown as ActionContext)
+      const older = await f.entry(f.ultimate, 'pi.user', { typed: true })
+      const used = await f.entry(f.ultimate, 'pi.user', { typed: true })
+      await f.call({ conversationId: f.ultimate }, { instruction: used })
+      await expect(grant(older)).rejects.toThrow("the user's latest input")
+      await expect(grant(used)).rejects.toThrow('already decided a delivery')
+    })
+
+    it('revoking withdraws a standing approval no write has used', async () => {
+      const f = await granted()
+      await approve(f)
+      expect((await f.queued()).mergeApproved).toBe(true)
+      await actions.standing({ revoke: true }, {
+        host: f.host,
+        conversationId: f.ultimate,
+        signal: new AbortController().signal,
+      } as unknown as ActionContext)
+      const delivery = await f.queued()
+      expect(delivery.mergeApproved).toBeUndefined()
+      // The audit record stays.
+      expect(delivery.approvals?.[0]).toMatchObject({ standing: f.instruction })
+    })
+
+    it('refuses a non-root caller and an open hands-off goal', async () => {
+      const f = await granted()
+      await expect(
+        f.call({ conversationId: f.branch }, { standing: true, reason: 'verified' }),
+      ).rejects.toThrow('Only the user or @ultimate')
+      await f.opened.harness.commit(async (tx) => {
+        ;(await tx.doc(Goals, ROOT_CONVERSATION_ID)).goals.push({
+          id: 1,
+          text: 'ship it',
+          startedAt: Date.now(),
+          criteria: [],
+          decisions: [],
+        })
+      }, context)
+      await expect(approve(f)).rejects.toThrow('hands-off goal')
+      expect((await f.queued()).approvals).toBeUndefined()
+    })
   })
 
   it('still binds every caller to the exact candidate', async () => {
