@@ -154,7 +154,12 @@ it('fires every 2s into distinct answered conversations and supports pause, resu
     7000,
   )
   await f.action('pause', { id: a.id })
-  const runs = (await f.records())[0].runs
+  // Pause stops new fires but not one in flight, and on a slow runner a fire can land while the
+  // previous run is still busy and be recorded as skipped (main CI 43152240483): settle, then check the real runs.
+  await until(async () => (await f.records())[0].runs.every((r) => r.status !== 'running'))
+  const all = (await f.records())[0].runs
+  const runs = all.filter((r) => r.status !== 'skipped')
+  expect(runs.every((r) => r.status === 'done')).toBe(true)
   expect(new Set(runs.map((r) => r.conversationId)).size).toBe(runs.length)
   for (const run of runs) {
     expect(run.answer).toBe('Answer: Scheduled report')
@@ -169,14 +174,14 @@ it('fires every 2s into distinct answered conversations and supports pause, resu
     expect((await f.opened.harness.snapshot(Metadata, child.id, context))?.label).toBe('automation')
   }
   await vi.advanceTimersByTimeAsync(2200)
-  expect((await f.records())[0].runs).toHaveLength(runs.length)
+  expect((await f.records())[0].runs).toHaveLength(all.length)
   await f.action('run', { id: a.id })
   await until(async () => (await f.records())[0].runs.at(-1)?.status === 'done')
-  expect((await f.records())[0].runs).toHaveLength(runs.length + 1)
+  expect((await f.records())[0].runs).toHaveLength(all.length + 1)
   await f.action('resume', { id: a.id })
   await until(async () => {
     const current = (await f.records())[0].runs
-    return current.length === runs.length + 2 && current.at(-1)?.status === 'done'
+    return current.length === all.length + 2 && current.at(-1)?.status === 'done'
   }, 3500)
   await f.action('delete', { id: a.id })
   expect(await f.records()).toEqual([])
