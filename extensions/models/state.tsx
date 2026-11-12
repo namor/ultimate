@@ -10,6 +10,7 @@ export type ThinkingLevel = ModelInfo['thinkingLevels'][number]
 export const dialogs = {
   picker: 'models.picker',
   login: 'models.login',
+  presets: 'models.presets',
 } as const
 /** The thinking popover of conversation `id`'s toolbar: a side chat's has its own, apart from main's. */
 export const thinkingDialog = (id: number | undefined) => `models.thinking.${id}`
