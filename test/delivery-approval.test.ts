@@ -437,6 +437,24 @@ describe('delivery approval', () => {
       expect(delivery.approvals?.[0]).toMatchObject({ standing: f.instruction })
     })
 
+    // #53902 review: a branch's own recheck must not resume a merge under a grant revoked while the delivery was blocked.
+    it('revoking withdraws a standing approval held by a blocked delivery', async () => {
+      const f = await granted()
+      await approve(f)
+      await f.opened.harness.commit(async (tx) => {
+        const d = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue[0].delivery!
+        d.resumeStage = 'merge'
+        d.stage = 'blocked'
+        d.reason = 'GitHub request outcome is unknown'
+      }, context)
+      await actions.standing({ revoke: true }, {
+        host: f.host,
+        conversationId: f.ultimate,
+        signal: new AbortController().signal,
+      } as unknown as ActionContext)
+      expect((await f.queued()).mergeApproved).toBeUndefined()
+    })
+
     it('refuses a non-root caller and an open hands-off goal', async () => {
       const f = await granted()
       await expect(

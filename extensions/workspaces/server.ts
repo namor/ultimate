@@ -319,11 +319,14 @@ export const actions = {
         ) => d.approvals?.findLast((approval) => approval.action === a)?.standing !== undefined
         for (const { delivery: d } of index.queue) {
           if (!d) continue
-          if (d.stage === 'publish' && d.publishApproved && standingLast(d, 'publish'))
+          // A blocked delivery keeps its approvals for the stage a recheck resumes: withdraw those too, or a recheck
+          // (the user's, or since #53902 its branch's) would publish or merge under a revoked grant.
+          const stage = d.stage === 'blocked' ? d.resumeStage : d.stage
+          if (stage === 'publish' && d.publishApproved && standingLast(d, 'publish'))
             delete d.publishApproved
           // Once the merge intent is recorded the write may be under way; it is reconciled, never withdrawn.
           if (
-            (d.stage === 'ci' || d.stage === 'merge') &&
+            (stage === 'ci' || stage === 'merge') &&
             d.mergeApproved &&
             !d.mergeIntent &&
             standingLast(d, 'merge')
