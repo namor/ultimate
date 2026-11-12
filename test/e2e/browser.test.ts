@@ -1,4 +1,6 @@
 import { access, readFile } from 'node:fs/promises'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { join, resolve } from 'node:path'
 import type { ToolExecutionApi } from '@earendil-works/pi-durable'
 import { expect, it, vi } from 'vitest'
@@ -77,6 +79,45 @@ it('times out a hung step, closes its page and keeps later calls working', async
       expect(next.text).toContain('Step 1: OK \\"Hang\\"')
     }
   } finally {
+    for (const close of closers) await close()
+    await removeTemp(directory)
+  }
+})
+
+// A 1 s timeoutMs also bounded loading, so a cold page on a loaded lander timed out before step 1 ran (#61963).
+it('loads a page slower than timeoutMs, which bounds only the steps', async () => {
+  const directory = await temp('ultimate-browser-slow-load-')
+  const closers: (() => Promise<void>)[] = []
+  const host = {
+    home: join(directory, 'home'),
+    projectRoot: directory,
+    resource: <T>(_name: string, create: () => T) => create(),
+    onClose: (close: () => Promise<void>) => closers.push(close),
+    notice() {},
+    system: () => ({ process: { url: 'http://127.0.0.1:1/' } }),
+  } as unknown as ExtensionHost
+  const browser = browserExtension(host).tools!.find((tool) => tool.name === 'browser')!
+  const api = { output() {} } as unknown as ToolExecutionApi
+  const server = createServer((_request, response) => {
+    setTimeout(() => response.end('<title>Slow</title>'), 1500)
+  })
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+  const { port } = server.address() as AddressInfo
+  try {
+    const result = await browser.execute(
+      {
+        url: `http://127.0.0.1:${port}/`,
+        steps: [{ eval: 'document.title' }],
+        screenshot: false,
+        timeoutMs: 1000,
+      },
+      api,
+      context,
+    )
+    expect(result.isError).toBeFalsy()
+    expect(JSON.stringify(result.output)).toContain('Step 1: OK \\"Slow\\"')
+  } finally {
+    server.close()
     for (const close of closers) await close()
     await removeTemp(directory)
   }

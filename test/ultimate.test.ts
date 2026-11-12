@@ -66,7 +66,18 @@ async function fixture(onRequest?: (text: string, home: string) => Promise<void>
     servers.push(server)
     const route: FauxResponseFactory = async (transcript) => {
       server.host.faux!.appendResponses([route])
-      const last = transcript.messages.findLast((message) => message.role !== 'system')!
+      // PR #20: replies can follow a scripted command in the same request. Read the pending command,
+      // but never replay one that already has an assistant response or tool result.
+      const boundary = transcript.messages.findLastIndex(
+        (message) => message.role === 'assistant' || message.role === 'toolResult',
+      )
+      const command = transcript.messages
+        .slice(boundary + 1)
+        .find(
+          (message) =>
+            message.role === 'user' && /^(BRANCH|CODE|SEND) /.test(textOf(message.content)),
+        )
+      const last = command ?? transcript.messages.findLast((message) => message.role !== 'system')!
       const text = textOf(last.content)
       requests.push(text)
       await onRequest?.(text, home)
@@ -322,6 +333,43 @@ it.concurrent('starts a lineage branch with a message input and caller attributi
       JSON.stringify(entry).includes('Choose a root. Roots: (none)'),
     ),
   )
+})
+
+it.concurrent('handles a scripted branch command batched before another input', async () => {
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const f = await fixture(async (text) => {
+    if (text === 'HOLD') {
+      entered.resolve()
+      await release.promise
+    }
+  })
+  const ultimate = await f.subagents.standing('ultimate', context)
+  const conversation = (await f.server.harness.conversation(ultimate, context))!
+  await f.server.harness.commit(async (tx) => {
+    ;(await tx.doc(Roots, ROOT_CONVERSATION_ID)).roots = []
+  }, context)
+  const holding = await conversation.submit({ type: 'input', content: 'HOLD' }, context)
+  await entered.promise
+  const command = await conversation.submit(
+    {
+      type: 'input',
+      content: 'BRANCH ' + JSON.stringify({ prompt: 'No roots', isolated: false }),
+      whenBusy: 'followUp',
+    },
+    context,
+  )
+  const reply = await conversation.submit(
+    { type: 'input', content: 'A concurrent branch reply', whenBusy: 'followUp' },
+    context,
+  )
+  release.resolve()
+  await Promise.all([holding.wait(context), command.wait(context), reply.wait(context)])
+  expect(
+    (await entries(f.server, ultimate)).some((entry) =>
+      JSON.stringify(entry).includes('Choose a root. Roots: (none)'),
+    ),
+  ).toBe(true)
 })
 
 it.concurrent('refreshes standing definitions for numeric-address deliveries', async () => {

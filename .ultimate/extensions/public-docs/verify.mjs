@@ -21,7 +21,19 @@ try {
     root: join(root, 'web'),
     cacheDir: cache,
     server: { middlewareMode: true, fs: { allow: [root, folder] } },
-    plugins: [extensionModules(root, root, homedir())],
+    plugins: [
+      extensionModules(root, root, homedir()),
+      // Only SSR loads run here. @vitejs/plugin-react lists React for the browser-dependency optimizer, which then
+      // bundled into cacheDir/deps_temp_* in the background while the cleanup below removed cacheDir: ENOTEMPTY in
+      // #61963's lander run. Turning it off after every plugin ran keeps it off.
+      {
+        name: 'no-deps-optimizer',
+        enforce: 'post',
+        configEnvironment: (_, config) => {
+          config.optimizeDeps = { ...config.optimizeDeps, noDiscovery: true, include: [] }
+        },
+      },
+    ],
   })
   const module = await vite.ssrLoadModule(join(folder, 'server.ts'))
   assert.deepEqual(

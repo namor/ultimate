@@ -105,3 +105,36 @@ export type SaveFamilies = {
  * use them; open ones keep their model.
  */
 export const SaveFamiliesAction = actionRef<SaveFamilies, null>('models', 'saveFamilies')
+
+/**
+ * A model preset: every family (built-ins included) with its model, thinking and color, the features' assignments,
+ * and the user-settings pins of features (`summaryModel`, `instance.model`): a value, `null` for off, absent for none.
+ */
+export type Preset = {
+  families: Record<string, { model?: string; thinking?: ModelThinkingLevel; color: string }>
+  assign: Record<string, string>
+  pins: { summaries?: string | null; preview?: string | null }
+}
+export type PresetView = {
+  name: string
+  preset: Preset
+  /** It is what applies now. */
+  current: boolean
+  /** Providers without a login here that its models need; applying is refused while any is missing. */
+  missing: { provider: string; name: string; models: string[] }[]
+  /** Agent definitions naming a family it lacks: they run on the default family once it applies. */
+  orphans: { agent: string; family: string }[]
+}
+export type PresetsView = { presets: PresetView[] }
+
+/** No arguments → the saved presets, sorted by name. */
+export const PresetsAction = actionRef<null, PresetsView>('models', 'presets')
+/** `{ name, preset? }` → null: save what applies now (or `preset`) as `name`, replacing one of that name. */
+export const SavePresetAction = actionRef<{ name: string; preset?: Preset }, null>(
+  'models',
+  'savePreset',
+)
+/** `{ name }` → null: make the preset the families and pins; new conversations use it, open ones keep their model. */
+export const ApplyPresetAction = actionRef<{ name: string }, null>('models', 'applyPreset')
+/** `{ name }` → null: delete the preset. */
+export const DeletePresetAction = actionRef<{ name: string }, null>('models', 'deletePreset')

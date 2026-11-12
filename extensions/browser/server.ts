@@ -78,7 +78,7 @@ export function screenshotFile(home: string, cwd: string, path?: string) {
   return resolve(cwd, path)
 }
 
-/** Each page operation's limit unless a call passes timeoutMs; a call as a whole gets four of them plus its explicit waits. */
+/** Each page operation's limit unless a call passes timeoutMs (loading never gets less); a call's steps as a whole get four of them plus its explicit waits. */
 const stepTimeoutMs = 30_000
 /** How long an `until` step waits on Ultimate's state unless it passes timeoutMs. */
 const untilTimeoutMs = 300_000
@@ -162,7 +162,11 @@ export default function browserExtension(host: ExtensionHost) {
       }),
     ),
     timeoutMs: opt(
-      int({ minimum: 1, description: 'Limit per step, load and capture; default 30000.' }),
+      int({
+        minimum: 1,
+        description:
+          'Limit per step and capture; default 30000. Loading the page gets at least 30000.',
+      }),
     ),
   }
   return defineExtension({
@@ -374,8 +378,13 @@ export default function browserExtension(host: ExtensionHost) {
     const outcomes: string[] = []
     let isolated: BrowserContext | undefined
     const stepMs = args.timeoutMs ?? stepTimeoutMs
+    // Loading (launch, context, page, init scripts, goto) never gets less than the default limit: a short timeoutMs is
+    // about the steps, and a cold launch or page on a loaded machine outlasted 1 s before step 1 ran (#61963).
+    const setupMs = Math.max(stepMs, stepTimeoutMs)
+    const setup = <T>(work: Promise<T>) => within(setupMs, work)
     const totalMs = 4 * stepMs + waits
-    const deadline = Date.now() + totalMs
+    /** Starts once the page has loaded; loading is bounded by `setup`, one limit per operation. */
+    let deadline = Infinity
     /** `work` within one step's limit (plus a wait it asks for) and what is left of the call's. */
     const guard = <T>(work: Promise<T>, extraMs = 0) => {
       const left = deadline - Date.now()
@@ -419,16 +428,16 @@ export default function browserExtension(host: ExtensionHost) {
           })
         state.launched = launched
       }
-      const browser = await guard(state.launched)
+      const browser = await setup(state.launched)
       context.abortSignal?.throwIfAborted()
-      isolated = await guard(
+      isolated = await setup(
         browser.newContext({
           viewport: { width: args.width ?? 1440, height: args.height ?? 900 },
           colorScheme: args.theme,
         }),
       )
       context.abortSignal?.addEventListener('abort', abort, { once: true })
-      const page = await guard(isolated.newPage())
+      const page = await setup(isolated.newPage())
       page.setDefaultTimeout(stepMs)
       page.setDefaultNavigationTimeout(stepMs)
       context.abortSignal?.throwIfAborted()
@@ -438,11 +447,11 @@ export default function browserExtension(host: ExtensionHost) {
       page.on('pageerror', (error) => outcomes.push(`Page error: ${error.message}`))
       const url = new URL(args.url ?? '', host.system().process.url).href
       // Any Ultimate page, this UI or a preview, gets `window.ultimate` for send/until steps.
-      await guard(page.addInitScript(() => sessionStorage.setItem('ultimate.driven', '1')))
+      await setup(page.addInitScript(() => sessionStorage.setItem('ultimate.driven', '1')))
       if (new URL(url).origin === new URL(host.system().process.url).origin) {
         // Own UI: this page is detached from the shared UI state (web/src/sdk/client.ts), so its `?conversation=`
         // and clicks never move the user's tabs; the theme is this browser's preference.
-        await guard(
+        await setup(
           page.addInitScript((theme: string | undefined) => {
             sessionStorage.setItem('ultimate.detached', '1')
             if (theme) localStorage.setItem('ultimate.theme', theme)
@@ -450,7 +459,8 @@ export default function browserExtension(host: ExtensionHost) {
         )
       }
       api.output(`Loading ${url}\n`)
-      await guard(page.goto(url, { waitUntil: 'domcontentloaded' }))
+      await setup(page.goto(url, { waitUntil: 'domcontentloaded', timeout: setupMs }))
+      deadline = Date.now() + totalMs
       const result = await action(page, outcomes, png, guard)
       const title = await guard(page.title())
       // Errors name source files and lines, as dev tools show them, not positions in the bundle.

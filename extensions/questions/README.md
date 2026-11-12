@@ -58,6 +58,9 @@ The To-dos tab lists every message that waits on the user at its top, newest fir
 row opens the asking conversation at the message, where this card answers or dismisses it. ⌘K “Show open
 questions" opens the tab; meanwhile @ultimate's mark is amber, and an asking branch's row says `waits on you`.
 
+On every surface the title bar shows a purple `N waiting` pill while any message waits; it and ⌥W (Alt+W) open the
+message that has waited longest in its asker's conversation, through `messages:open`.
+
 ## Actions
 
 Both are user-only.

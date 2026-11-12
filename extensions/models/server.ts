@@ -16,16 +16,21 @@ import { implementAction } from '../../lib/actions.ts'
 import type { ActionInput } from '../../lib/actions.ts'
 import {
   AnswerAction,
+  ApplyPresetAction,
   CancelAction,
+  DeletePresetAction,
   FamiliesAction,
   LoginAction,
   LoginDoc,
   LogoutAction,
+  PresetsAction,
   SaveFamiliesAction,
+  SavePresetAction,
 } from './refs.ts'
 import type { SaveFamilies } from './refs.ts'
 import { familiesView, saveFamilies } from './families.ts'
 import { fallback } from './fallback.ts'
+import { applyPreset, deletePreset, presetsView, savePreset } from './presets.ts'
 
 /** A Pi type as a document holds it: plain JSON, arrays mutable. */
 type Json<T> = T extends readonly (infer U)[]
@@ -91,7 +96,8 @@ function running(host: ExtensionHost, args: ActionInput<{ flowId: string }>) {
 /** Prompts and events as plain JSON: a document holds no `undefined`. */
 const json = <T>(value: T): Json<T> => JSON.parse(JSON.stringify(value))
 
-export const userActions = ['login', 'answer', 'cancel', 'logout']
+// Switching or deleting a preset is the user's choice of subscription: agents may only save them.
+export const userActions = ['login', 'answer', 'cancel', 'logout', 'applyPreset', 'deletePreset']
 
 /**
  * Record that `provider`'s login changed: its recorded health is meaningless now, and health resets it to unknown
@@ -115,6 +121,19 @@ export const actions = {
       throw new Error('Expected families')
     return saveFamilies(host, args as SaveFamilies)
   }),
+  /** The saved model presets, each with the logins it lacks. */
+  presets: implementAction(PresetsAction, (_args, { host }) => presetsView(host)),
+  /** Save the families and pins that apply now (or a given preset) under a name. */
+  savePreset: implementAction(SavePresetAction, (args, { host }) =>
+    savePreset(host, field(args, 'name'), field(args, 'preset')),
+  ),
+  /** Make a preset the families and pins; refused while one of its models has no login. */
+  applyPreset: implementAction(ApplyPresetAction, (args, { host }) =>
+    applyPreset(host, field(args, 'name')),
+  ),
+  deletePreset: implementAction(DeletePresetAction, (args, { host }) =>
+    deletePreset(host, field(args, 'name')),
+  ),
   /** Start a login flow for the calling conversation and resolve with its id; the document shows its progress. */
   login: implementAction(LoginAction, async (args, { host, conversationId }) => {
     const provider = text(args, 'provider')
