@@ -507,7 +507,9 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
   const { standing } = useWorkspaceIndex()
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string>()
-  const action = deliveryAsk(delivery)
+  // What the card offers: what the delivery asks of the user, or a recheck of a block its branch is repairing.
+  const ask = deliveryAsk(delivery)
+  const action = ask ?? (delivery.stage === 'blocked' ? 'recheck' : undefined)
   const approve = async (
     request: 'publish' | 'merge' | 'recheck' | 'stop' | undefined = action,
   ) => {
@@ -532,15 +534,15 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
     <section
       className={cn(
         'space-y-2 rounded-lg border p-3 text-sm',
-        action
+        ask
           ? 'border-purple-500/40 border-l-2 border-l-purple-500 bg-purple-500/[0.07]'
           : 'border-border/70',
       )}
       aria-label="PR delivery"
-      data-delivery-ask={action}
+      data-delivery-ask={ask}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <strong className={cn(action && 'text-purple-700 dark:text-purple-300')}>
+        <strong className={cn(ask && 'text-purple-700 dark:text-purple-300')}>
           {action === 'recheck'
             ? 'Delivery needs attention'
             : delivery.stage === 'review'
