@@ -23,6 +23,25 @@ export function openQuestions(message: Message) {
 export const waiting = <M extends Message>(messages: readonly M[]) =>
   messages.filter(waitsOnUser).toReversed()
 
+/** Something waiting on the user, where its card is: a message, or the entry of a delivery's card. */
+export type Ask = { at: number; conversation: number } & ({ message: number } | { entry: number })
+
+/**
+ * Everything waiting on the user, oldest first: messages that wait on their reply, and deliveries that wait on their
+ * approval (`at` when queued, `entry` the submitting call). A message from another project has no local asker to open.
+ */
+export function asks(
+  messages: readonly (Message & { at: number })[],
+  deliveries: readonly { conversation: number; entry: number; at: number }[],
+): Ask[] {
+  const asked = messages.flatMap((message) =>
+    waitsOnUser(message) && typeof message.from === 'number'
+      ? [{ at: message.at, conversation: message.from, message: message.id }]
+      : [],
+  )
+  return [...asked, ...deliveries].toSorted((a, b) => a.at - b.at)
+}
+
 /** The newest message showing an answer card: only it takes the desktop 1–9 and Enter keys. */
 export function newestAsked(messages: readonly Message[]) {
   return messages.findLast((message) => openQuestions(message).length > 0)?.id

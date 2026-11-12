@@ -11,6 +11,7 @@ export {
   useWorkspaces,
 } from './data.tsx'
 export type { WorkspaceConversation } from './data.tsx'
+export { deliveryAsk } from './ask.tsx'
 export { CommitCount, Open, Review, useGithubRepo } from './landing.tsx'
 export { Workspaces, useWorkspacesMeta } from './panel.tsx'
 export {

@@ -14,6 +14,7 @@ import { Tool, ToolContent, ToolHeader, ToolOutput, ToolSection } from '@/compon
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Button } from '@/components/ui/button'
 import { DeliveryAction, StandingAction } from './refs.ts'
+import { deliveryAsk } from './ask.tsx'
 import type { Delivery } from './delivery.ts'
 import type { StandingGrant } from './types.ts'
 import {
@@ -119,7 +120,8 @@ export function LanderReport({ entry }: { entry: EntryRecord }) {
         <Steps
           ended={outcome.outcome === 'failed' ? 'failed' : 'landed'}
           lander={outcome.lander}
-          steps={outcome.steps}
+          // Reports stored before outcomes kept their steps have none (#45669's 8de05dc report crashed here).
+          steps={outcome.steps ?? []}
         />
       </LandingCard>
     </div>
@@ -443,15 +445,7 @@ function StatusChip({ state }: { state: Submission }) {
       return <span className={cn(chip, 'text-warning')}>Needs attention</span>
     if (state.delivery?.stage === 'review')
       return <span className={cn(chip, 'text-warning')}>Awaiting independent review</span>
-    if (
-      state.delivery &&
-      ((state.delivery.stage === 'publish' &&
-        state.delivery.risk === 'high' &&
-        !state.delivery.publishApproved) ||
-        (state.delivery.stage === 'merge' &&
-          state.delivery.risk !== 'low' &&
-          !state.delivery.mergeApproved))
-    )
+    if (deliveryAsk(state.delivery))
       return <span className={cn(chip, 'text-warning')}>Awaiting your approval</span>
     if (state.landing)
       return (
@@ -513,14 +507,7 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
   const { standing } = useWorkspaceIndex()
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string>()
-  const action =
-    delivery.stage === 'blocked'
-      ? 'recheck'
-      : delivery.stage === 'publish' && delivery.risk === 'high' && !delivery.publishApproved
-        ? 'publish'
-        : delivery.stage === 'merge' && delivery.risk !== 'low' && !delivery.mergeApproved
-          ? 'merge'
-          : undefined
+  const action = deliveryAsk(delivery)
   const approve = async (
     request: 'publish' | 'merge' | 'recheck' | 'stop' | undefined = action,
   ) => {
@@ -541,12 +528,19 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
     }
   }
   return (
+    // Purple like the title bar's waiting pill while it waits on the user, so it stands out in a long transcript.
     <section
-      className="space-y-2 rounded-lg border border-border/70 p-3 text-sm"
+      className={cn(
+        'space-y-2 rounded-lg border p-3 text-sm',
+        action
+          ? 'border-purple-500/40 border-l-2 border-l-purple-500 bg-purple-500/[0.07]'
+          : 'border-border/70',
+      )}
       aria-label="PR delivery"
+      data-delivery-ask={action}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <strong>
+        <strong className={cn(action && 'text-purple-700 dark:text-purple-300')}>
           {action === 'recheck'
             ? 'Delivery needs attention'
             : delivery.stage === 'review'
