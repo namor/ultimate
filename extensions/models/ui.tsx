@@ -4,6 +4,7 @@
  */
 export { ModelRow } from './picker.tsx'
 export { AddFamily, FamilyPopover, moveFeature } from './family-editor.tsx'
+export { PresetsButton } from './presets.tsx'
 export {
   agentsPanel,
   FamilyDot,

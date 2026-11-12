@@ -23,6 +23,7 @@ import {
   FamilyDot,
   FamilyPopover,
   moveFeature,
+  PresetsButton,
   runsOn,
   useFamilies,
 } from '../models/ui.tsx'
@@ -79,6 +80,7 @@ export function AgentsOverview() {
               {definitions.length}
               {errors.length > 0 && <span className="text-error"> · {errors.length} invalid</span>}
             </span>
+            <PresetsButton />
             <AddFamily view={families} />
             <Button
               className="h-5 gap-1 px-1.5 font-mono text-[11px] text-muted-foreground hover:text-foreground"
