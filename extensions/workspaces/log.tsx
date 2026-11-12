@@ -13,8 +13,9 @@ import type { ReactNode } from 'react'
 import { Tool, ToolContent, ToolHeader, ToolOutput, ToolSection } from '@/components/ai/tool'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Button } from '@/components/ui/button'
-import { DeliveryAction } from './refs.ts'
+import { DeliveryAction, StandingAction } from './refs.ts'
 import type { Delivery } from './delivery.ts'
+import type { StandingGrant } from './types.ts'
 import {
   formatDuration,
   formatTime,
@@ -480,7 +481,36 @@ function StatusChip({ state }: { state: Submission }) {
   )
 }
 
+/** "Standing approval until 18:00" with a revoke button while the user's time-boxed grant is on; nothing otherwise. */
+function StandingLine({ grant }: { grant?: StandingGrant }) {
+  const [error, setError] = useState<string>()
+  if (!grant || grant.revokedAt !== undefined || Date.now() >= grant.until) return null
+  const revoke = () =>
+    api.action(StandingAction, { revoke: true }).catch((failure: unknown) => {
+      setError(failure instanceof Error ? failure.message : 'Could not revoke')
+    })
+  return (
+    <p className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+      <span>
+        Standing approval until{' '}
+        {new Date(grant.until).toLocaleString([], {
+          weekday: 'short',
+          hour: '2-digit',
+          minute: '2-digit',
+          hourCycle: 'h23',
+        })}
+      </span>
+      <Open id={grant.conversation} entry={grant.instruction} />
+      <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => void revoke()}>
+        Revoke
+      </Button>
+      {error && <span className="text-error">{error}</span>}
+    </p>
+  )
+}
+
 function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
+  const { standing } = useWorkspaceIndex()
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string>()
   const action =
@@ -547,6 +577,7 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
         </a>
       )}
       {delivery.reason && <p className="text-warning">{delivery.reason}</p>}
+      <StandingLine grant={standing} />
       {delivery.approvals?.map((approval) => (
         <p
           className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground"
@@ -560,11 +591,16 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
                 : approval.action === 'recheck'
                   ? 'Recheck requested'
                   : 'Stopped'}{' '}
-            {approval.by === 'user' ? 'by you' : 'by @ultimate on your instruction'} ·{' '}
-            {time(approval.at)}
+            {approval.by === 'user'
+              ? 'by you'
+              : approval.standing !== undefined
+                ? 'by @ultimate under your standing approval'
+                : 'by @ultimate on your instruction'}{' '}
+            · {time(approval.at)}
+            {approval.reason && ` · ${approval.reason}`}
           </span>
           {approval.conversation !== undefined && (
-            <Open id={approval.conversation} entry={approval.instruction} />
+            <Open id={approval.conversation} entry={approval.standing ?? approval.instruction} />
           )}
         </p>
       ))}
