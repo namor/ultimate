@@ -63,6 +63,9 @@ it('times out a hung step, closes its page and keeps later calls working', async
     return { result, text: JSON.stringify(result.output), ms: Date.now() - started }
   }
   try {
+    // Launch Chromium under the default step limit first: a cold launch on a loaded runner can outlast the 1 s limit
+    // below, which is about a hung step, not launch time (#58492: lander verify failed before step 1 ran).
+    expect((await drive([{ eval: 'document.title' }])).result.isError).toBeFalsy()
     for (const hang of ['new Promise(() => {})', 'for (;;) {}']) {
       const hung = await drive([{ eval: '1 + 1' }, { eval: hang }], 1000)
       expect(hung.result.isError).toBe(true)
