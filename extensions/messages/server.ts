@@ -257,6 +257,7 @@ export default function messages(host: ExtensionHost) {
     },
   })
   host.implement(MessagesApi, {
+    starterIn: async (tx, branch) => (await tx.doc(Started, branch)).by,
     answer: (messageId, text, ctx, device, call) =>
       answer(host, messageId, text, ctx, { device, call }),
     openQuestions: async (ctx) =>

@@ -233,9 +233,9 @@ export async function concludeIn(
   }
   const ui = await tx.doc(UiState, ROOT_CONVERSATION_ID)
   const previous = ui['ext.conversations.concluded']
-  ui['ext.conversations.concluded'] = [
-    ...new Set([...(Array.isArray(previous) ? previous : []), ...ids]),
-  ]
+  const alreadyConcluded = new Set(Array.isArray(previous) ? previous : [])
+  const newlyConcluded = [...new Set(ids)].filter((id) => !alreadyConcluded.has(id))
+  ui['ext.conversations.concluded'] = [...new Set([...alreadyConcluded, ...ids])]
   const lastConcludedAtRetainedOnResume = ui['ext.conversations.concludedAt']
   const now = Date.now()
   ui['ext.conversations.concludedAt'] = {
@@ -247,7 +247,11 @@ export async function concludeIn(
     ...Object.fromEntries(ids.map((id) => [id, now])),
   }
   const tree = await ownedTree(tx, ids)
-  await host.emit(tx, Concluded, { conversations: [...tree].toSorted((a, b) => a - b), by })
+  await host.emit(tx, Concluded, {
+    conversations: [...tree].toSorted((a, b) => a - b),
+    newlyConcluded,
+    by,
+  })
   return tree
 }
 
