@@ -1,8 +1,3 @@
-/**
- * Switching model presets: one searchable list, in the Agents panel's Presets popover and the ⌘K dialog. Enter applies
- * a preset (new conversations use it, open ones keep their model); a preset lacking a login opens that login instead.
- * Typing a new name offers to save what applies now under it; a row's trash deletes it after a second click.
- */
 import { CheckIcon, LayersIcon, PlusIcon, Trash2Icon, TriangleAlertIcon } from 'lucide-react'
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
@@ -17,7 +12,7 @@ import {
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { Kbd } from '@/components/ui/kbd'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { api, cn, errorMessage, useAction, useDialog, useUltimate } from '@/sdk'
+import { api, cn, errorMessage, keepLast, useAction, useDialog, useUltimate } from '@/sdk'
 import { DEFAULT_FAMILY, familyTitle } from '../../lib/families.ts'
 import { refreshFamilies } from './families.tsx'
 import { ApplyPresetAction, DeletePresetAction, PresetsAction, SavePresetAction } from './refs.ts'
@@ -26,7 +21,6 @@ import { dialogs, openLogin } from './state.tsx'
 
 const short = (ref: string) => ref.slice(ref.indexOf('/') + 1).replace(/:[a-z]+$/, '')
 
-/** "claude-sonnet-5-5 · claude-opus-5-5 +1": the default family's model first, then the others by use. */
 function summary({ preset }: PresetView) {
   const counts = new Map<string, number>()
   const main = preset.families[DEFAULT_FAMILY]?.model
@@ -43,7 +37,6 @@ function summary({ preset }: PresetView) {
     : models.join(' · ')
 }
 
-/** Every family and pin of a preset, one per line, for a row's tooltip. */
 function details({ preset, orphans }: PresetView) {
   const lines = Object.entries(preset.families).map(
     ([name, family]) =>
@@ -58,7 +51,7 @@ function details({ preset, orphans }: PresetView) {
 
 function PresetList({ close }: { close: () => void }) {
   const actions = useUltimate()
-  const { data, error: loadError, refetch } = useAction(PresetsAction, null, { onError: () => {} })
+  const { data, error: loadError, refetch } = useAction(PresetsAction, null, { onError: keepLast })
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string>()
   const [pending, setPending] = useState<string>()
@@ -71,7 +64,6 @@ function PresetList({ close }: { close: () => void }) {
   )
   const existing = presets.find((preset) => preset.name === name)
 
-  /** Run an action, then refresh the list and the families; a failure shows in the footer. */
   function run(label: string, action: () => Promise<unknown>, after?: () => void) {
     setPending(label)
     setError(undefined)
@@ -88,7 +80,6 @@ function PresetList({ close }: { close: () => void }) {
     const [missing] = preset.missing
     if (missing) {
       close()
-      // Claude runs on its subscription only through Claude Code, set up in its own panel.
       if (missing.provider === 'claude-code') actions.openPanel('claude-code')
       else openLogin(actions, missing.provider)
       return
@@ -256,7 +247,6 @@ function PresetList({ close }: { close: () => void }) {
   )
 }
 
-/** ⌘K "Switch model preset…": the list in a dialog. */
 export function PresetsDialog() {
   const [open, setOpen] = useDialog(dialogs.presets)
   return (
@@ -276,7 +266,6 @@ export function PresetsDialog() {
   )
 }
 
-/** The Agents panel's "Presets" button: the list in a popover. */
 export function PresetsButton() {
   const [open, setOpen] = useState(false)
   return (

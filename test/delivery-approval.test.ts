@@ -1,4 +1,4 @@
-import type { JsonValue } from '@earendil-works/chord'
+import type { JsonValue } from '@earendil-works/chord/json'
 import { fauxProvider } from '@earendil-works/pi-ai/providers/faux'
 import { ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import type { ConversationId } from '@earendil-works/pi-durable'
@@ -275,7 +275,7 @@ describe('delivery approval', () => {
         divergence: other.divergence,
         target: other.target,
         tip: other.tip,
-        lander: 1,
+        lander: 1 as ConversationId,
         steps: [],
         conversationId: other.conversationId,
       }
@@ -504,12 +504,13 @@ describe('agents on a blocked delivery', () => {
       delete queued.delivery.wake
     }, context)
   const agent = (f: Awaited<ReturnType<typeof fixture>>, id: number, action: string) =>
-    f.call({ conversationId: id }, { action })
+    f.call({ conversationId: id as ConversationId }, { action })
 
   it('lets the submitting branch and @ultimate recheck and stop, recording who', async () => {
     const f = await fixture()
     await f.opened.harness.commit(async (tx) => {
-      ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).landerConversations['/fixture'] = 1
+      ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).landerConversations['/fixture'] =
+        1 as ConversationId
     }, context)
     await block(f)
     await agent(f, f.submitter, 'recheck')

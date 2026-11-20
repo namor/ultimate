@@ -1,4 +1,6 @@
 /** The plan's components for other extensions: the task chip of a conversation that works on a plan task. */
+import type { ConversationId } from '@earendil-works/pi-durable'
+import { ROOT } from '@/sdk'
 import {
   CircleAlertIcon,
   CircleCheckIcon,
@@ -11,29 +13,27 @@ import {
 import { useCallback } from 'react'
 import type { SyntheticEvent } from 'react'
 import { cn, useDocOf, useUiState, useUltimate } from '@/sdk'
+import { statusDots } from './status.ts'
 import { TaskIndexDoc } from './refs.ts'
 import type { TaskLink } from './refs.ts'
 
-const statuses: Record<string, { icon: typeof CircleIcon; tone: string; dot: string }> = {
-  backlog: { icon: CircleDashedIcon, tone: 'text-muted-foreground/70', dot: 'bg-muted-foreground' },
-  planning: { icon: CircleDashedIcon, tone: 'text-muted-foreground', dot: 'bg-muted-foreground' },
-  todo: { icon: CircleIcon, tone: 'text-muted-foreground', dot: 'bg-muted-foreground' },
+const statuses: Record<string, { icon: typeof CircleIcon; tone: string }> = {
+  backlog: { icon: CircleDashedIcon, tone: 'text-muted-foreground/70' },
+  planning: { icon: CircleDashedIcon, tone: 'text-muted-foreground' },
+  todo: { icon: CircleIcon, tone: 'text-muted-foreground' },
   in_progress: {
     icon: CircleDotIcon,
     tone: 'border-brand/40 text-brand',
-    dot: 'animate-pulse-dot bg-brand',
   },
   in_review: {
     icon: CircleEllipsisIcon,
     tone: 'border-warning/40 text-warning',
-    dot: 'bg-warning',
   },
-  done: { icon: CircleCheckIcon, tone: 'border-success/40 text-success', dot: 'bg-success' },
-  blocked: { icon: CircleAlertIcon, tone: 'border-error/40 text-error', dot: 'bg-error' },
+  done: { icon: CircleCheckIcon, tone: 'border-success/40 text-success' },
+  blocked: { icon: CircleAlertIcon, tone: 'border-error/40 text-error' },
   canceled: {
     icon: CircleSlashIcon,
     tone: 'text-muted-foreground/60 line-through',
-    dot: 'bg-muted-foreground/40',
   },
 }
 export const statusOf = (status: string) => statuses[status] ?? statuses.todo
@@ -47,7 +47,7 @@ const noTasks: Record<string, TaskLink> = {}
 
 /** Every linked child conversation id → its plan task, live from the root's `ultimate.plan.tasks`. */
 export function useTaskIndex() {
-  return useDocOf(1, TaskIndexDoc)?.children ?? noTasks
+  return useDocOf(ROOT, TaskIndexDoc)?.children ?? noTasks
 }
 
 /** The plan task conversation `id` works on, if a coordinator linked it. */
@@ -59,7 +59,10 @@ export function useTaskOf(id: number | undefined): TaskLink | undefined {
 /** Show the task's coordinator and ask its plan panel to open the task (durable UI state `plan.open`). */
 export function useOpenTask() {
   const { switchConversation } = useUltimate()
-  const [, setOpen] = useUiState<{ conversation: number; key: string } | null>('plan.open', null)
+  const [, setOpen] = useUiState<{ conversation: ConversationId; key: string } | null>(
+    'plan.open',
+    null,
+  )
   return useCallback(
     (task: Pick<TaskLink, 'coordinator' | 'key'>) => {
       switchConversation(task.coordinator)
@@ -95,7 +98,9 @@ export function TaskChip({ task, className }: { task: TaskLink; className?: stri
       tabIndex={0}
       title={`#${task.coordinator}/${task.key} · ${task.title} · ${task.status.replace('_', ' ')}`}
     >
-      <span className={cn('size-1.5 shrink-0 rounded-full', statusOf(task.status).dot)} />
+      <span
+        className={cn('size-1.5 shrink-0 rounded-full', statusDots[task.status] ?? statusDots.todo)}
+      />
       {task.key}
     </span>
   )

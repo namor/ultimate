@@ -13,6 +13,8 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { createInterface } from 'node:readline'
 import { StringDecoder } from 'node:string_decoder'
+import { meansNone } from '../../../lib/errors.ts'
+import { deadline, pace } from '../../../lib/timers.ts'
 import { ownedProcess } from './process.ts'
 import type { CursorJob, CursorRequest, LocationDiagnostic, LocationScope } from './types.d.ts'
 
@@ -133,8 +135,8 @@ export function classifyLocation(value: unknown, cwd: string, roots: Roots = [])
         break
       }
     }
-  } catch {
-    // Broken/inaccessible paths are unresolved, never an approval or a raw filesystem diagnostic.
+  } catch (error) {
+    meansNone(error)
   }
   return result
 }
@@ -284,8 +286,7 @@ export async function run(request: CursorRequest, command = 'cursor-agent') {
       let verified = !target
       try {
         notifyCancel()
-        // Allow cooperative cancellation before verifying observed local processes are gone.
-        if (target) await new Promise((resolve) => setTimeout(resolve, 250))
+        if (target) await pace(250)
         if (target) verified = await target.stop()
       } catch {
         verified = false
@@ -312,12 +313,9 @@ export async function run(request: CursorRequest, command = 'cursor-agent') {
   }
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(signal, onSignal)
   process.stdout.on('error', onSignal)
-  const deadline = setTimeout(
-    () => {
-      stop('Job exceeded the 10 minute deadline.')
-    },
-    10 * 60 * 1000,
-  )
+  const cancelDeadline = deadline(10 * 60 * 1000, () => {
+    stop('Job exceeded the 10 minute deadline.')
+  })
   const git = (args: string[], cwd = job.worktree, maxBuffer = patchLimit) =>
     execFileSync('git', args, {
       cwd,
@@ -611,7 +609,7 @@ export async function run(request: CursorRequest, command = 'cursor-agent') {
         ? 'Interrupted; local cleanup verified'
         : 'Complete; local cleanup verified'
     finished = true
-    clearTimeout(deadline)
+    cancelDeadline()
     publish()
     owner.close()
     process.stdin.destroy()

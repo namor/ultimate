@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline'
 import { obj, str } from '@earendil-works/pi-schema'
 import { defineExtension, defineTool, section } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../../server/extensions.ts'
+import { meansNone } from '../../../lib/errors.ts'
 import type { ActionContext } from '../../../server/actions.ts'
 import type { CursorJob, CursorRequest } from './types.d.ts'
 
@@ -129,8 +130,8 @@ export default function cursorTask(host: ExtensionHost) {
                 const job = JSON.parse(line) as CursorJob
                 if (job?.id === id) latest = job
                 await api.details(job, context)
-              } catch {
-                // A canceled tool context cannot accept details; the independent runner still finalizes on disk.
+              } catch (error) {
+                meansNone(error)
               }
             })
           })
@@ -146,8 +147,8 @@ export default function cursorTask(host: ExtensionHost) {
               const saved = readJob(directory)
               if (saved?.id === id && ['complete', 'interrupted', 'failed'].includes(saved.status))
                 job = saved
-            } catch {
-              // Missing/corrupt artifacts must not throw from the child event into the host.
+            } catch (error) {
+              meansNone(error)
             }
             if (!job) {
               job = {
@@ -160,8 +161,8 @@ export default function cursorTask(host: ExtensionHost) {
               }
               try {
                 writeJob(directory, job)
-              } catch {
-                // Disk failure cannot prevent returning the explicit in-memory interrupted result.
+              } catch (error) {
+                meansNone(error)
               }
             }
             if (processState.active === active) processState.active = undefined
@@ -180,8 +181,8 @@ export default function cursorTask(host: ExtensionHost) {
             await details
             try {
               await api.details(job, context)
-            } catch {
-              // The canceled context may be gone; terminal status is still returned and persisted when possible.
+            } catch (error) {
+              meansNone(error)
             }
             return {
               output: [

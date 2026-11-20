@@ -1,25 +1,24 @@
-import type { JsonValue } from '@earendil-works/chord'
+import type { JsonValue } from '@earendil-works/chord/json'
 import { UI_REVISION } from '../../../shared/protocol.ts'
+import { deadline } from '../../../lib/timers.ts'
+import type { Cancel } from '../../../lib/timers.ts'
 import type { UiUpdateRequest, UiUpdateResponse } from '../../../shared/protocol.ts'
+import { writerNow } from './writer.ts'
+import type { UiWho } from './writer.ts'
 
-/**
- * Durable UI state: the flat JSON map of the root conversation's `ultimate.ui` document, shared by every tab and
- * device, such as which conversation, panel, and view the shell shows. Writes apply locally at once, reach the server
- * coalesced (`POST /api/ui`), and stay overlaid until the stream shows the commit that carried them.
- *
- * Every write commit increments the document's `ui.rev` and answers with it. The stream delivers commits in order,
- * but a reconnect starts from a snapshot that may predate this tab's newest write; ordered by revision, a snapshot
- * older than one already shown is dropped, and a write stays until the stream reaches its revision. Equal values are
- * never taken as confirmation (A → B → A), and the latest commit wins across tabs and devices.
- *
- * Without `write`, the page keeps its state to itself: writes apply locally and stay, nothing reaches the server.
- */
 export type UiValues = Readonly<Record<string, JsonValue>>
 
-/** The newest local write of one key (`undefined` deletes it), the batch that sent it, and the revision it committed as. */
-interface LocalWrite {
+interface PendingOp {
+  key: string
   value: JsonValue | undefined
-  batch?: number
+  who: UiWho
+  seq: number
+}
+
+interface SentWrite {
+  value: JsonValue | undefined
+  seq: number
+  batch: number
   rev?: number
 }
 
@@ -30,92 +29,160 @@ const revision = (values: UiValues) => {
   return typeof rev === 'number' ? rev : 0
 }
 
+const movesTheUsersView = (key: string) => key.startsWith('shell.')
+const KEEPALIVE_BYTES = 60 * 1024
+
+export function tabWrites(tab: { driven: boolean; detached: boolean; webdriver: boolean }) {
+  const automatedWithoutDrivenFlag = tab.webdriver && !tab.driven
+  return {
+    shares: !tab.detached && !automatedWithoutDrivenFlag,
+    ...(tab.driven ? { tabOnly: movesTheUsersView } : {}),
+  }
+}
+
+export type UiWrite = (
+  change: UiUpdateRequest,
+  who: UiWho,
+  options?: { keepalive: boolean },
+) => Promise<UiUpdateResponse>
+
 export function createUiState(
-  write: ((change: UiUpdateRequest) => Promise<UiUpdateResponse>) | undefined,
-  options: { delayMs?: number; onError?: (error: unknown) => void } = {},
+  write: UiWrite | undefined,
+  options: {
+    delayMs?: number
+    onError?: (error: unknown) => void
+    tabOnly?: (key: string) => boolean
+  } = {},
 ) {
   const listeners = new Set<() => void>()
-  let remote: UiValues = {}
-  const local = new Map<string, LocalWrite>()
+  let streamSnapshot: UiValues = {}
+  const pending: PendingOp[] = []
+  const unconfirmedSentWrites = new Map<string, SentWrite>()
+  const refusedAppWrites = new Map<string, Set<string>>()
+  const refused = (key: string, value: JsonValue | undefined) =>
+    refusedAppWrites.get(key)?.has(JSON.stringify(value)) ?? false
+  const tabOnly = options.tabOnly ?? (() => false)
+  let tabOnlyAtLoad: UiValues | undefined
+  const tabOnlyWrites = new Map<string, JsonValue | undefined>()
   let values: UiValues = {}
-  /** The last batch sent, and the newest revision the stream has shown. */
-  let sent = 0
-  let shown = 0
-  let inFlight = false
-  /** Counts server processes seen; a reply from an earlier one is about storage the stream no longer shows. */
-  let epoch = 0
-  /** After a restart, until the new process's first snapshot: nothing is released, since its revisions start over. */
-  let restarting = false
-  let timer: ReturnType<typeof setTimeout> | undefined
+
+  const tab = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+    byte.toString(16).padStart(2, '0'),
+  ).join('')
+  let lastSeq = 0
+  let lastSentBatch = 0
+  let newestStreamRevision = 0
+  let inFlight: { ops: PendingOp[]; done: Promise<void> } | undefined
+
+  let serverProcessEpoch = 0
+
+  let awaitingRestartSnapshot = false
+  let cancelSend: Cancel | undefined
 
   function update() {
-    const next: Record<string, JsonValue> = { ...remote }
-    for (const [key, { value }] of local) {
+    const next: Record<string, JsonValue> = { ...streamSnapshot }
+    if (options.tabOnly) {
+      for (const key of Object.keys(next)) if (tabOnly(key)) delete next[key]
+      Object.assign(next, tabOnlyAtLoad)
+    }
+    const overlay = [
+      ...tabOnlyWrites,
+      ...[...unconfirmedSentWrites].map(([key, { value }]) => [key, value] as const),
+      ...pending.map(({ key, value }) => [key, value] as const),
+    ]
+    for (const [key, value] of overlay) {
       if (value === undefined) delete next[key]
       else next[key] = value
     }
     values = next
     for (const listener of listeners) listener()
   }
-  /** Drop the overlay of writes the stream has shown: it is the truth for them now. */
-  function release() {
-    if (restarting) return
-    for (const [key, entry] of local)
-      if (entry.rev !== undefined && entry.rev <= shown) local.delete(key)
+
+  function releaseStreamConfirmedWrites() {
+    if (awaitingRestartSnapshot) return
+    for (const [key, entry] of unconfirmedSentWrites)
+      if (entry.rev !== undefined && entry.rev <= newestStreamRevision)
+        unconfirmedSentWrites.delete(key)
   }
   function schedule(delay: number) {
-    timer ??= setTimeout(() => {
-      timer = undefined
-      send(false)
-    }, delay)
+    cancelSend ??= deadline(delay, () => {
+      cancelSend = undefined
+      inFlight ??= send()
+    })
   }
-  /**
-   * Send what is pending as one batch. One batch is in flight at a time, so the server commits them in write order;
-   * `force` sends anyway, for a page that is going away.
-   */
-  function send(force: boolean) {
-    if (!write || (inFlight && !force)) return
-    const change: UiUpdateRequest = { set: {}, delete: [] }
-    const batch = sent + 1
-    let count = 0
-    for (const [, entry] of local) {
-      if (entry.batch !== undefined) continue
-      entry.batch = batch
-      count++
-    }
-    if (count === 0) return
-    for (const [key, entry] of local) {
-      if (entry.batch !== batch) continue
-      if (entry.value === undefined) change.delete?.push(key)
-      else if (change.set) change.set[key] = entry.value
-    }
-    sent = batch
-    inFlight = true
-    const sentIn = epoch
+
+  function oldestWriterRun() {
+    const end = pending.findIndex((op) => op.who !== pending[0].who)
+    return pending.splice(0, end === -1 ? pending.length : end)
+  }
+
+  const request = (ops: PendingOp[]): UiUpdateRequest => ({
+    ops: ops.map(({ key, value, who, seq }) => ({
+      key,
+      ...(value === undefined ? {} : { value }),
+      who,
+      seq,
+    })),
+    tab,
+  })
+  const fitsKeepalive = (ops: PendingOp[]) =>
+    new TextEncoder().encode(JSON.stringify(request(ops))).byteLength <= KEEPALIVE_BYTES
+
+  function send(ops = oldestWriterRun(), exit = false) {
+    if (!write || ops.length === 0) return undefined
+    const batch = ++lastSentBatch
+    for (const { key, value, seq } of ops)
+      if ((unconfirmedSentWrites.get(key)?.seq ?? 0) <= seq)
+        unconfirmedSentWrites.set(key, { value, seq, batch })
+    const sentInServerEpoch = serverProcessEpoch
+    const storedAtSend = ops.map(({ key }) => streamSnapshot[key])
     const settled = () => {
-      inFlight = false
-      if ([...local.values()].some((entry) => entry.batch === undefined)) schedule(0)
+      if (inFlight === sent) inFlight = undefined
+      if (pending.length > 0) schedule(0)
     }
-    write(change).then(
-      ({ rev }) => {
-        if (sentIn !== epoch) return
-        for (const entry of local.values()) if (entry.batch === batch) entry.rev = rev
+    const keepalive = exit ? { keepalive: fitsKeepalive(ops) } : undefined
+    const done = write(request(ops), ops[0].who, keepalive).then(
+      (response) => {
+        if (sentInServerEpoch !== serverProcessEpoch) return
+        refusedAppWrites.clear()
+        for (const entry of unconfirmedSentWrites.values())
+          if (entry.batch === batch) entry.rev = response.rev
         settled()
-        release()
+        releaseStreamConfirmedWrites()
         update()
       },
       (error: unknown) => {
-        if (sentIn !== epoch) return
-        for (const [key, entry] of local) if (entry.batch === batch) local.delete(key)
+        if (sentInServerEpoch !== serverProcessEpoch) return
+        ops.forEach(({ key, value, who }, index) => {
+          if (who !== 'app' || !same(streamSnapshot[key], storedAtSend[index])) return
+          const refusals = refusedAppWrites.get(key) ?? new Set()
+          refusedAppWrites.set(key, refusals.add(JSON.stringify(value)))
+        })
+        const queued = pending.filter((op) => op.who !== 'app' || !refused(op.key, op.value))
+        pending.splice(0, pending.length, ...queued)
+        for (const [key, entry] of unconfirmedSentWrites)
+          if (entry.batch === batch) unconfirmedSentWrites.delete(key)
         settled()
         update()
         options.onError?.(error)
       },
     )
+    const sent = { ops, done }
+    return sent
   }
   function set(key: string, value: JsonValue | undefined) {
+    const who = writerNow()
+    if (who !== 'app') refusedAppWrites.delete(key)
     if (same(values[key], value)) return
-    local.set(key, { value })
+    if (!write || tabOnly(key)) {
+      tabOnlyWrites.set(key, value)
+      update()
+      return
+    }
+    if (who === 'app' && refused(key, value)) return
+    const newest = pending.at(-1)
+    if (newest?.key === key && newest.who === who) newest.value = value
+    else pending.push({ key, value, who, seq: ++lastSeq })
     schedule(options.delayMs ?? 150)
     update()
   }
@@ -131,36 +198,79 @@ export function createUiState(
     },
     set: (key: string, value: JsonValue) => set(key, value),
     delete: (key: string) => set(key, undefined),
-    /** The document as the stream last delivered it; a snapshot older than one already shown is dropped. */
+
     receive(next: UiValues) {
-      if (next === remote) return
+      if (next === streamSnapshot) return
       const rev = revision(next)
-      if (rev < shown) return
-      remote = next
-      shown = rev
-      restarting = false
-      release()
+      if (rev < newestStreamRevision) return
+      for (const key of refusedAppWrites.keys())
+        if (!same(next[key], streamSnapshot[key])) refusedAppWrites.delete(key)
+      streamSnapshot = next
+      tabOnlyAtLoad ??= Object.fromEntries(Object.entries(next).filter(([key]) => tabOnly(key)))
+      newestStreamRevision = rev
+      awaitingRestartSnapshot = false
+      releaseStreamConfirmedWrites()
       update()
     },
-    /**
-     * The server is another process now, whose storage may have started over (`pnpm reset`): take its next snapshot
-     * whatever its revision. Every batch already sent went to the old storage: it stays shown until that snapshot
-     * arrives, which is the truth for it, and its late reply is ignored. Edits not yet sent go to the new server.
-     */
+
     restarted() {
-      epoch++
-      shown = 0
-      inFlight = false
-      restarting = true
-      for (const entry of local.values()) if (entry.batch !== undefined) entry.rev = 0
-      if ([...local.values()].some((entry) => entry.batch === undefined)) schedule(0)
+      serverProcessEpoch++
+      refusedAppWrites.clear()
+      newestStreamRevision = 0
+      inFlight = undefined
+      awaitingRestartSnapshot = true
+      for (const entry of unconfirmedSentWrites.values()) entry.rev = 0
+      if (pending.length > 0) schedule(0)
     },
-    /** Send what is pending now, such as before the page goes away. */
-    flush: () => {
-      clearTimeout(timer)
-      timer = undefined
-      send(true)
+
+    async flush() {
+      cancelSend?.()
+      cancelSend = undefined
+      if (!write) return
+      while (inFlight || pending.length > 0) {
+        inFlight ??= send()
+        await inFlight?.done
+      }
+    },
+
+    async exit() {
+      cancelSend?.()
+      cancelSend = undefined
+      const copied = inFlight?.ops ?? []
+      const unsent = pending.splice(0)
+      const together = [...copied, ...unsent]
+      const requests = fitsKeepalive(together) ? [together] : [unsent, copied]
+      const sent = requests.flatMap((ops) => send(ops, true) ?? [])
+      const all = Promise.all(sent.map((each) => each.done)).then(() => undefined)
+      const exiting = { ops: together, done: all }
+      inFlight = sent.length ? exiting : undefined
+      await all
+      if (inFlight === exiting) inFlight = undefined
     },
   }
 }
 export type UiState = ReturnType<typeof createUiState>
+
+export type Widen<T> = T extends boolean
+  ? boolean
+  : T extends string
+    ? string
+    : T extends number
+      ? number
+      : T
+export type UiUpdate<T> = Widen<T> | ((previous: Widen<T>) => Widen<T>)
+
+export function writeUiState<T extends JsonValue>(
+  state: UiState,
+  key: string,
+  initial: T,
+  next: UiUpdate<T>,
+) {
+  const previous = (state.get(key) ?? initial) as Widen<T>
+  state.set(key, typeof next === 'function' ? next(previous) : next)
+}
+
+export function extensionUiKey(extension: string | null | undefined, key: string) {
+  if (!extension) throw new Error('useExtensionUiState works inside an extension contribution only')
+  return `ext.${extension}.${key}`
+}

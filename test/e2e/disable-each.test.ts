@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { context } from '../../server/harness.ts'
 import { extensionGraph } from '../../scripts/deps.ts'
-import { fauxServer, temp } from '../helpers.ts'
+import { fauxServer, removeTemp, temp } from '../helpers.ts'
 
 // Each case boots its own server on its own home; a few at a time keep the machine responsive.
 vi.setConfig({ maxConcurrency: 6 })
@@ -14,8 +14,8 @@ const core = [...graph].filter(([, entry]) => entry.core).map(([name]) => name)
 
 /** A faux server on the built-ins with `disable` in the user's settings, and what it reports. */
 async function boot(disable: string[]) {
-  // helpers.ts removes every temp() home after the file, in parallel and with its own 60 s limit. A serial cleanup of
-  // the ~40 homes here ran past the default 10 s hook timeout on a loaded lander (#56220).
+  // Each home holds a full source copy (about 1,000 files): it goes when its case ends, since deleting all of them in
+  // one afterAll took over its 10 s timeout under load.
   const home = await temp('ultimate-disable-each-')
   await mkdir(join(home, 'project'))
   await mkdir(join(home, '.ultimate'))
@@ -41,6 +41,7 @@ async function boot(disable: string[]) {
     }
   } finally {
     await server.close()
+    await removeTemp(home)
   }
 }
 
