@@ -43,16 +43,21 @@ it('opens a local Markdown chat link only through the chooser and renders the se
     ultimateRoot: resolve('.'),
     projectRoot: resolve('.'),
     userHome: home,
+    localSetup: false,
     home: join(home, 'state'),
     port: 0,
   })
   cleanup.push(() => server.close())
   server.host.faux!.setResponses([
     fauxAssistantMessage(
-      '[Open report](file:///not-a-real-directory/report.md)\n\n[Other file](file:///tmp/plain.txt) · [Remote file](file://elsewhere/report.md)',
+      '[Open report](file:///not-a-real-directory/report.md) · [Open reference][report]\n\n[report]: file:///not-a-real-directory/report.md\n\n[Other file](file:///tmp/plain.txt) · [Remote file](file://elsewhere/report.md)',
     ),
   ])
-  const id = (await post(server, '/api/conversations', {})).data.id as ConversationId
+  const id = (
+    await post(server, '/api/extensions/subagents/actions/standing', {
+      args: { name: 'ultimate' },
+    })
+  ).data.result as ConversationId
   const conversation = await server.harness.conversation(id, context)
   await (
     await conversation!.submit({ type: 'input', content: 'Show the report link.' }, context)
@@ -67,10 +72,21 @@ it('opens a local Markdown chat link only through the chooser and renders the se
   const page = await browser.newPage()
   const requests: string[] = []
   page.on('request', (request) => {
-    if (new URL(request.url()).hostname === 'viewer-probe.invalid') requests.push(request.url())
+    const url = new URL(request.url())
+    if (
+      url.hostname === 'viewer-probe.invalid' ||
+      url.pathname === '/api/extensions/attachments/actions/upload'
+    ) {
+      requests.push(request.url())
+    }
   })
   await page.goto(`${server.url}/?conversation=${id}`)
   const chatLink = page.getByRole('button', { name: 'Open report', exact: true })
+  const reference = page.getByRole('button', { name: 'Open reference', exact: true })
+  await page
+    .locator('[data-ui="composer"] label[aria-label="Attach files"] input:enabled')
+    .waitFor({ state: 'attached' })
+  await page.getByText('Show the report link.', { exact: true }).waitFor()
   await chatLink.click()
   expect(await page.getByText('Other file [blocked]', { exact: false }).count()).toBeGreaterThan(0)
   expect(await page.getByText('Remote file [blocked]', { exact: false }).count()).toBeGreaterThan(0)
@@ -86,10 +102,26 @@ it('opens a local Markdown chat link only through the chooser and renders the se
   expect(await dialog.locator('figure').last().innerText()).toMatch(
     /Diagram unavailable.*Missing bracket/s,
   )
+  await dialog.locator('summary').click()
+  expect(await dialog.locator('details').innerText()).toContain('A[Start] --> B[Done]')
   expect(await dialog.locator('a,img,iframe,script').count()).toBe(0)
-  expect(requests).toEqual([])
+  const canceled = await page.evaluate(() => {
+    const transfer = new DataTransfer()
+    transfer.items.add(new File(['synthetic only'], 'drop.md', { type: 'text/markdown' }))
+    return ['[data-markdown-viewer]', '[data-slot="dialog-overlay"]'].map((selector) => {
+      const event = new DragEvent('drop', {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: transfer,
+      })
+      return !document.querySelector(selector)!.dispatchEvent(event)
+    })
+  })
+  expect(canceled).toEqual([true, true])
   await page.keyboard.press('Escape')
   await dialog.waitFor({ state: 'hidden' })
-  await chatLink.click()
+  expect(await page.locator('[data-ui="composer"] [data-ui="file-chip"]').count()).toBe(0)
+  await reference.click()
   expect(await dialog.innerText()).not.toContain('Synthetic report')
+  expect(requests).toEqual([])
 })

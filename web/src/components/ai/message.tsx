@@ -16,7 +16,11 @@ import { ExtensionBoundary } from '../../app/boundary.tsx'
 import { useExtensions } from '../../sdk/hooks.ts'
 import { codeBlockLanguages, codeBlockRenderers, linkRenderers } from '../../sdk/registry.ts'
 import { codePlugin } from './code-block.tsx'
-import { localMarkdownName, remarkLocalMarkdownLinks } from './local-markdown-link.ts'
+import {
+  chatMarkdownBlocks,
+  localMarkdownName,
+  remarkLocalMarkdownLinks,
+} from './local-markdown-link.ts'
 import { mentionHref, parseMention, remarkMentions, splitMentions } from './mentions.ts'
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & { from: 'user' | 'assistant' }
@@ -139,6 +143,7 @@ export const MessageResponse = memo(
         components={components}
         controls={controls}
         lineNumbers={false}
+        parseMarkdownIntoBlocksFn={chatMarkdownBlocks}
         plugins={plugins}
         remarkPlugins={remarkPlugins}
         shikiTheme={codePlugin.getThemes()}

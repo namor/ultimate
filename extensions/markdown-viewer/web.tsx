@@ -1,6 +1,6 @@
 import { render } from 'grok-mermaid'
 import { FileTextIcon, FolderOpenIcon } from 'lucide-react'
-import { useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { Streamdown, defaultRehypePlugins } from 'streamdown'
 import type { CustomRendererProps } from 'streamdown'
@@ -50,6 +50,12 @@ function Diagram({ code }: CustomRendererProps) {
       <pre className="m-0 overflow-x-auto px-3 py-4 font-mono text-xs leading-tight">
         {art ?? code}
       </pre>
+      {art && (
+        <details className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
+          <summary className="cursor-pointer">Show source</summary>
+          <pre className="mt-2 overflow-x-auto font-mono">{code}</pre>
+        </details>
+      )}
     </figure>
   )
 }
@@ -82,6 +88,8 @@ const passiveTags = [
   'td',
 ]
 const rehypePlugins = [defaultRehypePlugins.sanitize]
+// Streamdown 2.7 also calls its block splitter in static mode. Its default retains the last document.
+const singleBlock = (markdown: string) => [markdown]
 const plugins = { renderers: [{ language: 'mermaid', component: Diagram }] }
 const controls = { code: false, table: false, mermaid: false } as const
 
@@ -93,6 +101,7 @@ function DocumentView({ text }: { text: string }) {
       controls={controls}
       mode="static"
       parseIncompleteMarkdown={false}
+      parseMarkdownIntoBlocksFn={singleBlock}
       plugins={plugins}
       rehypePlugins={rehypePlugins}
       skipHtml
@@ -179,6 +188,17 @@ function ViewerBody({ hint }: { hint?: string }) {
 function Viewer() {
   const [open, setOpen] = useDialog(id)
   const { conversationId } = useUltimate()
+  useLayoutEffect(() => {
+    if (!open) return undefined
+    // The composer accepts page-wide file drops. Do not let drops on this dialog or its backdrop upload files.
+    const blockFileDrop = (event: DragEvent) => {
+      if (!event.dataTransfer?.types.includes('Files')) return
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    document.addEventListener('drop', blockFileDrop, true)
+    return () => document.removeEventListener('drop', blockFileDrop, true)
+  }, [open])
   return (
     <Dialog
       open={open}
