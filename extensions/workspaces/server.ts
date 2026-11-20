@@ -236,7 +236,10 @@ export const actions = {
         [...index.queue, ...Object.entries(index.results).map(([id, r]) => ({ id, ...r }))].some(
           (item) =>
             item.id !== entry.id &&
-            item.delivery?.approvals?.some((a) => a.instruction === approval.instruction),
+            [
+              ...(item.delivery?.approvals ?? []),
+              ...('approvals' in item ? (item.approvals ?? []) : []),
+            ].some((a) => a.instruction === approval.instruction),
         )
       )
         throw new Error(

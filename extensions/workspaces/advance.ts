@@ -20,6 +20,7 @@ type Check = {
   status: string
   conclusion: string | null
   completed_at: string | null
+  details_url?: string | null
   app: { id: number; slug: string }
 }
 type Protection = {
@@ -77,6 +78,8 @@ export const github =
   }
 
 export async function closePull(api: Github, repository: string, pr: number, comment: string) {
+  const pull = await api<Pull>(`repos/${repository}/pulls/${pr}`)
+  if (pull.merged || pull.state !== 'open') return
   await api(`repos/${repository}/issues/${pr}/comments`, 'POST', { body: comment })
   await api(`repos/${repository}/pulls/${pr}`, 'PATCH', { state: 'closed' })
 }
@@ -121,11 +124,10 @@ export function checksPassed(delivery: Delivery, protection: Protection, checks:
   })
 }
 
-const causeOf = (error: unknown, write: 'create' | 'merge' | undefined): Cause => {
+const causeOf = (error: unknown): Cause => {
   if (error instanceof Block) return error.cause
   if (error instanceof GithubRequestError) {
     if (error.status === 401 || error.status === 403) return 'auth'
-    if (write === 'merge' && (error.status === 405 || error.status === 409)) return 'stale'
     return error.definitive ? 'safety' : 'github'
   }
   return 'github'
@@ -174,13 +176,16 @@ export async function advanceDelivery(
       )
       if (existing && existing.split(/\s/)[0] !== d.candidate)
         throw new Block('safety', 'Delivery branch collision; refusing to overwrite it')
-      if (!existing)
+      if (!existing) {
+        d.publishIntent = true
+        await persist()
         await git(
           { cwd: source, signal, timeout: 300000 },
           'push',
           remote,
           `${d.candidate}:refs/heads/${d.branch}`,
         )
+      }
       d.published = true
       d.stage = 'pr'
       return persist()
@@ -236,21 +241,29 @@ export async function advanceDelivery(
     )
     if (pages.total_count > 100)
       throw new Block('safety', 'Too many checks to establish unambiguous delivery evidence')
-    const rerun = async (why: string) => {
+    const rerun = async (why: string, check?: Check) => {
       if ((d.reruns ?? 0) >= MAX_RERUNS)
         throw new Block('infra', `${why}; ${MAX_RERUNS} automatic reruns spent`)
-      const runs = await api<{ workflow_runs: { id: number; status: string }[] }>(
-        `${prefix}/actions/runs?head_sha=${d.candidate}&per_page=1`,
-      )
+      const own = /\/actions\/runs\/(\d+)/.exec(check?.details_url ?? '')?.[1]
+      const runs = own
+        ? {
+            workflow_runs: [
+              await api<{ id: number; status: string }>(`${prefix}/actions/runs/${own}`),
+            ],
+          }
+        : await api<{ workflow_runs: { id: number; status: string }[] }>(
+            `${prefix}/actions/runs?head_sha=${d.candidate}&per_page=1`,
+          )
       const run = runs.workflow_runs[0]
       if (!run) throw new Block('infra', 'No workflow run exists for the candidate')
       const done = run.status === 'completed'
-      await api(`${prefix}/actions/runs/${run.id}/${done ? 'rerun' : 'cancel'}`, 'POST')
       if (done) d.reruns = (d.reruns ?? 0) + 1
       d.rerunAt = now
       d.since = now
       delete d.rerun
       decide(done ? 'rerun CI' : 'cancel the stuck CI run; its cancellation is rerun next', why)
+      await persist()
+      await api(`${prefix}/actions/runs/${run.id}/${done ? 'rerun' : 'cancel'}`, 'POST')
     }
     const failed = pages.check_runs.find(
       (check) =>
@@ -263,7 +276,7 @@ export async function advanceDelivery(
     if (failed) {
       const what = `Required GitHub check ${failed.name}: ${failed.conclusion ?? 'unknown conclusion'}`
       if (failed.conclusion === 'failure' && !d.rerun) throw new Block('check-failed', what)
-      await rerun(what)
+      await rerun(what, failed)
       d.stage = 'ci'
       return persist()
     }
@@ -323,7 +336,7 @@ export async function advanceDelivery(
     }
     d.resumeStage = d.stage as Exclude<Stage, 'blocked'>
     d.stage = 'blocked'
-    d.cause = causeOf(error, write)
+    d.cause = causeOf(error)
     d.reason =
       error instanceof Error ? error.message.split('\n')[0].slice(0, 240) : 'Delivery failed'
     decide(`blocked: ${d.cause}`, d.reason)

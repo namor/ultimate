@@ -294,9 +294,9 @@ export function workspaces(host: Host) {
   async function resume(context: Context) {
     const restarted = await host.harness().commit(async (tx) => {
       const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
-      const sources = [...new Set(index.queue.map((item) => item.source))].filter(
-        (source) => index.landerConversations[source] !== undefined,
-      )
+      const sources = [
+        ...new Set([...index.queue, ...(index.closing ?? [])].map((item) => item.source)),
+      ].filter((source) => index.landerConversations[source] !== undefined)
       const stopped: string[] = []
       for (const source of sources) if (await landerIdle(tx, index, source)) stopped.push(source)
       for (const source of stopped) {

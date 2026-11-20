@@ -30,6 +30,7 @@ export type Delivery = {
   pollAt?: number
   text?: { title: string; body: string }
   published?: boolean
+  publishIntent?: boolean
   createIntent?: boolean
   mergeIntent?: boolean
   pr?: number
@@ -182,6 +183,8 @@ export function authorize(
     if (d.stage === 'merged') return 'Delivery is merged; nothing to stop'
     if (state === 'landing') return 'The lander is working on this delivery; stop it once it parks'
     if (uncertainWrite(d)) return 'Reconcile the uncertain write before stopping this delivery'
+    if (actor.by === 'agent' && !waits(d))
+      return 'Agents stop only a parked delivery; this one is moving on its own'
   }
   return undefined
 }

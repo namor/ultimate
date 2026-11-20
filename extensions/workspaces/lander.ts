@@ -42,6 +42,7 @@ import { LanderLog } from './entries.ts'
 import { LanderReportEntry } from './refs.ts'
 
 const recentSubmitCardOutcomeLimit = 50
+const maxCloseTries = 3
 export async function landerPath(home: string, source: string, settings: JsonObject) {
   const configured = await treePath(settings, landerName(source))
   if (configured) return configured
@@ -506,18 +507,29 @@ export function createLander(
         const { source } = task.input
         const closing = (await runtime.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))?.closing
         for (const pull of closing?.filter((item) => item.source === source) ?? []) {
-          await closePull(
+          const closed = await closePull(
             github(source, runtime.signal),
             pull.repository,
             pull.pr,
             `${pull.note} Closed by the lander; nothing was merged.`,
-          ).catch((error: unknown) =>
-            host.notice(`Closing PR #${pull.pr} failed: ${failure(error)}`),
+          ).then(
+            () => true,
+            (error: unknown) => {
+              runtime.signal.throwIfAborted()
+              host.notice(`Closing PR #${pull.pr} failed: ${failure(error)}`)
+              return false
+            },
           )
           await runtime.commit(async (tx) => {
             const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
-            index.closing = index.closing?.filter(
-              (item) => item.pr !== pull.pr || item.repository !== pull.repository,
+            const same = (item: { pr: number; repository: string }) =>
+              item.pr === pull.pr && item.repository === pull.repository
+            index.closing = index.closing?.flatMap((item) =>
+              !same(item)
+                ? [item]
+                : closed || (item.tries ?? 0) + 1 >= maxCloseTries
+                  ? []
+                  : [{ ...item, tries: (item.tries ?? 0) + 1 }],
             )
           }, context)
         }
@@ -527,6 +539,12 @@ export function createLander(
           for (const item of mine)
             item.state = item.delivery && waits(item.delivery) ? 'waiting' : 'queued'
           const choice = pick(mine, runtime.now())
+          if (!choice && index.closing?.some((item) => item.source === source))
+            return {
+              status: 'sleeping',
+              until: runtime.now() + POLL_MS,
+              checkpoint: { phase: 'next' },
+            }
           if (!choice) {
             delete index.landers[task.input.source]
             return { status: 'terminal', outcome: { status: 'completed', result: null } }
@@ -598,25 +616,27 @@ export function createLander(
                 why: `the base moved ${MAX_REBUILDS} times while it waited; resubmit or stop it`,
               }
               saved.delivery!.blocks = saved.delivery!.wake.block
+              saved.state = 'waiting'
             }, context)
             await reportBlocked(host, Workspaces, id, context)
             return next()
           }
           await step(`rebuilding ${rebuilds}/${MAX_REBUILDS}: ${delivery.reason}`)
-          if (delivery.pr)
-            await closePull(
-              github(source, signal),
-              delivery.settings.repository,
-              delivery.pr,
-              `Superseded: ${delivery.reason}. The lander rebuilds this submission on the current base and opens a new PR.`,
-            ).catch((error: unknown) =>
-              host.notice(`Closing PR #${delivery.pr} failed: ${failure(error)}`),
-            )
           await runtime.commit(async (tx) => {
-            const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
-              (item) => item.id === id,
-            )!
+            const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+            const saved = index.queue.find((item) => item.id === id)!
+            if (delivery.pr)
+              index.closing = [
+                ...(index.closing ?? []),
+                {
+                  source,
+                  repository: delivery.settings.repository,
+                  pr: delivery.pr,
+                  note: `Superseded: ${delivery.reason}. The lander rebuilds this submission on the current base and opens a new PR.`,
+                },
+              ]
             saved.rebuilds = rebuilds
+            saved.approvals = [...(saved.approvals ?? []), ...(delivery.approvals ?? [])]
             delete saved.delivery
             saved.state = 'queued'
             return { status: 'running', checkpoint: { phase: 'next' } }
@@ -822,6 +842,13 @@ export function createLander(
                   !current?.mergeApproved
                 )
                   throw new Error('Merge approval was withdrawn; approve again to merge')
+                if (
+                  delivery.publishIntent &&
+                  !current?.publishIntent &&
+                  delivery.risk === 'high' &&
+                  !current?.publishApproved
+                )
+                  throw new Error('Publish approval was withdrawn; approve again to publish')
                 const { publishApproved: _p, mergeApproved: _m, approvals: _a, ...rest } = delivery
                 saved.delivery = {
                   ...rest,
@@ -830,6 +857,7 @@ export function createLander(
                   ...(current?.mergeApproved ? { mergeApproved: true } : {}),
                   ...(current?.approvals ? { approvals: current.approvals } : {}),
                 }
+                saved.state = waits(saved.delivery) ? 'waiting' : 'landing'
               }, context)
             const delivery = await advanceDelivery(source, previous, save, signal)
             if (delivery.stage === previous.stage && delivery.reason === previous.reason)
@@ -1137,12 +1165,14 @@ export function createLander(
               runtime: checkedIntegration.runtime,
               stage: entry.assessment.reviewedTree === tree ? 'publish' : 'review',
               since: Date.now(),
+              ...(entry.approvals ? { approvals: entry.approvals } : {}),
             }
             await runtime.commit(async (tx) => {
               const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
                 (item) => item.id === id,
               )!
               saved.delivery = record
+              saved.state = waits(record) ? 'waiting' : 'landing'
             }, context)
             if (entry.assessment.reviewedTree !== tree) {
               await (
@@ -1232,6 +1262,7 @@ export function createLander(
                   saved.delivery!.stage === 'merged' ? 'merged' : saved.delivery!.resumeStage,
                 reason: 'Delivery recovery failed; inspect the lander log',
               }
+              saved.state = 'waiting'
             }, context)
             host.notice(`Delivery ${id} recovery failed: ${failure(error)}`)
             await reportBlocked(host, Workspaces, id, context)

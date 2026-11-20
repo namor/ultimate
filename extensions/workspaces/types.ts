@@ -1,6 +1,6 @@
 import type { ConversationId, EntryId, TaskId } from '@earendil-works/pi-durable'
 import type { ConversationSubject } from '../conversations/types.ts'
-import type { Delivery, DeliveryRisk } from './delivery.ts'
+import type { Approval, Delivery, DeliveryRisk } from './delivery.ts'
 import type { DeliverySettings } from './delivery-settings.ts'
 
 export type Workspace = {
@@ -40,6 +40,7 @@ export type QueueEntry = {
   steps: LanderStep[]
   landed?: Landed
   rebuilds?: number
+  approvals?: Approval[]
 }
 export type Landed = {
   sha: string
@@ -97,7 +98,13 @@ export type WorkspaceIndex = {
   queue: QueueEntry[]
   landers: Record<SourceCheckout, TaskId>
   landerConversations: Record<SourceCheckout, ConversationId>
-  closing?: { source: SourceCheckout; repository: string; pr: number; note: string }[]
+  closing?: {
+    source: SourceCheckout
+    repository: string
+    pr: number
+    note: string
+    tries?: number
+  }[]
   standing?: StandingGrant
   results: Record<
     string,
