@@ -415,7 +415,9 @@ export async function reportBlocked(
       entry: copyJson(entry) as QueueEntry,
       lander: index.landerConversations[entry.source],
       wake: { ...delivery.wake },
-      ultimate: standing ? (await tx.doc(standing, ROOT_CONVERSATION_ID)).ultimate : undefined,
+      ultimate: standing
+        ? ((await tx.doc(standing, ROOT_CONVERSATION_ID)).ultimate as ConversationId | undefined)
+        : undefined,
     }
   }, context)
   if (!decided) return
@@ -431,11 +433,11 @@ export async function reportBlocked(
       ? `Needs the user: ${wake.why}.`
       : 'Diagnose and repair it: recheck or stop it, or resubmit a repaired candidate.'
   const card = {
-    kind: LanderReportEntry,
+    kind: LanderReportEntry.kind,
     data: {
       id,
       outcome: {
-        outcome: 'failed',
+        outcome: 'failed' as const,
         reason,
         hint,
         divergence: entry.divergence,
