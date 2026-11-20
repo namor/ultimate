@@ -21,6 +21,16 @@ export const actions = {
     const prompt = promptOf(view.messages)
     const at = view.entries.findLast((entry) => entry.kind === 'pi.system')?.id
     if (since === undefined || since === at) return { prompt, ...(at && { at }) }
+    // `since` is the browser's acknowledged prompt, durable UI state that can name an entry this conversation cannot
+    // see: after a reset, or read from the previous server's state while a tab reconnects to another project on the
+    // same port (#64835: entry 4633 of another project's #41). There is then no baseline to diff against.
+    const visible = await conversation.entries(
+      { minEntryId: since as EntryId, maxEntryId: since as EntryId },
+      1,
+      undefined,
+      context,
+    )
+    if (visible.items.length === 0) return { prompt, ...(at && { at }) }
     const before = await conversation.context(context, { at: since as EntryId })
     return {
       prompt,
