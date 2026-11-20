@@ -22,7 +22,9 @@ export const WorkspacesDoc = docRef<WorkspaceIndex>('ultimate.workspaces')
 /**
  * Approve this immutable candidate for publication/merge, recheck a blocked external outcome, or stop it. The user's
  * own click from the card, or @ultimate (the root standing agent only) with `instruction`: the entry id of the user's
- * input in its conversation that told it to, newer than the submission. Both are recorded on the delivery.
+ * input in its conversation that told it to, newer than the submission. Without `instruction`, the submitting branch or
+ * @ultimate may `recheck` (three times per candidate) or `stop` a blocked delivery on its own. All are recorded on the
+ * delivery.
  */
 export const DeliveryAction = actionRef<
   {
