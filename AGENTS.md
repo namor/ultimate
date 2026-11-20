@@ -147,3 +147,5 @@ shims or speculative fallbacks; move forward and update callers. Commit tests fo
 regression test per bug that actually happened; they exercise behaviour and failure cases, never restate the
 implementation. Prove edge cases once instead (a throwaway test or script you run and delete, an action call, a
 preview check) and show the command and its output in the report; one-off migrations and retired shapes get no test.
+Run manual verification with a clean environment and assert only the fields under test; never dump inherited
+environment values in diagnostics.
