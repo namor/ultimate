@@ -165,7 +165,7 @@ function ViewerBody({
 
   useLayoutEffect(() => {
     anchors.current = documentBody.current?.querySelectorAll(
-      'h1,h2,h3,h4,h5,h6,p,li:not(:has(li,p)),pre:not(figure pre),figure,tr,hr',
+      'h1,h2,h3,h4,h5,h6,p,li:not(:has(li,p)),figure,hr,[data-streamdown="table-wrapper"],[data-streamdown="code-block"]',
     )
     position.current = (file?.key && readPosition(file.key)) || fromTop
     const key = file?.key

@@ -29,6 +29,11 @@ it('opens a local Markdown chat link only through the chooser and renders the se
           ? `- ${label} list marker`
           : `- ${label} list entry ${n + 1}${n < 48 ? ' with uneven wrapping words' : ''}`,
       ).join('\n'),
+      ['| Entry |', '| --- |', ...Array.from({ length: 90 }, (_, n) => `| Row ${n + 1} |`)].join(
+        '\n',
+      ),
+      `${label} after the table`,
+      ...Array.from({ length: 22 }, (_, n) => `${label} closing paragraph ${n + 1}`),
       `${label} final line`,
     ].join('\n\n')
   await writeFile(otherFile, longText('Other'))
@@ -196,7 +201,18 @@ it('opens a local Markdown chat link only through the chooser and renders the se
   expect(await visible('Report list marker')).toBe(true)
   await restore.click()
   expect(await visible('Report list marker')).toBe(true)
+  expect(
+    await dialog.locator('table').evaluate((table) => {
+      const pane = table.parentElement!
+      pane.scrollTop = 150
+      return pane.scrollTop > 0
+    }),
+  ).toBe(true)
+  await dialog
+    .getByText('Report after the table', { exact: true })
+    .evaluate((element) => element.scrollIntoView({ block: 'start' }))
   await expand.click()
+  expect(await visible('Report after the table')).toBe(true)
   await select(otherFile)
   await dialog.getByRole('heading', { name: 'Other passage 1', exact: true }).waitFor()
   await page.addInitScript(() => {
@@ -226,6 +242,6 @@ it('opens a local Markdown chat link only through the chooser and renders the se
   expect(await restore.isVisible()).toBe(true)
   await select(file)
   await dialog.getByRole('heading', { name: 'Synthetic report' }).waitFor()
-  expect(await visible('Report list marker')).toBe(true)
+  expect(await visible('Report after the table')).toBe(true)
   expect(requests).toEqual([])
 })
