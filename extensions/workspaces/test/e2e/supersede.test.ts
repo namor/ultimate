@@ -1,14 +1,15 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { git } from '../../../../lib/git.ts'
 import type { ExtensionHost } from '../../../../server/extensions.ts'
 import { context, prepareHarness } from '../../../../server/harness.ts'
 import type { OpenHost } from '../../../../server/harness.ts'
 import { Metadata } from '../../../../server/metadata.ts'
-import { temp } from '../../../../test/helpers.ts'
-import { deliveryRuntime } from '../../advance.ts'
+import { temp, until } from '../../../../test/helpers.ts'
+import * as advance from '../../advance.ts'
+import { pullRequestText } from '../../pull-request.ts'
 import { waits } from '../../delivery.ts'
 import workspaceExtension from '../../server.ts'
 import { Workspaces, workspaces } from '../../workspaces.ts'
@@ -16,9 +17,10 @@ import { Workspaces, workspaces } from '../../workspaces.ts'
 const openedHosts: OpenHost[] = []
 afterEach(async () => {
   for (const opened of openedHosts.splice(0)) await opened.close()
+  vi.restoreAllMocks()
 })
 
-async function resubmit(mergeIntent: boolean) {
+async function fixture() {
   const directory = await temp('ultimate-supersede-')
   const projectRoot = join(directory, 'project')
   await mkdir(projectRoot)
@@ -39,6 +41,7 @@ async function resubmit(mergeIntent: boolean) {
     harness: () => opened.harness,
     metadata: Metadata,
     implement: () => {},
+    emit: async () => {},
     need: () => ({ subject: async () => undefined, setStanding: async () => {} }),
     want: () => undefined,
     projectSettings: async () => ({}),
@@ -58,7 +61,6 @@ async function resubmit(mergeIntent: boolean) {
   const conversation = () =>
     harness.createConversation({ ownership: { kind: 'ownerless' } }, context)
   const { id } = await conversation()
-  const other = await conversation()
   await harness.commit(async (tx) => {
     await tx.appendEntry(id, { kind: 'test.submit-point' })
     await service.create(tx, id, projectRoot)
@@ -74,6 +76,12 @@ async function resubmit(mergeIntent: boolean) {
   const tree = await commit('first tip')
   // Test submit's transaction without letting the asynchronous lander consume the queue.
   harness.hold()
+  return { harness, service, id, workspace, commit, tree, conversation, directory, projectRoot }
+}
+
+async function resubmit(mergeIntent: boolean) {
+  const { harness, service, id, workspace, commit, tree, conversation } = await fixture()
+  const other = await conversation()
   const { id: oldId } = await service.submit(id, 'None', context)
   await harness.commit(async (tx) => {
     const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
@@ -96,7 +104,7 @@ async function resubmit(mergeIntent: boolean) {
       tree,
       branch: 'ultimate-delivery/test',
       checkedAt: Date.now(),
-      runtime: deliveryRuntime(),
+      runtime: advance.deliveryRuntime(),
       stage: 'blocked',
       cause: 'check-failed',
       resumeStage: 'ci',
@@ -136,6 +144,71 @@ it('supersedes a delivery blocked by required CI without asking the user to stop
   expect(index.queue.filter(({ delivery }) => delivery && waits(delivery)?.on === 'user')).toEqual(
     [],
   )
+})
+
+it('rebuilds with the renewed review and without the public copy its owner withdrew', async () => {
+  const { harness, service, id, workspace, tree, directory, projectRoot } = await fixture()
+  const remote = join(directory, 'remote.git')
+  await git(directory, 'clone', '--bare', projectRoot, remote)
+  await git(projectRoot, 'remote', 'add', 'origin', remote)
+  vi.spyOn(advance, 'github').mockReturnValue(
+    async () => ({ commit: { sha: workspace.base } }) as never,
+  )
+  const settings = {
+    repository: 'example/my-app',
+    base: 'main',
+    remote: 'origin',
+    checks: ['test -f change.txt'],
+    requiredChecks: ['verify'],
+  }
+  const old = {
+    risk: 'low' as const,
+    review: 'original review',
+    reviewedTree: await git(projectRoot, 'rev-parse', 'HEAD^{tree}'),
+    pullRequest: { title: 'Withdrawn title', body: 'Withdrawn wording' },
+  }
+  await service.submit(id, 'None', context, old)
+  await harness.commit(async (tx) => {
+    const entry = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue[0]
+    entry.deliveryConfig = settings
+    entry.delivery = {
+      ...old,
+      settings,
+      candidate: entry.tip,
+      baseline: workspace.base,
+      tree,
+      branch: 'ultimate-delivery/test',
+      checkedAt: Date.now(),
+      runtime: advance.deliveryRuntime(),
+      stage: 'review',
+    }
+  }, context)
+  const revised = { risk: 'high' as const, review: 'renewed review', reviewedTree: tree }
+  await service.submit(id, 'None', context, revised)
+  // Resume at the durable checkpoint after the stale candidate was discarded.
+  await harness.commit(async (tx) => {
+    const entry = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue[0]
+    delete entry.delivery
+    entry.rebuilds = 1
+    entry.state = 'queued'
+  }, context)
+  harness.release()
+  const snapshot = () => harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context)
+  await until(async () => !!(await snapshot())?.queue[0]?.delivery)
+  const rebuilt = (await snapshot())!.queue[0].delivery!
+  expect(rebuilt).toMatchObject({
+    review: revised.review,
+    risk: revised.risk,
+    stage: 'publish',
+    tree,
+  })
+  expect(rebuilt.publishApproved).toBeUndefined()
+  const payload = pullRequestText(rebuilt)
+  expect(payload.title).not.toContain('Withdrawn')
+  expect(payload.body).not.toContain('Withdrawn')
+  expect(payload.body).toContain('Risk: high')
+  expect(payload.body).toContain(rebuilt.candidate)
+  expect(payload.body).toContain(tree)
 })
 
 it('queues the replacement behind a delivery with an uncertain merge', async () => {

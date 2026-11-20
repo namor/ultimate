@@ -1267,7 +1267,7 @@ export function createLander(
                 {
                   type: 'input',
                   whenBusy: 'followUp',
-                  requestId: `delivery-review:${id}:${tree}`,
+                  requestId: `delivery-review:${id}:${tree}${entry.rebuilds ? `:r${entry.rebuilds}` : ''}`,
                   content: `Integration changed the reviewed tree. Independently review ${remoteBase.commit.sha}..${integrated}, then resubmit this same tip with reviewedTree ${tree}, risk and review evidence. No publication occurred.`,
                   entry: {
                     kind: LanderReportEntry.kind,

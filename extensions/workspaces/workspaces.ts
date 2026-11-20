@@ -812,10 +812,9 @@ export function workspaces(host: Host) {
       if (queued?.delivery?.stage === 'review' && assessment) {
         if (reviewedTree !== queued.delivery.tree)
           throw new Error('Review does not cover the integration candidate tree')
-        if (assessment.pullRequest) queued.delivery.pullRequest = assessment.pullRequest
-        else delete queued.delivery.pullRequest
-        queued.delivery.review = assessment.review
-        queued.delivery.risk = assessment.risk
+        queued.assessment = { ...assessment, reviewedTree }
+        delete queued.delivery.pullRequest
+        Object.assign(queued.delivery, queued.assessment)
         queued.delivery.stage = 'publish'
         queued.delivery.since = Date.now()
         queued.at = at
