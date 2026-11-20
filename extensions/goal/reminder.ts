@@ -1,5 +1,5 @@
 import { defineTask, InboxDoc, ROOT_CONVERSATION_ID as ROOT } from '@earendil-works/pi-durable'
-import type { ConversationDocToken, Cursor, TaskId, Tx } from '@earendil-works/pi-durable'
+import type { ConversationDocToken, Cursor, Tx } from '@earendil-works/pi-durable'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { AutomationsApi } from '../automations/api.ts'
@@ -14,27 +14,35 @@ export type GoalState = {
   timersRetired?: true
 }
 
-async function pendingFires(tx: Tx, matches: (automation: Automation) => boolean) {
-  const fires: { task: TaskId; timer: string }[] = []
+async function pendingTasks(tx: Tx, kind: string) {
+  const tasks = []
   let cursor: Cursor | undefined
   do {
-    const page = await tx.scanTasks({ kind: 'ultimate.automation-delivery' }, 128, cursor)
-    for (const item of page.items) {
-      if (item.state.status === 'terminal') continue
-      const input = item.input as { sub: Automation; kind: string }
-      if (input.kind === 'fired' && matches(input.sub))
-        fires.push({ task: item.id, timer: input.sub.id })
-    }
+    const page = await tx.scanTasks({ kind }, 128, cursor)
+    tasks.push(...page.items.filter((item) => item.state.status !== 'terminal'))
     cursor = page.next
   } while (cursor)
-  return fires
+  return tasks
+}
+
+async function pendingFires(tx: Tx, matches: (automation: Automation) => boolean) {
+  return (await pendingTasks(tx, 'ultimate.automation-delivery')).flatMap((item) => {
+    const input = item.input as { sub: Automation; kind: string }
+    return input.kind === 'fired' && matches(input.sub)
+      ? [{ task: item.id, timer: input.sub.id }]
+      : []
+  })
 }
 
 export async function retireReminders(host: ExtensionHost, goals: ConversationDocToken<GoalState>) {
   const harness = host.harness()
   const state = await harness.snapshot(goals, ROOT, context)
   if (state?.timersRetired || !state?.goals.some((goal) => !goal.workEvents)) return
-  const legacy = state.goals.filter((goal) => !goal.workEvents)
+  const oldSyncs = await harness.commit((tx) => pendingTasks(tx, 'goal.reminder'), context)
+  for (const sync of oldSyncs) await harness.abortTask(sync.id, context)
+  const legacy = (await harness.snapshot(goals, ROOT, context))!.goals.filter(
+    (goal) => !goal.workEvents,
+  )
   const matches = (item: Automation) =>
     legacy.some(
       (goal) =>
