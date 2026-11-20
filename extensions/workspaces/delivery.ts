@@ -28,11 +28,13 @@ export type Delivery = {
   approvals?: Approval[]
   reason?: string
   resumeStage?: 'review' | 'publish' | 'pr' | 'ci' | 'merge' | 'merged'
+  blocks?: number
+  wake?: { block: number; to: 'branch' | 'user'; why?: string }
 }
 export type Approval = {
   action: 'publish' | 'merge' | 'recheck' | 'stop'
   at: number
-  by: 'user' | 'ultimate'
+  by: 'user' | 'ultimate' | 'agent'
   conversation?: ConversationId
   instruction?: EntryId
   standing?: EntryId
@@ -59,6 +61,47 @@ export function standingRefusal(
     return action === 'merge'
       ? 'Required GitHub checks have not passed on this exact head'
       : 'Delivery is not awaiting publication'
+  return undefined
+}
+export const AGENT_RECHECKS = 3
+export const BRANCH_WAKES = 3
+
+export function agentRefusal(
+  d: Delivery,
+  action: Approval['action'],
+  actor: number,
+  submitter: number,
+  ultimate: number | undefined,
+): string | undefined {
+  if (actor !== submitter && actor !== ultimate)
+    return "Only the user or @ultimate on the user's instruction can act on a delivery"
+  if (action !== 'recheck' && action !== 'stop')
+    return "Agents may only recheck or stop a blocked delivery; publish and merge are the user's"
+  if (d.stage !== 'blocked') return 'Delivery stage changed; reload its card'
+  if (action === 'stop') return undefined
+  const why = d.wake?.to === 'user' ? d.wake.why : needsUser(d)
+  if (why) return `This block needs the user: ${why}`
+  if (
+    (d.approvals ?? []).filter((a) => a.by === 'agent' && a.action === 'recheck').length >=
+    AGENT_RECHECKS
+  )
+    return `Agents already rechecked this candidate ${AGENT_RECHECKS} times; stop it, resubmit a repaired candidate, or ask the user`
+  return undefined
+}
+
+export function needsUser(d: Delivery): string | undefined {
+  if ((d.createIntent && !d.pr) || d.mergeIntent)
+    return 'an uncertain remote write must be reconciled'
+  if (
+    (d.resumeStage === 'merge' && d.risk !== 'low' && !d.mergeApproved) ||
+    (d.resumeStage === 'publish' && d.risk === 'high' && !d.publishApproved)
+  )
+    return 'it waits for your approval'
+  const reason = d.reason ?? ''
+  if (/outside this delivery|collision|authorized repository|human reconciliation/i.test(reason))
+    return 'a safety hold needs your decision'
+  if (/HTTP 40[13]|authenticat|credential|login|token/i.test(reason))
+    return 'GitHub access needs your login or credentials'
   return undefined
 }
 

@@ -476,7 +476,8 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
   const { standing } = useWorkspaceIndex()
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string>()
-  const action = deliveryAsk(delivery)
+  const ask = deliveryAsk(delivery)
+  const action = ask ?? (delivery.stage === 'blocked' ? 'recheck' : undefined)
   const approve = async (
     request: 'publish' | 'merge' | 'recheck' | 'stop' | undefined = action,
   ) => {
@@ -500,15 +501,15 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
     <section
       className={cn(
         'space-y-2 rounded-lg border p-3 text-sm',
-        action
+        ask
           ? 'border-purple-500/40 border-l-2 border-l-purple-500 bg-purple-500/[0.07]'
           : 'border-border/70',
       )}
       aria-label="PR delivery"
-      data-delivery-ask={action}
+      data-delivery-ask={ask}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <strong className={cn(action && 'text-purple-700 dark:text-purple-300')}>
+        <strong className={cn(ask && 'text-purple-700 dark:text-purple-300')}>
           {action === 'recheck'
             ? 'Delivery needs attention'
             : delivery.stage === 'review'
@@ -539,6 +540,13 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
         </a>
       )}
       {delivery.reason && <p className="text-warning">{delivery.reason}</p>}
+      {delivery.stage === 'blocked' && delivery.wake && (
+        <p className="text-xs text-muted-foreground">
+          {delivery.wake.to === 'user'
+            ? `Needs you: ${delivery.wake.why}.`
+            : 'Its branch was asked to diagnose and repair it.'}
+        </p>
+      )}
       <StandingLine grant={standing} />
       {delivery.approvals?.map((approval) => (
         <p
@@ -555,9 +563,11 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
                   : 'Stopped'}{' '}
             {approval.by === 'user'
               ? 'by you'
-              : approval.standing !== undefined
-                ? 'by @ultimate under your standing approval'
-                : 'by @ultimate on your instruction'}{' '}
+              : approval.by === 'agent'
+                ? `by #${approval.conversation}`
+                : approval.standing !== undefined
+                  ? 'by @ultimate under your standing approval'
+                  : 'by @ultimate on your instruction'}{' '}
             · {time(approval.at)}
             {approval.reason && ` · ${approval.reason}`}
           </span>
@@ -584,6 +594,11 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
                   ? 'Approve merge'
                   : 'Recheck outcome'}
           </Button>
+          {(action === 'publish' || action === 'merge') && (
+            <p className="text-xs text-purple-700 dark:text-purple-300">
+              or tell @ultimate in its chat
+            </p>
+          )}
         </>
       )}
       {delivery.stage === 'blocked' &&

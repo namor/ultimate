@@ -12,6 +12,7 @@ export type Workspace = {
   state: 'preparing' | 'ready' | 'failed' | 'removed'
   error?: string
   landed?: string
+  deliveryWakes?: number
 }
 type SubmitTimeEntryId = EntryId
 type SubmitTimeSubject = ConversationSubject

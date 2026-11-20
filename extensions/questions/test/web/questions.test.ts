@@ -82,6 +82,10 @@ describe('deliveries waiting on the user', () => {
     expect(deliveryAsk({ ...base, stage: 'merge', mergeApproved: true })).toBeUndefined()
     expect(deliveryAsk({ ...base, stage: 'merge', risk: 'low' })).toBeUndefined()
     expect(deliveryAsk({ ...base, stage: 'blocked' })).toBe('recheck')
+    // A block its branch is repairing is not the user's; one escalated to them is (#53902 review).
+    const blocked = { ...base, stage: 'blocked' } as Delivery
+    expect(deliveryAsk({ ...blocked, wake: { block: 1, to: 'branch' } })).toBeUndefined()
+    expect(deliveryAsk({ ...blocked, wake: { block: 2, to: 'user', why: 'x' } })).toBe('recheck')
     expect(deliveryAsk({ ...base, stage: 'ci' })).toBeUndefined()
     expect(deliveryAsk(undefined)).toBeUndefined()
   })

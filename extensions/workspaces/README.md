@@ -158,6 +158,18 @@ missing or conflicting evidence stops delivery rather than blindly repeating a c
 A known blocked delivery can be stopped while retaining its record and leaving its remote branch/PR unchanged; uncertain writes
 must be reconciled first.
 
+**Blocked deliveries are the branch's to repair.** Each block is reported once (`delivery.wake`, numbered by `blocks`, with a
+per-block request id). A block the branch can repair (a failed check, a timeout, a closed PR) wakes the submitting branch with
+the reason, the candidate and the PR's checks page; a concluded branch is resumed by that input. The branch, or @ultimate,
+then calls `delivery` with `recheck` or `stop` itself, without an instruction: recorded as `by: 'agent'` with its conversation,
+and a stop reads "Stopped by conversation #id". Agents get at most three rechecks per candidate; after that the user's click
+(or @ultimate on their instruction) can still recheck, and stop is always allowed. A repaired candidate is a fresh `workspace
+submit`, with its own review and approvals. A branch is woken for at most three blocks across its resubmissions (reset when it
+lands); a later block, or one that needs the user (an uncertain remote write, a GitHub login or credential, a publish or merge
+approval, a safety hold such as a branch collision or an outside merge), wakes no model: it goes to @ultimate's conversation as
+a card to ask the user, and to the branch as a note, and agents cannot recheck it. Agents never publish or merge this way;
+those stay with the user as below.
+
 Automatic merge requires strict required-check protection including administrators, no force/deletion bypass, a PR requirement
 (with zero mandatory platform approvals allowed for a solo maintainer), and genuine successful named GitHub Actions checks on the
 candidate. Empty, missing, skipped, neutral, cancelled and timed-out checks are not success. The current base must descend from the
@@ -169,7 +181,8 @@ Low-risk work is eligible for automatic merge only after independent review. Med
 candidate content invalidates the prior evidence/approvals. Chat scope agreement is separate from GitHub's platform review
 requirements and cannot satisfy a required second GitHub approver.
 
-**Who may act.** The `delivery` action (`publish`, `merge`, `recheck`, `stop`) takes the user's own click on the card, or a
+**Who may approve.** Apart from an agent's recheck or stop of a blocked delivery (above), the `delivery` action (`publish`,
+`merge`, `recheck`, `stop`) takes the user's own click on the card, or a
 codemode call from @ultimate, the root standing agent, when the user told it to in its chat. @ultimate passes `instruction`: the
 entry id of the user's input in its conversation that gave the order. The action checks that a `user.input` event from a browser
 (`device` set) names that entry: only the user's composer and answer card emit one, so a `pi.user` input the server placed, an
