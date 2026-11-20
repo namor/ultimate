@@ -10,7 +10,7 @@ import type { ExtensionHost } from '../server/extensions.ts'
 import { Goals } from '../extensions/goal/server.ts'
 import { Standing } from '../extensions/subagents/api.ts'
 import { actions, userActions } from '../extensions/workspaces/server.ts'
-import { deliveryRuntime } from '../extensions/workspaces/delivery.ts'
+import { deliveryRuntime } from '../extensions/workspaces/advance.ts'
 import type { Delivery } from '../extensions/workspaces/delivery.ts'
 import { reportBlocked } from '../extensions/workspaces/lander.ts'
 import { Workspaces } from '../extensions/workspaces/workspaces.ts'
@@ -520,7 +520,7 @@ describe('agents on a blocked delivery', () => {
     expect(index.queue).toEqual([])
     const result = index.results.submission
     expect(result.reason).toBe(
-      `Stopped by conversation #${f.ultimate}; remote branch and PR were not changed`,
+      `Stopped by conversation #${f.ultimate}; the delivery branch stays, its PR is closed`,
     )
     // The record is kept, with the PR identity it had: nothing remote was touched.
     expect(result.delivery).toMatchObject({ pr: 3, candidate, tree })
@@ -655,9 +655,15 @@ describe('a blocked delivery report', () => {
   it('escalates what needs the user at once, without spending an attempt', async () => {
     for (const [extra, why] of [
       [{ mergeIntent: true }, 'uncertain remote write'],
-      [{ reason: 'GitHub request rejected (HTTP 401)' }, 'login or credentials'],
+      [{ cause: 'auth', reason: 'GitHub request rejected (HTTP 401)' }, 'login or credentials'],
       [{ resumeStage: 'merge', risk: 'medium' }, 'your approval'],
-      [{ reason: 'PR merged outside this delivery; human reconciliation required' }, 'safety hold'],
+      [
+        {
+          cause: 'safety',
+          reason: 'PR merged outside this delivery; human reconciliation required',
+        },
+        'safety hold',
+      ],
     ] as [Partial<Delivery>, string][]) {
       const f = await fixture()
       await block(f, extra)

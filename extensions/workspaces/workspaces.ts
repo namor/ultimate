@@ -40,6 +40,7 @@ import {
   log,
 } from './lander.ts'
 import { deliverySettings } from './delivery-settings.ts'
+import { supersedes } from './delivery.ts'
 import type { DeliveryRisk } from './delivery.ts'
 import type {
   LandResult,
@@ -808,14 +809,43 @@ export function workspaces(host: Host) {
         queued.delivery.review = assessment.review
         queued.delivery.risk = assessment.risk
         queued.delivery.stage = 'publish'
-        queued.delivery.deadline = Date.now() + 60 * 60 * 1000
+        queued.delivery.since = Date.now()
         queued.at = at
         delete queued.delivery.publishApproved
         delete queued.delivery.mergeApproved
         delete queued.delivery.approvals
       }
+      const newId = `${id}-${tip.slice(0, 7)}-${Date.now().toString(36)}`
+      for (const old of index.queue)
+        if (!queued && supersedes(old, { conversationId: id, target })) {
+          index.results[old.id] = {
+            outcome: 'failed',
+            reason: `Superseded by ${newId}; ${old.delivery?.pr ? 'its PR is closed' : 'nothing was published'}`,
+            ...(old.delivery ? { delivery: old.delivery } : {}),
+            at: old.at,
+            divergence: old.divergence,
+            target: old.target,
+            tip: old.tip,
+            lander,
+            steps: old.steps,
+            conversationId: old.conversationId,
+            ...(old.subject ? { subject: old.subject } : {}),
+          }
+          if (old.delivery?.pr)
+            index.closing = [
+              ...(index.closing ?? []),
+              {
+                source,
+                repository: old.delivery.settings.repository,
+                pr: old.delivery.pr,
+                note: `Superseded by a newer submission of the same branch (${newId}).`,
+              },
+            ]
+          await log(tx, lander, old, { outcome: 'failed', reason: index.results[old.id].reason })
+        }
+      index.queue = index.queue.filter((item) => !index.results[item.id])
       const entry = queued ?? {
-        id: `${id}-${tip.slice(0, 7)}-${Date.now().toString(36)}`,
+        id: newId,
         conversationId: id,
         source,
         target,

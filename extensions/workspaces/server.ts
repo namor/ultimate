@@ -38,8 +38,9 @@ import {
 import type { GithubRepo } from './refs.ts'
 import { githubRepo, readGithubRepo } from '../../lib/project-identity.ts'
 import { UserInputEvent } from '../../shared/events.ts'
-import { agentRefusal, standingRefusal } from './delivery.ts'
-import type { Approval } from './delivery.ts'
+import { authorize } from './delivery.ts'
+import type { Actor, Approval } from './delivery.ts'
+import { deliveryRuntime } from './advance.ts'
 import { sweepChecks } from './lander.ts'
 import { landingPending, pendingLandingCards, Workspaces, workspaces } from './workspaces.ts'
 import { rebuiltOnOpen } from '../../lib/errors.ts'
@@ -208,11 +209,28 @@ export const actions = {
         throw new Error('Delivery was reassessed; the user must decide on the new assessment')
       if (approval.by === 'ultimate' && (await goalOpen(host, tx)))
         throw new Error('A hands-off goal cannot approve a delivery; it waits for the user')
-      if (approval.standing !== undefined) {
-        const refusal = standingRefusal(index.standing, delivery, action, Date.now())
-        if (refusal) throw new Error(`Standing approval refused: ${refusal}`)
-        approval.standing = index.standing!.instruction
-      }
+      const actor: Actor =
+        approval.by === 'user'
+          ? { by: 'user' }
+          : approval.by === 'agent'
+            ? {
+                by: 'agent',
+                conversation: approval.conversation!,
+                submitter: entry.conversationId,
+                ultimate: ultimate as number | undefined,
+              }
+            : approval.standing !== undefined
+              ? { by: 'ultimate', standing: index.standing }
+              : { by: 'ultimate', instruction: true }
+      const refusal = authorize(actor, action, delivery, entry.state, {
+        now: Date.now(),
+        runtime: deliveryRuntime(),
+      })
+      if (refusal)
+        throw new Error(
+          approval.standing !== undefined ? `Standing approval refused: ${refusal}` : refusal,
+        )
+      if (approval.standing !== undefined) approval.standing = index.standing!.instruction
       if (
         approval.instruction !== undefined &&
         [...index.queue, ...Object.entries(index.results).map(([id, r]) => ({ id, ...r }))].some(
@@ -224,20 +242,8 @@ export const actions = {
         throw new Error(
           'instruction already decided another delivery; the user must decide this one',
         )
-      if (approval.by === 'agent') {
-        const refusal = agentRefusal(
-          delivery,
-          action,
-          approval.conversation!,
-          entry.conversationId,
-          ultimate as number | undefined,
-        )
-        if (refusal) throw new Error(refusal)
-      }
       delivery.approvals = [...(delivery.approvals ?? []), approval]
-      if (action === 'stop' && delivery.stage === 'blocked') {
-        if ((delivery.createIntent && !delivery.pr) || delivery.mergeIntent)
-          throw new Error('Reconcile the uncertain write before stopping this delivery')
+      if (action === 'stop') {
         const by =
           approval.by === 'user'
             ? 'user'
@@ -246,7 +252,7 @@ export const actions = {
               : "@ultimate on the user's instruction"
         index.results[entry.id] = {
           outcome: 'failed',
-          reason: `Stopped by ${by}; remote branch and PR were not changed`,
+          reason: `Stopped by ${by}; the delivery branch stays, its PR is closed`,
           delivery,
           at: entry.at,
           divergence: entry.divergence,
@@ -258,17 +264,27 @@ export const actions = {
           ...(entry.subject ? { subject: entry.subject } : {}),
         }
         index.queue = index.queue.filter((item) => item.id !== entry.id)
-      } else if (action === 'publish' && delivery.stage === 'publish')
-        delivery.publishApproved = true
-      else if (action === 'merge' && delivery.stage === 'merge') delivery.mergeApproved = true
-      else if (action === 'recheck' && delivery.stage === 'blocked' && delivery.resumeStage) {
-        delivery.stage = delivery.resumeStage
+        if (delivery.pr)
+          index.closing = [
+            ...(index.closing ?? []),
+            {
+              source: entry.source,
+              repository: delivery.settings.repository,
+              pr: delivery.pr,
+              note: `Stopped by ${by}.`,
+            },
+          ]
+      } else if (action === 'publish') delivery.publishApproved = true
+      else if (action === 'merge') delivery.mergeApproved = true
+      else {
+        delivery.stage = delivery.resumeStage!
         delete delivery.reason
+        delete delivery.cause
         delete delivery.wake
-        delivery.deadline = Date.now() + 60 * 60 * 1000
-      } else throw new Error('Delivery stage changed; reload its card')
-      if (action === 'publish' || action === 'merge')
-        delivery.deadline = Date.now() + 60 * 60 * 1000
+        delete delivery.resumeStage
+        delivery.since = Date.now()
+      }
+      delete delivery.pollAt
     }, context)
     await workspaces(host).resume(context)
     host.harness().resume()

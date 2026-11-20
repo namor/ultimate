@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { advanceDelivery, deliveryRuntime, GithubRequestError } from '../delivery.ts'
-import type { Delivery, Github } from '../delivery.ts'
+import { advanceDelivery, deliveryRuntime, GithubRequestError } from '../advance.ts'
+import type { Delivery } from '../delivery.ts'
+import type { Github } from '../advance.ts'
 import { git } from '../../../lib/git.ts'
 
 vi.mock('../../../lib/git.ts', () => ({ git: vi.fn<typeof git>() }))

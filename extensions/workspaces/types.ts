@@ -39,6 +39,7 @@ export type QueueEntry = {
   step?: string
   steps: LanderStep[]
   landed?: Landed
+  rebuilds?: number
 }
 export type Landed = {
   sha: string
@@ -96,6 +97,7 @@ export type WorkspaceIndex = {
   queue: QueueEntry[]
   landers: Record<SourceCheckout, TaskId>
   landerConversations: Record<SourceCheckout, ConversationId>
+  closing?: { source: SourceCheckout; repository: string; pr: number; note: string }[]
   standing?: StandingGrant
   results: Record<
     string,
