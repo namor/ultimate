@@ -42,6 +42,7 @@ export function Toasts() {
       if (toast.toasts().length <= shownFolded) setExpanded(false)
     }
     const stop = toast.subscribe(count)
+    count()
     return () => {
       stop()
       toast.dismiss()
@@ -66,7 +67,7 @@ export function Toasts() {
                 <X class="size-3.5" />
               </ToastClose>
             </div>
-            <Show when={open() > 1 && live.index === shown() - 1}>
+            <Show when={open() > 1 && !live.leaving && live.index === shown() - 1}>
               <div class="flex w-full items-center justify-end gap-1 border-t border-border/70 px-1.5 py-1 text-[11px] text-muted-foreground">
                 <Show when={open() > shownFolded}>
                   <Button
