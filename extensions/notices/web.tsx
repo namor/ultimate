@@ -3,60 +3,116 @@ import { useState } from 'react'
 import { cn, defineWebExtension, useNotices, useNow } from '@/sdk'
 import type { Notice } from '@/sdk'
 
-/** How long a notice stays, by level; hovering keeps them. */
+/** How long a notice stays, by level; hovering or focusing the stack keeps them. */
 const lifetime: Record<Notice['level'], number> = { info: 5000, warning: 9000, error: 15000 }
+/** How many show before the rest fold into "+N more". */
+const visible = 3
 const icons = {
   info: [InfoIcon, 'text-muted-foreground'],
   warning: [TriangleAlertIcon, 'text-warning'],
   error: [CircleAlertIcon, 'text-error'],
 } as const
 
-/** Server and client notices as small toasts centred under the header, clear of the side panels. */
+/**
+ * Server and client notices as a stack of small cards centred under the header, clear of the side panels; on a phone
+ * they span the width with a margin. Newest on top.
+ */
 function Toasts() {
   const notices = useNotices()
   const [dismissed, setDismissed] = useState<ReadonlySet<number>>(new Set())
-  const [hovered, setHovered] = useState(false)
+  const [held, setHeld] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const live = notices.some((notice) => Date.now() - notice.at < lifetime[notice.level])
-  const now = useNow(500, live && !hovered)
-  const shown = notices
+  const now = useNow(500, live && !held)
+  const open = notices
     .filter(
-      (notice) =>
-        !dismissed.has(notice.id) && (hovered || now - notice.at < lifetime[notice.level]),
+      (notice) => !dismissed.has(notice.id) && (held || now - notice.at < lifetime[notice.level]),
     )
-    .slice(-4)
-  if (shown.length === 0) return null
+    .toReversed()
+  if (open.length === 0) return null
+  const shown = expanded ? open : open.slice(0, visible)
+  const dismiss = (ids: number[]) => setDismissed((previous) => new Set([...previous, ...ids]))
   return (
-    <div
-      className="fixed top-12 left-1/2 z-40 flex w-80 max-w-[calc(100vw-1.5rem)] -translate-x-1/2 flex-col divide-y divide-border/70 overflow-hidden rounded-md border border-border/80 bg-popover shadow-lg"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      role="status"
+    <section
+      aria-label="Notifications"
+      // top-38: below the conversation header and the context bar that pins under it (or the start card in its place),
+      // which the user reads; covering them was the complaint.
+      className="fixed inset-x-2 top-38 z-40 mx-auto flex max-h-[calc(100dvh-16rem)] flex-col gap-1.5 sm:w-[26rem]"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setHeld(false)
+      }}
+      onFocus={() => setHeld(true)}
+      onMouseEnter={() => setHeld(true)}
+      onMouseLeave={() => setHeld(false)}
     >
-      {shown.map((notice) => {
-        const [Icon, tone] = icons[notice.level]
-        return (
-          <div
-            className={cn(
-              'group/notice flex items-start gap-2 px-2.5 py-2 font-mono text-[11.5px] leading-snug',
-              notice.level === 'error' && 'bg-error/6',
-              notice.level === 'warning' && 'bg-warning/6',
-            )}
-            key={notice.id}
-          >
-            <Icon className={cn('mt-px size-3.5 shrink-0', tone)} />
-            <span className="min-w-0 flex-1 break-words text-foreground/90">{notice.message}</span>
+      {/* The padding keeps the cards' shadows inside the scroll box, which would clip them. */}
+      <ol
+        aria-live="polite"
+        className="-m-2 flex min-h-0 flex-col gap-1.5 overflow-y-auto overscroll-contain p-2"
+      >
+        {shown.map((notice) => {
+          const [Icon, tone] = icons[notice.level]
+          return (
+            <li
+              className={cn(
+                'group/notice flex animate-in items-start gap-2 rounded-md border border-border/80 bg-popover py-2 pr-1.5 pl-2.5 font-mono text-[11.5px] leading-snug shadow-md fade-in-0 slide-in-from-top-1',
+                notice.level === 'error' &&
+                  'bg-[color-mix(in_oklab,var(--error)_6%,var(--popover))]',
+                notice.level === 'warning' &&
+                  'bg-[color-mix(in_oklab,var(--warning)_6%,var(--popover))]',
+              )}
+              key={notice.id}
+            >
+              <Icon aria-label={notice.level} className={cn('mt-px size-3.5 shrink-0', tone)} />
+              <span className="min-w-0 flex-1 break-words text-foreground/90">
+                {notice.message}
+              </span>
+              <button
+                aria-label="Dismiss"
+                className="-my-0.5 shrink-0 rounded-sm p-0.5 text-muted-foreground/60 opacity-0 transition-opacity group-hover/notice:opacity-100 hover:text-foreground focus-visible:opacity-100 pointer-coarse:opacity-100"
+                onClick={(event) => {
+                  // From the keyboard (no click count), hand focus to the next notice's dismiss, so it is not lost.
+                  if (event.detail === 0) {
+                    const item = event.currentTarget.closest('li')
+                    const next = item?.nextElementSibling ?? item?.previousElementSibling
+                    next?.querySelector('button')?.focus()
+                  }
+                  dismiss([notice.id])
+                }}
+                type="button"
+              >
+                <XIcon className="size-3.5" />
+              </button>
+            </li>
+          )
+        })}
+      </ol>
+      {open.length > 1 && (
+        <div className="flex items-center gap-3 self-end rounded-md border border-border/80 bg-popover px-2 py-1 font-mono text-[11px] text-muted-foreground shadow-md">
+          {open.length > visible && (
             <button
-              aria-label="Dismiss"
-              className="shrink-0 text-muted-foreground/60 opacity-0 transition-opacity group-hover/notice:opacity-100 pointer-coarse:opacity-100 hover:text-foreground"
-              onClick={() => setDismissed((previous) => new Set([...previous, notice.id]))}
+              aria-expanded={expanded}
+              className="rounded-sm hover:text-foreground"
+              onClick={() => setExpanded(!expanded)}
               type="button"
             >
-              <XIcon className="size-3.5" />
+              {expanded ? 'Show less' : `+${open.length - visible} more`}
             </button>
-          </div>
-        )
-      })}
-    </div>
+          )}
+          <button
+            className="rounded-sm hover:text-foreground"
+            onClick={() => {
+              dismiss(open.map((notice) => notice.id))
+              setExpanded(false)
+              setHeld(false)
+            }}
+            type="button"
+          >
+            Clear all
+          </button>
+        </div>
+      )}
+    </section>
   )
 }
 
