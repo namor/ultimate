@@ -220,6 +220,47 @@ Delivery uses the lander's durable 30-second sleeps, not model polling. After on
 and blocked outcomes are reported, without waking a model for each poll. Existing check/landing events remain available for bounded
 feedback automations; adding a delivery setting does not activate unrelated standing automations.
 
+### Pull request text
+
+Delivery titles use `<most-changed area>: <subject title or first commit subject>` and stop at 72 characters. The body lists
+Summary, Changes, Blast radius, Risk, Verification, Divergence, and Links. Supply public-safe facts: redaction covers common
+private forms but cannot identify arbitrary names or secrets in free text.
+
+```markdown
+## Summary
+
+- Cover delivery retries for my-app.
+
+## Changes
+
+- **test** (1 file): delivery.test.ts
+
+## Blast radius
+
+- No host restart needed; Tests only
+
+## Risk
+
+**low** — Only test paths changed.\
+Could break: test\
+Mitigation: local verification, exact-head CI, and independent review.\
+Rollback: revert the merge commit.
+
+## Verification
+
+Local: 0 checks passed on v26.1.0/darwin/arm64\
+CI: required checks must pass on the exact head before merge\
+Review: Independent reviewer #125 approved.
+
+## Divergence
+
+None
+
+## Links
+
+Branch conversation #123 · Lander log #124 · Candidate aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa · Tree bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb · Base cccccccccccccccccccccccccccccccccccccccc
+```
+
 ## Lander
 
 The lander is the only way to a project's target branch, and it is code: no model runs in it. Each submission and its
