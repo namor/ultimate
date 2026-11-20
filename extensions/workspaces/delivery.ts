@@ -53,6 +53,7 @@ export type Approval = {
   action: 'publish' | 'merge' | 'recheck' | 'stop'
   at: number
   by: 'user' | 'ultimate' | 'agent'
+  candidate?: string
   conversation?: ConversationId
   instruction?: EntryId
   standing?: EntryId
@@ -94,7 +95,8 @@ export function needsUser(d: Delivery): string | undefined {
 
 export function waits(d: Delivery): Wait | undefined {
   if (d.stage === 'review') return { on: 'review' }
-  if (d.stage === 'publish' && d.risk === 'high' && !d.publishApproved) return { on: 'publish' }
+  if (d.stage === 'publish' && d.risk === 'high' && !d.publishApproved && !d.publishIntent)
+    return { on: 'publish' }
   if (d.stage === 'merge' && d.risk !== 'low' && !d.mergeApproved) return { on: 'merge' }
   if (d.stage === 'blocked') {
     const why = d.wake?.to === 'user' ? d.wake.why : needsUser(d)
@@ -179,8 +181,9 @@ export function authorize(
       const wait = waits(d)
       if (wait?.on === 'user') return `This block needs the user: ${wait.why}`
       if (
-        (d.approvals ?? []).filter((a) => a.by === 'agent' && a.action === 'recheck').length >=
-        AGENT_RECHECKS
+        (d.approvals ?? []).filter(
+          (a) => a.by === 'agent' && a.action === 'recheck' && a.candidate === d.candidate,
+        ).length >= AGENT_RECHECKS
       )
         return `Agents already rechecked this candidate ${AGENT_RECHECKS} times; stop it, resubmit a repaired candidate, or ask the user`
     }

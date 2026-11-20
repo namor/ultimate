@@ -162,6 +162,7 @@ describe('delivery approval', () => {
         by: 'ultimate',
         conversation: f.ultimate,
         instruction,
+        candidate,
       },
     ])
   })
@@ -171,7 +172,9 @@ describe('delivery approval', () => {
     await f.call({ device: { device: 'desktop/chrome' } })
     const delivery = await f.queued()
     expect(delivery.mergeApproved).toBe(true)
-    expect(delivery.approvals).toEqual([{ action: 'merge', at: expect.any(Number), by: 'user' }])
+    expect(delivery.approvals).toEqual([
+      { action: 'merge', at: expect.any(Number), by: 'user', candidate },
+    ])
   })
 
   it("accepts the user's answer on its card as the instruction", async () => {
@@ -335,6 +338,7 @@ describe('delivery approval', () => {
           conversation: f.ultimate,
           standing: f.instruction,
           reason: 'verified',
+          candidate,
         },
       ])
     })
@@ -525,8 +529,14 @@ describe('agents on a blocked delivery', () => {
     // The record is kept, with the PR identity it had: nothing remote was touched.
     expect(result.delivery).toMatchObject({ pr: 3, candidate, tree })
     expect(result.delivery?.approvals).toEqual([
-      { action: 'recheck', at: expect.any(Number), by: 'agent', conversation: f.submitter },
-      { action: 'stop', at: expect.any(Number), by: 'agent', conversation: f.ultimate },
+      {
+        action: 'recheck',
+        at: expect.any(Number),
+        by: 'agent',
+        conversation: f.submitter,
+        candidate,
+      },
+      { action: 'stop', at: expect.any(Number), by: 'agent', conversation: f.ultimate, candidate },
     ])
   })
 

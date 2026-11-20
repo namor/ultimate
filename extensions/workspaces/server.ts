@@ -196,9 +196,12 @@ export const actions = {
       args.standing === undefined &&
       (action === 'recheck' || action === 'stop') &&
       conversationId !== undefined
-    const approval: Approval = agent
-      ? { action, at: Date.now(), by: 'agent', conversation: conversationId }
-      : await approver(host, { conversationId, device }, action, args, seen.at)
+    const approval: Approval = {
+      ...(agent
+        ? { action, at: Date.now(), by: 'agent', conversation: conversationId }
+        : await approver(host, { conversationId, device }, action, args, seen.at)),
+      candidate: args.candidate,
+    }
     await host.harness().commit(async (tx) => {
       const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
       const entry = index.queue.find((item) => item.id === args.id)

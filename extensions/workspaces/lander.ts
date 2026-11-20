@@ -532,17 +532,24 @@ export function createLander(
                   ? []
                   : [{ ...item, tries: (item.tries ?? 0) + 1 }],
             )
-            if (exhausted)
-              for (const result of Object.values(index.results))
-                if (
-                  result.delivery?.pr === pull.pr &&
-                  result.delivery.settings.repository === pull.repository
-                )
-                  result.reason =
-                    `${result.reason ?? ''}; its PR could not be closed, close it by hand`.replace(
-                      /^; /,
-                      '',
-                    )
+            if (exhausted) {
+              const warning = `PR #${pull.pr} could not be closed, close it by hand`
+              const owner = [
+                ...Object.values(index.results),
+                ...index.queue.filter((item) => item.source === pull.source),
+              ].find(
+                (item) =>
+                  item.delivery?.settings.repository === pull.repository &&
+                  (item.delivery.pr === pull.pr || 'rebuilds' in item),
+              )
+              if (owner && 'reason' in owner) owner.reason = `${owner.reason ?? ''}; ${warning}`
+              else if (owner?.delivery)
+                owner.delivery.decisions = [
+                  ...(owner.delivery.decisions ?? []),
+                  { at: runtime.now(), what: 'close failed', why: warning },
+                ]
+              host.notice(warning)
+            }
           }, context)
         }
         await runtime.commit(async (tx) => {
@@ -627,13 +634,15 @@ export function createLander(
             await runtime.commit(async (tx) => {
               const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
                 (item) => item.id === id,
-              )!
-              saved.delivery!.wake = {
-                block: (saved.delivery!.blocks ?? 0) + 1,
+              )
+              if (!saved?.delivery) return
+              const block = (saved.delivery.blocks ?? 0) + 1
+              saved.delivery.wake = {
+                block,
                 to: 'user',
                 why: `the base moved ${MAX_REBUILDS} times while it waited; resubmit or stop it`,
               }
-              saved.delivery!.blocks = saved.delivery!.wake.block
+              saved.delivery.blocks = block
               saved.state = 'waiting'
             }, context)
             await reportBlocked(host, Workspaces, id, context)
@@ -642,7 +651,8 @@ export function createLander(
           await step(`rebuilding ${rebuilds}/${MAX_REBUILDS}: ${delivery.reason}`)
           await runtime.commit(async (tx) => {
             const draft = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
-            const saved = draft.queue.find((item) => item.id === id)!
+            const saved = draft.queue.find((item) => item.id === id)
+            if (!saved) return { status: 'running', checkpoint: { phase: 'next' } }
             if (delivery.pr)
               draft.closing = [
                 ...(draft.closing ?? []),
@@ -701,6 +711,7 @@ export function createLander(
               steps,
               conversationId: entry.conversationId,
               ...(entry.subject ? { subject: entry.subject } : {}),
+              ...(entry.approvals ? { approvals: entry.approvals } : {}),
             }
             for (const old of Object.keys(draft.results).slice(0, -recentSubmitCardOutcomeLimit))
               delete draft.results[old]
@@ -924,7 +935,8 @@ export function createLander(
                 pr: delivery.url,
               })
             }
-            if (delivery.stage === 'blocked' && delivery.cause === 'stale') return rebuild(delivery)
+            if (delivery.stage === 'blocked' && delivery.cause === 'stale')
+              return await rebuild(delivery)
             if (delivery.stage === 'blocked') await reportBlocked(host, Workspaces, id, context)
             else if (waits(delivery)) await askStanding(delivery)
             return next()

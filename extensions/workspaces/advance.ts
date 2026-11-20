@@ -81,7 +81,7 @@ export async function closePull(api: Github, repository: string, pr: number, com
   const pull = await api<Pull>(`repos/${repository}/pulls/${pr}`)
   if (pull.merged || pull.state !== 'open') return
   const comments = await api<{ body: string }[]>(
-    `repos/${repository}/issues/${pr}/comments?per_page=100`,
+    `repos/${repository}/issues/${pr}/comments?per_page=100&sort=created&direction=desc`,
   )
   if (!comments.some((existing) => existing.body === comment))
     await api(`repos/${repository}/issues/${pr}/comments`, 'POST', { body: comment })
@@ -163,6 +163,8 @@ export async function advanceDelivery(
       throw new Block('runtime', 'Verification runtime changed; verify a new delivery')
     if (d.stage === 'publish') {
       if (d.risk === 'high' && !d.publishApproved && !d.publishIntent) return d
+      if (d.publishIntent && !d.published)
+        decide('reconcile publication', 'a recorded push intent was not confirmed')
       const url = await git(source, 'remote', 'get-url', '--push', remote)
       if (
         ![
@@ -175,7 +177,7 @@ export async function advanceDelivery(
       const existing = await git(
         { cwd: source, signal, timeout: 30000 },
         'ls-remote',
-        remote,
+        url,
         `refs/heads/${d.branch}`,
       )
       if (existing && existing.split(/\s/)[0] !== d.candidate)
@@ -293,8 +295,18 @@ export async function advanceDelivery(
       return persist()
     }
     if (!checksPassed(d, protection, pages.check_runs)) {
-      if (now - (d.since ?? d.checkedAt) > CI_LIMIT_MS)
-        await rerun('required checks did not finish within an hour')
+      if (now - (d.since ?? d.checkedAt) > CI_LIMIT_MS) {
+        const required = pages.check_runs.find(
+          (check) =>
+            d.settings.requiredChecks.includes(check.name) && check.head_sha === d.candidate,
+        )
+        if (!required && pages.check_runs.length)
+          throw new Block(
+            'infra',
+            'Required checks did not start within an hour; other workflows ran, nothing rerun',
+          )
+        await rerun('required checks did not finish within an hour', required)
+      }
       d.stage = 'ci'
       return persist()
     }
