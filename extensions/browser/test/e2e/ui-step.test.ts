@@ -125,6 +125,7 @@ it('sends a final keypress’s UI-state write, with its event, before it closes 
   const { drive, recorded, uiState } = await serve()
   const value = await drive([
     { ui: 'snapshot' },
+    { wait: '#composer-input' },
     {
       eval: "addEventListener('pagehide', (event) => event.stopImmediatePropagation(), { capture: true })",
     },
@@ -134,7 +135,7 @@ it('sends a final keypress’s UI-state write, with its event, before it closes 
       eval: "document.querySelector('[aria-label=\"Weekly digest\"]').getAttribute('aria-checked')",
     },
   ])
-  expect(value(5)).toBe('true')
+  expect(value(6)).toBe('true')
   expect(await uiState()).toMatchObject({ 'ext.digest.digest': true })
   expect(await recorded()).toEqual([
     expect.objectContaining({
@@ -149,6 +150,7 @@ it('sends a final keypress’s UI-state write on pagehide in one keepalive reque
   const { drive } = await serve()
   const value = await drive([
     { ui: 'snapshot' },
+    { wait: '#composer-input' },
     {
       eval: "(() => { const sent = []; const send = window.fetch; const held = new Promise((release) => { window.releaseFlush = release }); window.fetch = (url, init) => { if (!String(url).endsWith('/api/ui')) return send(url, init); sent.push({ keepalive: init?.keepalive === true, body: JSON.parse(init.body) }); return init?.keepalive ? send(url, init) : held.then(() => send(url, init)) }; window.exitSent = sent; return true })()",
     },
@@ -160,7 +162,7 @@ it('sends a final keypress’s UI-state write on pagehide in one keepalive reque
     },
     { eval: 'window.releaseFlush()' },
   ])
-  expect(value(6)).toEqual([
+  expect(value(7)).toEqual([
     {
       keepalive: true,
       body: expect.objectContaining({

@@ -40,7 +40,9 @@ import {
   log,
 } from './lander.ts'
 import { deliverySettings } from './delivery-settings.ts'
+import { supersedes } from './delivery.ts'
 import type { DeliveryRisk } from './delivery.ts'
+import type { PullRequestCopy } from './pull-request.ts'
 import type {
   LandResult,
   SubmitResult,
@@ -293,9 +295,9 @@ export function workspaces(host: Host) {
   async function resume(context: Context) {
     const restarted = await host.harness().commit(async (tx) => {
       const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
-      const sources = [...new Set(index.queue.map((item) => item.source))].filter(
-        (source) => index.landerConversations[source] !== undefined,
-      )
+      const sources = [
+        ...new Set([...index.queue, ...(index.closing ?? [])].map((item) => item.source)),
+      ].filter((source) => index.landerConversations[source] !== undefined)
       const stopped: string[] = []
       for (const source of sources) if (await landerIdle(tx, index, source)) stopped.push(source)
       for (const source of stopped) {
@@ -763,7 +765,12 @@ export function workspaces(host: Host) {
     id: ConversationId,
     divergence: string,
     context: Context,
-    assessment?: { risk: DeliveryRisk; review: string; reviewedTree?: string },
+    assessment?: {
+      risk: DeliveryRisk
+      review: string
+      reviewedTree?: string
+      pullRequest?: PullRequestCopy
+    },
   ): Promise<SubmitResult> {
     if (!divergence?.trim())
       throw new Error(
@@ -805,17 +812,48 @@ export function workspaces(host: Host) {
       if (queued?.delivery?.stage === 'review' && assessment) {
         if (reviewedTree !== queued.delivery.tree)
           throw new Error('Review does not cover the integration candidate tree')
-        queued.delivery.review = assessment.review
-        queued.delivery.risk = assessment.risk
+        queued.assessment = { ...assessment, reviewedTree }
+        delete queued.delivery.pullRequest
+        Object.assign(queued.delivery, queued.assessment)
         queued.delivery.stage = 'publish'
-        queued.delivery.deadline = Date.now() + 60 * 60 * 1000
+        queued.delivery.since = Date.now()
         queued.at = at
         delete queued.delivery.publishApproved
         delete queued.delivery.mergeApproved
         delete queued.delivery.approvals
       }
+      const newId = `${id}-${tip.slice(0, 7)}-${Date.now().toString(36)}`
+      for (const old of index.queue)
+        if (!queued && supersedes(old, { conversationId: id, target })) {
+          index.results[old.id] = {
+            outcome: 'failed',
+            reason: `Superseded by ${newId}; ${old.delivery?.pr ? 'its PR is closed' : 'nothing was published'}`,
+            ...(old.delivery ? { delivery: old.delivery } : {}),
+            ...(old.approvals ? { approvals: old.approvals } : {}),
+            at: old.at,
+            divergence: old.divergence,
+            target: old.target,
+            tip: old.tip,
+            lander,
+            steps: old.steps,
+            conversationId: old.conversationId,
+            ...(old.subject ? { subject: old.subject } : {}),
+          }
+          if (old.delivery?.pr)
+            index.closing = [
+              ...(index.closing ?? []),
+              {
+                source,
+                repository: old.delivery.settings.repository,
+                pr: old.delivery.pr,
+                note: `Superseded by a newer submission of the same branch (${newId}).`,
+              },
+            ]
+          await log(tx, lander, old, { outcome: 'failed', reason: index.results[old.id].reason })
+        }
+      index.queue = index.queue.filter((item) => !index.results[item.id])
       const entry = queued ?? {
-        id: `${id}-${tip.slice(0, 7)}-${Date.now().toString(36)}`,
+        id: newId,
         conversationId: id,
         source,
         target,

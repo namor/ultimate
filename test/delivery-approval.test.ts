@@ -10,7 +10,8 @@ import type { ExtensionHost } from '../server/extensions.ts'
 import { Goals } from '../extensions/goal/server.ts'
 import { Standing } from '../extensions/subagents/api.ts'
 import { actions, userActions } from '../extensions/workspaces/server.ts'
-import { deliveryRuntime } from '../extensions/workspaces/delivery.ts'
+import { deliveryRuntime } from '../extensions/workspaces/advance.ts'
+import { park, pick } from '../extensions/workspaces/delivery.ts'
 import type { Delivery } from '../extensions/workspaces/delivery.ts'
 import { reportBlocked } from '../extensions/workspaces/lander.ts'
 import { Workspaces } from '../extensions/workspaces/workspaces.ts'
@@ -162,6 +163,7 @@ describe('delivery approval', () => {
         by: 'ultimate',
         conversation: f.ultimate,
         instruction,
+        candidate,
       },
     ])
   })
@@ -171,7 +173,9 @@ describe('delivery approval', () => {
     await f.call({ device: { device: 'desktop/chrome' } })
     const delivery = await f.queued()
     expect(delivery.mergeApproved).toBe(true)
-    expect(delivery.approvals).toEqual([{ action: 'merge', at: expect.any(Number), by: 'user' }])
+    expect(delivery.approvals).toEqual([
+      { action: 'merge', at: expect.any(Number), by: 'user', candidate },
+    ])
   })
 
   it("accepts the user's answer on its card as the instruction", async () => {
@@ -335,6 +339,7 @@ describe('delivery approval', () => {
           conversation: f.ultimate,
           standing: f.instruction,
           reason: 'verified',
+          candidate,
         },
       ])
     })
@@ -437,6 +442,57 @@ describe('delivery approval', () => {
       expect(delivery.approvals?.[0]).toMatchObject({ standing: f.instruction })
     })
 
+    it('a landing entry keeps its repository slot through a revoke until its lander parks it', async () => {
+      const f = await granted()
+      await approve(f)
+      await f.opened.harness.commit(async (tx) => {
+        const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+        const head = index.queue[0]
+        head.state = 'landing'
+        head.delivery!.slot = true
+        const { slot: _slot, mergeApproved: _approved, ...sibling } = head.delivery!
+        index.queue.push({
+          ...head,
+          id: 'sibling',
+          source: '/other',
+          state: 'queued',
+          delivery: { ...sibling, candidate: 'e'.repeat(40), stage: 'publish', risk: 'low' },
+        })
+      }, context)
+      await actions.standing({ revoke: true }, {
+        host: f.host,
+        conversationId: f.ultimate,
+        signal: new AbortController().signal,
+      } as unknown as ActionContext)
+      const index = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+      expect(index.queue[0]).toMatchObject({ state: 'landing', delivery: { slot: true } })
+      expect(index.queue[0].delivery!.mergeApproved).toBeUndefined()
+      const other = (item: { source: string }) => item.source === '/other'
+      expect(pick(index.queue, Date.now(), other)).toBeUndefined()
+      park(index.queue[0])
+      expect(pick(index.queue, Date.now(), other)).toEqual({ ready: 1 })
+    })
+
+    it('revoking releases the repository slot of the entry it parks', async () => {
+      const f = await granted()
+      await approve(f)
+      await f.opened.harness.commit(async (tx) => {
+        const queued = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue[0]
+        queued.state = 'queued'
+        queued.delivery!.slot = true
+        queued.delivery!.asked = `merge:${candidate}:${f.instruction}`
+      }, context)
+      await actions.standing({ revoke: true }, {
+        host: f.host,
+        conversationId: f.ultimate,
+        signal: new AbortController().signal,
+      } as unknown as ActionContext)
+      const index = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+      expect(index.queue[0]).toMatchObject({ state: 'waiting' })
+      expect(index.queue[0].delivery).not.toHaveProperty('slot')
+      expect(index.queue[0].delivery).not.toHaveProperty('asked')
+    })
+
     // #53902 review: a branch's own recheck must not resume a merge under a grant revoked while the delivery was blocked.
     it('revoking withdraws a standing approval held by a blocked delivery', async () => {
       const f = await granted()
@@ -503,14 +559,13 @@ describe('agents on a blocked delivery', () => {
       }
       delete queued.delivery.wake
     }, context)
-  const agent = (f: Awaited<ReturnType<typeof fixture>>, id: number, action: string) =>
-    f.call({ conversationId: id as ConversationId }, { action })
+  const agent = (f: Awaited<ReturnType<typeof fixture>>, id: ConversationId, action: string) =>
+    f.call({ conversationId: id }, { action })
 
   it('lets the submitting branch and @ultimate recheck and stop, recording who', async () => {
     const f = await fixture()
     await f.opened.harness.commit(async (tx) => {
-      ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).landerConversations['/fixture'] =
-        1 as ConversationId
+      ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).landerConversations['/fixture'] = f.ultimate
     }, context)
     await block(f)
     await agent(f, f.submitter, 'recheck')
@@ -521,13 +576,19 @@ describe('agents on a blocked delivery', () => {
     expect(index.queue).toEqual([])
     const result = index.results.submission
     expect(result.reason).toBe(
-      `Stopped by conversation #${f.ultimate}; remote branch and PR were not changed`,
+      `Stopped by conversation #${f.ultimate}; the delivery branch stays, its PR is closed`,
     )
     // The record is kept, with the PR identity it had: nothing remote was touched.
     expect(result.delivery).toMatchObject({ pr: 3, candidate, tree })
     expect(result.delivery?.approvals).toEqual([
-      { action: 'recheck', at: expect.any(Number), by: 'agent', conversation: f.submitter },
-      { action: 'stop', at: expect.any(Number), by: 'agent', conversation: f.ultimate },
+      {
+        action: 'recheck',
+        at: expect.any(Number),
+        by: 'agent',
+        conversation: f.submitter,
+        candidate,
+      },
+      { action: 'stop', at: expect.any(Number), by: 'agent', conversation: f.ultimate, candidate },
     ])
   })
 
@@ -628,7 +689,7 @@ describe('a blocked delivery report', () => {
     expect(index.queue[0].delivery!.wake).toEqual({ block: 1, to: 'branch' })
   })
 
-  it('after three wakes stops waking the branch and puts a card before the user', async () => {
+  it('after three wakes stops waking the branch and hands the block to @ultimate', async () => {
     const f = await fixture()
     await f.opened.harness.commit(async (tx) => {
       ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).items[String(f.submitter)] = {
@@ -648,17 +709,30 @@ describe('a blocked delivery report', () => {
     const sent = await report(f)
     expect(sent.map(({ to, type }) => ({ to, type }))).toEqual([
       { to: f.submitter, type: 'write' },
-      { to: f.ultimate, type: 'write' },
+      { to: f.ultimate, type: 'input' },
     ])
     expect(sent[1].content).toContain('3 repair attempts')
+    const index = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+    expect(index.queue[0].delivery!.wake).toMatchObject({ to: 'ultimate' })
+    await expect(f.call({ conversationId: f.submitter }, { action: 'recheck' })).rejects.toThrow(
+      "@ultimate's to decide",
+    )
+    await f.call({ conversationId: f.ultimate }, { action: 'recheck' })
+    expect((await f.queued()).stage).toBe('ci')
   })
 
   it('escalates what needs the user at once, without spending an attempt', async () => {
     for (const [extra, why] of [
       [{ mergeIntent: true }, 'uncertain remote write'],
-      [{ reason: 'GitHub request rejected (HTTP 401)' }, 'login or credentials'],
+      [{ cause: 'auth', reason: 'GitHub request rejected (HTTP 401)' }, 'login or credentials'],
       [{ resumeStage: 'merge', risk: 'medium' }, 'your approval'],
-      [{ reason: 'PR merged outside this delivery; human reconciliation required' }, 'safety hold'],
+      [
+        {
+          cause: 'safety',
+          reason: 'PR merged outside this delivery; human reconciliation required',
+        },
+        'safety hold',
+      ],
     ] as [Partial<Delivery>, string][]) {
       const f = await fixture()
       await block(f, extra)

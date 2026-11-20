@@ -2,6 +2,7 @@ import type { ConversationId, EntryId } from '@earendil-works/pi-durable'
 import { describe, expect, it } from 'vitest'
 import { deliveryAsk } from '../../../workspaces/ask.tsx'
 import type { Delivery } from '../../../workspaces/delivery.ts'
+import type { StandingGrant } from '../../../workspaces/types.ts'
 import { asks, forgetSettled, keyCard, newestAsked, openQuestions, waiting } from '../../open.tsx'
 import { EMPTY_CARD } from '../../state.tsx'
 
@@ -81,13 +82,22 @@ describe('deliveries waiting on the user', () => {
     expect(deliveryAsk({ ...base, stage: 'merge', risk: 'medium' })).toBe('merge')
     expect(deliveryAsk({ ...base, stage: 'merge', mergeApproved: true })).toBeUndefined()
     expect(deliveryAsk({ ...base, stage: 'merge', risk: 'low' })).toBeUndefined()
-    expect(deliveryAsk({ ...base, stage: 'blocked' })).toBe('recheck')
+    expect(deliveryAsk({ ...base, stage: 'blocked' })).toBeUndefined()
+    expect(deliveryAsk({ ...base, stage: 'blocked', mergeIntent: true })).toBe('recheck')
     // A block its branch is repairing is not the user's; one escalated to them is (#53902 review).
     const blocked = { ...base, stage: 'blocked' } as Delivery
     expect(deliveryAsk({ ...blocked, wake: { block: 1, to: 'branch' } })).toBeUndefined()
     expect(deliveryAsk({ ...blocked, wake: { block: 2, to: 'user', why: 'x' } })).toBe('recheck')
     expect(deliveryAsk({ ...base, stage: 'ci' })).toBeUndefined()
     expect(deliveryAsk(undefined)).toBeUndefined()
+    // An ask the lander already put to @ultimate under a live standing grant is not the user's; the same
+    // candidate's merge is a new ask, and an unanswered one is the user's again once the grant lapses.
+    const grant = { instruction: 7, conversation: 1, at: 0, until: 100 } as unknown as StandingGrant
+    const high = { ...base, candidate: 'c', asked: 'publish:c:7' } as Delivery
+    expect(deliveryAsk(high, grant, 50)).toBeUndefined()
+    expect(deliveryAsk({ ...high, stage: 'merge' }, grant, 50)).toBe('merge')
+    expect(deliveryAsk(high, grant, 100)).toBe('publish')
+    expect(deliveryAsk(high, { ...grant, revokedAt: 60 }, 50)).toBe('publish')
   })
 })
 

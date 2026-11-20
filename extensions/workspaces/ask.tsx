@@ -1,10 +1,14 @@
+import { askedUnderStanding, waits } from './delivery.ts'
 import type { Delivery } from './delivery.ts'
+import type { StandingGrant } from './types.ts'
 
-export function deliveryAsk(delivery: Delivery | undefined) {
-  if (delivery?.stage === 'blocked') return delivery.wake?.to === 'branch' ? undefined : 'recheck'
-  if (delivery?.stage === 'publish' && delivery.risk === 'high' && !delivery.publishApproved)
-    return 'publish'
-  if (delivery?.stage === 'merge' && delivery.risk !== 'low' && !delivery.mergeApproved)
-    return 'merge'
-  return undefined
+export function deliveryAsk(
+  delivery: Delivery | undefined,
+  standing?: StandingGrant,
+  now = Date.now(),
+) {
+  const wait = delivery && waits(delivery)
+  if (wait?.on === 'user') return 'recheck'
+  if (wait?.on !== 'publish' && wait?.on !== 'merge') return undefined
+  return askedUnderStanding(delivery!, wait.on, standing, now) ? undefined : wait.on
 }

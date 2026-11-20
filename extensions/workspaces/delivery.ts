@@ -1,10 +1,21 @@
-import { exec } from '../../lib/exec.ts'
-import { git } from '../../lib/git.ts'
-import type { DeliverySettings } from './delivery-settings.ts'
 import type { ConversationId, EntryId } from '@earendil-works/pi-durable'
-import type { StandingGrant } from './types.ts'
+import type { DeliverySettings } from './delivery-settings.ts'
+import type { PullRequestCopy } from './pull-request.ts'
+import type { QueueEntry, StandingGrant } from './types.ts'
 
 export type DeliveryRisk = 'low' | 'medium' | 'high'
+export type Stage = 'review' | 'publish' | 'pr' | 'ci' | 'merge' | 'merged' | 'blocked'
+export type Cause =
+  | 'check-failed'
+  | 'infra'
+  | 'closed'
+  | 'runtime'
+  | 'github'
+  | 'uncertain-write'
+  | 'auth'
+  | 'safety'
+  | 'stale'
+export type Decision = { at: number; what: string; why?: string }
 export type Delivery = {
   settings: DeliverySettings
   risk: DeliveryRisk
@@ -15,9 +26,14 @@ export type Delivery = {
   branch: string
   checkedAt: number
   runtime: string
-  deadline?: number
-  stage: 'review' | 'publish' | 'pr' | 'ci' | 'merge' | 'merged' | 'blocked'
+  stage: Stage
+  slot?: boolean
+  asked?: string
+  since?: number
+  pollAt?: number
+  pullRequest?: PullRequestCopy
   published?: boolean
+  publishIntent?: boolean
   createIntent?: boolean
   mergeIntent?: boolean
   pr?: number
@@ -27,346 +43,211 @@ export type Delivery = {
   mergeApproved?: boolean
   approvals?: Approval[]
   reason?: string
-  resumeStage?: 'review' | 'publish' | 'pr' | 'ci' | 'merge' | 'merged'
+  cause?: Cause
+  resumeStage?: Exclude<Stage, 'blocked'>
+  rerun?: boolean
+  rerunAt?: number
+  reruns?: number
+  cancelled?: number
   blocks?: number
-  wake?: { block: number; to: 'branch' | 'user'; why?: string }
+  wake?: { block: number; to: 'branch' | 'ultimate' | 'user'; why?: string }
+  decisions?: Decision[]
 }
 export type Approval = {
   action: 'publish' | 'merge' | 'recheck' | 'stop'
   at: number
   by: 'user' | 'ultimate' | 'agent'
+  candidate?: string
   conversation?: ConversationId
   instruction?: EntryId
   standing?: EntryId
   reason?: string
 }
-
-export function standingRefusal(
-  grant: StandingGrant | undefined,
-  delivery: Delivery,
-  action: Approval['action'],
-  now: number,
-) {
-  if (!grant || grant.revokedAt !== undefined) return 'No standing approval is on'
-  if (now >= grant.until) return 'The standing approval expired'
-  if (action !== 'publish' && action !== 'merge')
-    return 'A standing approval covers publish and merge only'
-  if (delivery.runtime !== deliveryRuntime())
-    return 'Local verification ran on another runtime; verify a new delivery'
-  if (delivery.stage === 'review' || !delivery.review.trim())
-    return 'No independent review covers this exact tree'
-  if ((delivery.createIntent && !delivery.pr) || delivery.mergeIntent)
-    return 'An uncertain write is pending; reconcile it first'
-  if (delivery.stage !== action)
-    return action === 'merge'
-      ? 'Required GitHub checks have not passed on this exact head'
-      : 'Delivery is not awaiting publication'
-  return undefined
+export type Wait = {
+  on: 'review' | 'publish' | 'merge' | 'repair' | 'ultimate' | 'user'
+  why?: string
 }
+export type Actor =
+  | { by: 'user' }
+  | { by: 'ultimate'; instruction: true }
+  | { by: 'ultimate'; standing: StandingGrant | undefined }
+  | { by: 'agent'; conversation: number; submitter: number; ultimate: number | undefined }
+
+export const POLL_MS = 30_000
+export const CI_LIMIT_MS = 60 * 60_000
+export const MAX_RERUNS = 2
+export const MAX_REBUILDS = 3
 export const AGENT_RECHECKS = 3
 export const BRANCH_WAKES = 3
 
-export function agentRefusal(
-  d: Delivery,
-  action: Approval['action'],
-  actor: number,
-  submitter: number,
-  ultimate: number | undefined,
-): string | undefined {
-  if (actor !== submitter && actor !== ultimate)
-    return "Only the user or @ultimate on the user's instruction can act on a delivery"
-  if (action !== 'recheck' && action !== 'stop')
-    return "Agents may only recheck or stop a blocked delivery; publish and merge are the user's"
-  if (d.stage !== 'blocked') return 'Delivery stage changed; reload its card'
-  if (action === 'stop') return undefined
-  const why = d.wake?.to === 'user' ? d.wake.why : needsUser(d)
-  if (why) return `This block needs the user: ${why}`
-  if (
-    (d.approvals ?? []).filter((a) => a.by === 'agent' && a.action === 'recheck').length >=
-    AGENT_RECHECKS
-  )
-    return `Agents already rechecked this candidate ${AGENT_RECHECKS} times; stop it, resubmit a repaired candidate, or ask the user`
-  return undefined
-}
+export const uncertainWrite = (d: Delivery) =>
+  Boolean((d.publishIntent && !d.published) || (d.createIntent && !d.pr) || d.mergeIntent)
+
+export const spent = (item: {
+  delivery?: Pick<Delivery, 'approvals'>
+  approvals?: Approval[]
+}): Approval[] => [...(item.delivery?.approvals ?? []), ...(item.approvals ?? [])]
 
 export function needsUser(d: Delivery): string | undefined {
-  if ((d.createIntent && !d.pr) || d.mergeIntent)
-    return 'an uncertain remote write must be reconciled'
+  if (uncertainWrite(d)) return 'an uncertain remote write must be reconciled'
   if (
     (d.resumeStage === 'merge' && d.risk !== 'low' && !d.mergeApproved) ||
     (d.resumeStage === 'publish' && d.risk === 'high' && !d.publishApproved)
   )
     return 'it waits for your approval'
-  const reason = d.reason ?? ''
-  if (/outside this delivery|collision|authorized repository|human reconciliation/i.test(reason))
-    return 'a safety hold needs your decision'
-  if (/HTTP 40[13]|authenticat|credential|login|token/i.test(reason))
-    return 'GitHub access needs your login or credentials'
+  if (d.cause === 'auth') return 'GitHub access needs your login or credentials'
+  if (d.cause === 'safety') return 'a safety hold needs your decision'
   return undefined
 }
 
-export const deliveryRuntime = () => `${process.version}/${process.platform}/${process.arch}`
-
-type Pull = {
-  number: number
-  html_url: string
-  state: string
-  merged: boolean
-  merge_commit_sha: string | null
-  head: { sha: string; ref: string; repo: { full_name: string } | null }
-  base: { ref: string; sha: string; repo: { full_name: string } }
-}
-type Check = {
-  name: string
-  head_sha: string
-  status: string
-  conclusion: string | null
-  app: { id: number; slug: string }
-}
-type Protection = {
-  enforce_admins: { enabled: boolean }
-  allow_force_pushes: { enabled: boolean }
-  allow_deletions: { enabled: boolean }
-  required_status_checks: { strict: boolean; checks: { context: string; app_id: number | null }[] }
-  required_pull_request_reviews?: { required_approving_review_count: number }
-}
-export type Github = <T>(
-  path: string,
-  method?: string,
-  fields?: Record<string, string>,
-) => Promise<T>
-export class GithubRequestError extends Error {
-  readonly definitive: boolean
-  constructor(status?: number) {
-    super(status ? `GitHub request rejected (HTTP ${status})` : 'GitHub request outcome is unknown')
-    this.definitive = status !== undefined && status >= 400 && status < 500
+export function waits(d: Delivery): Wait | undefined {
+  if (d.stage === 'review') return { on: 'review' }
+  if (d.stage === 'publish' && d.risk === 'high' && !d.publishApproved && !d.publishIntent)
+    return { on: 'publish' }
+  if (d.stage === 'merge' && d.risk !== 'low' && !d.mergeApproved) return { on: 'merge' }
+  if (d.stage === 'blocked') {
+    const why = d.wake?.to === 'user' ? d.wake.why : needsUser(d)
+    if (why) return { on: 'user', why }
+    return d.wake?.to === 'ultimate' ? { on: 'ultimate' } : { on: 'repair' }
   }
+  return undefined
 }
-const responseStatus = (output: string) => {
-  const match = /^HTTP\/[\d.]+\s+(\d{3})\b/.exec(output)
-  return match ? Number(match[1]) : undefined
-}
-export const github =
-  (cwd: string, signal: AbortSignal): Github =>
-  async <T>(path: string, method = 'GET', fields: Record<string, string> = {}) => {
-    const args = ['api', '--include', '--method', method, path]
-    for (const [key, value] of Object.entries(fields)) args.push('-f', `${key}=${value}`)
-    let output: string
-    try {
-      const result = await exec('gh', args, { cwd, signal, timeout: 30000, maxBuffer: 1024 * 1024 })
-      output = result.stdout
-    } catch (error) {
-      signal.throwIfAborted()
-      throw new GithubRequestError(responseStatus((error as { stdout?: string }).stdout ?? ''))
-    }
-    const boundary = /\r?\n\r?\n/.exec(output)
-    try {
-      if (!boundary) throw new Error('Missing HTTP headers')
-      return JSON.parse(output.slice(boundary.index + boundary[0].length)) as T
-    } catch {
-      throw new GithubRequestError()
-    }
-  }
 
-export function assertPull(delivery: Delivery, pull: Pull) {
-  const { repository, base } = delivery.settings
-  if (
-    pull.head.sha !== delivery.candidate ||
-    pull.head.ref !== delivery.branch ||
-    pull.head.repo?.full_name !== repository ||
-    pull.base.repo.full_name !== repository ||
-    pull.base.ref !== base
+export const inFlight = (d: Delivery) => d.slot === true
+
+export const standingAsk = (d: Delivery, action: 'publish' | 'merge', grant: StandingGrant) =>
+  `${action}:${d.candidate}:${grant.instruction}`
+
+export const askedUnderStanding = (
+  d: Delivery,
+  action: 'publish' | 'merge',
+  grant: StandingGrant | undefined,
+  now: number,
+) =>
+  grant !== undefined &&
+  grant.revokedAt === undefined &&
+  now < grant.until &&
+  d.asked === standingAsk(d, action, grant)
+
+export function park(entry: Pick<QueueEntry, 'state' | 'delivery'>) {
+  const d = entry.delivery
+  if (d && waits(d)) {
+    entry.state = 'waiting'
+    delete d.slot
+  } else entry.state = 'queued'
+}
+
+export const needsSlot = (
+  queue: readonly Pick<QueueEntry, 'delivery' | 'deliveryConfig'>[],
+  entry: Pick<QueueEntry, 'delivery' | 'deliveryConfig'>,
+) => {
+  const d = entry.delivery
+  const repository = d?.settings.repository ?? (entry.deliveryConfig || undefined)?.repository
+  if (!repository || (d && (waits(d) || d.slot))) return false
+  return queue.some(
+    (other) =>
+      other.delivery &&
+      inFlight(other.delivery) &&
+      other.delivery.settings.repository === repository,
   )
-    throw new Error('PR identity changed; delivery stopped')
 }
 
-export function checksPassed(delivery: Delivery, protection: Protection, checks: Check[]) {
-  const required = protection.required_status_checks
-  if (
-    !protection.enforce_admins?.enabled ||
-    protection.allow_force_pushes?.enabled ||
-    protection.allow_deletions?.enabled ||
-    !protection.required_pull_request_reviews ||
-    !required?.strict ||
-    required.checks.length !== delivery.settings.requiredChecks.length ||
-    !delivery.settings.requiredChecks.every((name) =>
-      required.checks.some((check) => check.context === name),
-    )
+export function pick<E extends Pick<QueueEntry, 'delivery' | 'deliveryConfig'>>(
+  queue: readonly E[],
+  now: number,
+  mine: (entry: E) => boolean = () => true,
+): { ready: number } | { until: number } | undefined {
+  const flying = new Set(
+    queue.flatMap((e) =>
+      e.delivery && inFlight(e.delivery) ? [e.delivery.settings.repository] : [],
+    ),
   )
-    throw new Error('Strict PR/check protection including administrators is required')
-  return required.checks.every((expected) => {
-    const matches = checks.filter(
-      (check) => check.name === expected.context && check.head_sha === delivery.candidate,
-    )
-    return (
-      matches.length === 1 &&
-      matches[0].status === 'completed' &&
-      matches[0].conclusion === 'success' &&
-      matches[0].app.slug === 'github-actions' &&
-      matches[0].app.id === expected.app_id
-    )
-  })
+  let until: number | undefined
+  for (const [position, e] of queue.entries()) {
+    if (!mine(e)) continue
+    const d = e.delivery
+    const repository = d?.settings.repository ?? (e.deliveryConfig || undefined)?.repository
+    if (!d) {
+      if (!repository || !flying.has(repository)) return { ready: position }
+      continue
+    }
+    if (waits(d)) continue
+    if (!d.slot) {
+      if (!flying.has(d.settings.repository)) return { ready: position }
+      continue
+    }
+    if ((d.pollAt ?? 0) <= now) return { ready: position }
+    until = Math.min(until ?? Infinity, d.pollAt!)
+  }
+  return until === undefined ? undefined : { until }
 }
 
-export async function advanceDelivery(
-  source: string,
-  delivery: Delivery,
-  save: (delivery: Delivery) => Promise<void>,
-  signal: AbortSignal,
-  api: Github = github(source, signal),
-) {
-  const d = structuredClone(delivery)
-  const { repository, remote, base } = d.settings
-  const prefix = `repos/${repository}`
-  const persist = async () => {
-    await save(d)
-    return d
+export const supersedes = (
+  older: Pick<QueueEntry, 'conversationId' | 'target' | 'state' | 'delivery'>,
+  newer: Pick<QueueEntry, 'conversationId' | 'target'>,
+) =>
+  older.conversationId === newer.conversationId &&
+  older.target === newer.target &&
+  older.state !== 'landing' &&
+  (!older.delivery ||
+    (waits(older.delivery) !== undefined &&
+      !uncertainWrite(older.delivery) &&
+      older.delivery.cause !== 'safety'))
+
+export function authorize(
+  actor: Actor,
+  action: Approval['action'],
+  d: Delivery,
+  state: QueueEntry['state'],
+  env: { now: number; runtime: string },
+): string | undefined {
+  if (actor.by === 'agent') {
+    if (actor.conversation !== actor.submitter && actor.conversation !== actor.ultimate)
+      return "Only the user or @ultimate on the user's instruction can act on a delivery"
+    if (action !== 'recheck' && action !== 'stop')
+      return "Agents may only recheck or stop a delivery; publish and merge are the user's"
   }
-  let write: 'create' | 'merge' | undefined
-  if (d.stage === 'blocked' || d.stage === 'merged' || d.stage === 'review') return d
-  try {
-    if (d.stage === 'publish') {
-      if (d.runtime !== deliveryRuntime())
-        throw new Error('Verification runtime changed; verify a new delivery')
-      if (d.risk === 'high' && !d.publishApproved) return d
-      const url = await git(source, 'remote', 'get-url', '--push', remote)
+  if (actor.by === 'ultimate' && 'standing' in actor) {
+    const grant = actor.standing
+    if (!grant || grant.revokedAt !== undefined) return 'No standing approval is on'
+    if (env.now >= grant.until) return 'The standing approval expired'
+    if (action !== 'publish' && action !== 'merge')
+      return 'A standing approval covers publish and merge only'
+    if (d.runtime !== env.runtime)
+      return 'Local verification ran on another runtime; verify a new delivery'
+    if (d.stage === 'review' || !d.review.trim())
+      return 'No independent review covers this exact tree'
+    if (uncertainWrite(d)) return 'An uncertain write is pending; reconcile it first'
+    if (d.stage !== action)
+      return action === 'merge'
+        ? 'Required GitHub checks have not passed on this exact head'
+        : 'Delivery is not awaiting publication'
+  }
+  if ((action === 'publish' || action === 'merge') && d.stage !== action)
+    return 'Delivery stage changed; reload its card'
+  if (action === 'recheck') {
+    if (d.stage !== 'blocked' || !d.resumeStage) return 'Delivery stage changed; reload its card'
+    if (actor.by === 'agent') {
+      const wait = waits(d)
+      if (wait?.on === 'user') return `This block needs the user: ${wait.why}`
+      if (wait?.on === 'ultimate' && actor.conversation !== actor.ultimate)
+        return `This block is @ultimate's to decide after ${BRANCH_WAKES} repair attempts`
       if (
-        ![
-          `git@github.com:${repository}.git`,
-          `https://github.com/${repository}.git`,
-          `https://github.com/${repository}`,
-        ].includes(url)
+        (d.approvals ?? []).filter(
+          (a) => a.by === 'agent' && a.action === 'recheck' && a.candidate === d.candidate,
+        ).length >= AGENT_RECHECKS
       )
-        throw new Error('Push remote does not match the authorized repository')
-      const existing = await git(
-        { cwd: source, signal, timeout: 30000 },
-        'ls-remote',
-        remote,
-        `refs/heads/${d.branch}`,
-      )
-      if (existing && existing.split(/\s/)[0] !== d.candidate)
-        throw new Error('Delivery branch collision; refusing to overwrite it')
-      if (!existing)
-        await git(
-          { cwd: source, signal, timeout: 300000 },
-          'push',
-          remote,
-          `${d.candidate}:refs/heads/${d.branch}`,
-        )
-      d.published = true
-      d.stage = 'pr'
-      return persist()
+        return `Agents already rechecked this candidate ${AGENT_RECHECKS} times; stop it, resubmit a repaired candidate, or ask the user`
     }
-    if (d.stage === 'pr') {
-      const pulls = await api<Pull[]>(
-        `${prefix}/pulls?state=all&head=${encodeURIComponent(repository.split('/')[0] + ':' + d.branch)}&per_page=100`,
-      )
-      if (pulls.length > 1) throw new Error('Multiple PRs use this delivery branch')
-      let pull = pulls[0]
-      if (!pull) {
-        if (d.createIntent)
-          throw new Error('PR creation outcome is uncertain; reconcile it before retrying')
-        d.createIntent = true
-        await persist()
-        write = 'create'
-        pull = await api<Pull>(`${prefix}/pulls`, 'POST', {
-          head: d.branch,
-          base,
-          title: `Delivery ${d.candidate.slice(0, 7)}`,
-          body: `Risk: ${d.risk}\n\nCandidate: ${d.candidate}\nTested tree: ${d.tree}\n\nIndependent review: ${d.review}\n\nLocal verification passed before publication.`,
-        })
-      }
-      assertPull(d, pull)
-      d.pr = pull.number
-      d.url = pull.html_url
-      d.stage = 'ci'
-      return persist()
-    }
-    const pull = await api<Pull>(`${prefix}/pulls/${d.pr}`)
-    assertPull(d, pull)
-    if (pull.merged) {
-      if (!d.mergeIntent)
-        throw new Error('PR merged outside this delivery; human reconciliation required')
-      if (!pull.merge_commit_sha) throw new Error('GitHub did not report a merge commit')
-      d.merged = pull.merge_commit_sha
-      d.stage = 'merged'
-      return persist()
-    }
-    if (pull.state !== 'open') throw new Error('Delivery PR was closed without merging')
-    if (d.mergeIntent) throw new Error('Merge outcome is uncertain; reconcile before retrying')
-    const protection = await api<Protection>(
-      `${prefix}/branches/${encodeURIComponent(base)}/protection`,
-    )
-    const pages = await api<{ check_runs: Check[]; total_count: number }>(
-      `${prefix}/commits/${d.candidate}/check-runs?filter=latest&per_page=100`,
-    )
-    if (pages.total_count > 100)
-      throw new Error('Too many checks to establish unambiguous delivery evidence')
-    const failed = pages.check_runs.find(
-      (check) =>
-        d.settings.requiredChecks.includes(check.name) &&
-        check.head_sha === d.candidate &&
-        check.status === 'completed' &&
-        check.conclusion !== 'success',
-    )
-    if (failed)
-      throw new Error(
-        `Required GitHub check ${failed.name}: ${failed.conclusion ?? 'unknown conclusion'}`,
-      )
-    if (!checksPassed(d, protection, pages.check_runs)) {
-      d.stage = 'ci'
-      return persist()
-    }
-    if (d.stage !== 'merge') {
-      d.stage = 'merge'
-      return persist()
-    }
-    if (d.risk !== 'low' && !d.mergeApproved) return d
-    if (d.runtime !== deliveryRuntime())
-      throw new Error('Verification runtime changed; verify a new delivery')
-    const fresh = await api<Pull>(`${prefix}/pulls/${d.pr}`)
-    assertPull(d, fresh)
-    await git(
-      { cwd: source, signal, timeout: 300000 },
-      'fetch',
-      '--no-tags',
-      remote,
-      `refs/heads/${base}`,
-    )
-    const target = await git(source, 'rev-parse', 'FETCH_HEAD')
-    await git(source, 'merge-base', '--is-ancestor', d.baseline, target)
-    await git(source, 'merge-base', '--is-ancestor', target, d.candidate)
-    d.mergeIntent = true
-    try {
-      await persist()
-    } catch (error) {
-      delete d.mergeIntent
-      throw error
-    }
-    write = 'merge'
-    const merged = await api<{ merged: boolean; sha: string }>(
-      `${prefix}/pulls/${d.pr}/merge`,
-      'PUT',
-      {
-        sha: d.candidate,
-        merge_method: 'merge',
-      },
-    )
-    if (!merged.merged) {
-      delete d.mergeIntent
-      throw new Error('GitHub refused the merge')
-    }
-    return persist()
-  } catch (error) {
-    signal.throwIfAborted()
-    if (error instanceof GithubRequestError && error.definitive) {
-      if (write === 'create') delete d.createIntent
-      if (write === 'merge') delete d.mergeIntent
-    }
-    d.resumeStage = d.stage as 'review' | 'publish' | 'pr' | 'ci' | 'merge'
-    d.stage = 'blocked'
-    d.reason =
-      error instanceof Error ? error.message.split('\n')[0].slice(0, 240) : 'Delivery failed'
-    return persist()
   }
+  if (action === 'stop') {
+    if (d.stage === 'merged') return 'Delivery is merged; nothing to stop'
+    if (state === 'landing') return 'The lander is working on this delivery; stop it once it parks'
+    if (uncertainWrite(d)) return 'Reconcile the uncertain write before stopping this delivery'
+    if (actor.by === 'agent' && d.stage !== 'blocked')
+      return 'Agents stop only a blocked delivery; resubmit to replace one that waits'
+    if (actor.by === 'agent' && waits(d)?.on === 'user')
+      return `This block needs the user: ${waits(d)!.why}`
+  }
+  return undefined
 }

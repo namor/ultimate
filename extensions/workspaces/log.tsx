@@ -16,6 +16,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Button } from '@/components/ui/button'
 import { DeliveryAction, StandingAction } from './refs.ts'
 import { deliveryAsk } from './ask.tsx'
+import { BRANCH_WAKES as MAX_WAKES, CI_LIMIT_MS, MAX_RERUNS, waits } from './delivery.ts'
 import type { Delivery } from './delivery.ts'
 import type { StandingGrant } from './types.ts'
 import {
@@ -411,12 +412,23 @@ const parse = (output: string) => {
 function StatusChip({ state }: { state: Submission }) {
   const chip = 'flex min-w-0 items-center gap-1 truncate'
   if (!state.outcome) {
-    if (state.delivery?.stage === 'blocked')
-      return <span className={cn(chip, 'text-warning')}>Needs attention</span>
-    if (state.delivery?.stage === 'review')
-      return <span className={cn(chip, 'text-warning')}>Awaiting independent review</span>
-    if (deliveryAsk(state.delivery))
-      return <span className={cn(chip, 'text-warning')}>Awaiting your approval</span>
+    const wait = state.delivery && waits(state.delivery)
+    if (wait)
+      return (
+        <span className={cn(chip, 'text-warning')}>
+          {wait.on === 'user'
+            ? 'Needs you'
+            : wait.on === 'repair'
+              ? 'Branch repairing'
+              : wait.on === 'ultimate'
+                ? '@ultimate deciding'
+                : wait.on === 'review'
+                  ? 'Awaiting independent review'
+                  : 'Awaiting your approval'}
+        </span>
+      )
+    if (state.delivery && !state.landing)
+      return <span className={cn(chip, 'text-brand')}>{stageLabel(state.delivery)}</span>
     if (state.landing)
       return (
         <span className={cn(chip, 'text-brand')}>
@@ -472,11 +484,49 @@ function StandingLine({ grant }: { grant?: StandingGrant }) {
   )
 }
 
+const stageLabel = (delivery: Delivery) =>
+  delivery.stage === 'pr'
+    ? 'Opening the pull request'
+    : delivery.stage === 'ci'
+      ? 'Waiting for GitHub checks'
+      : delivery.stage === 'merge'
+        ? 'Merging'
+        : delivery.stage === 'merged'
+          ? 'Merged; advancing local target'
+          : delivery.stage === 'publish'
+            ? 'Publishing'
+            : delivery.stage
+
+function Waits({ delivery }: { delivery: Delivery }) {
+  const wait = waits(delivery)
+  const since = delivery.since ?? delivery.checkedAt
+  const line = wait
+    ? wait.on === 'user'
+      ? `Needs you: ${wait.why}.`
+      : wait.on === 'repair'
+        ? 'Its branch was asked to diagnose and repair it; recheck, stop or a resubmission clears it.'
+        : wait.on === 'ultimate'
+          ? `Its branch had ${MAX_WAKES} repair attempts; @ultimate rechecks, stops or asks you.`
+          : wait.on === 'review'
+            ? 'Waits on an independent review of the integration tree; the branch resubmits with reviewedTree.'
+            : `Waits on your ${wait.on} approval (or @ultimate under a standing approval).`
+    : delivery.stage === 'ci'
+      ? `Waits on GitHub; the lander rechecks every 30 s and reruns a check that never finishes after ${Math.round(CI_LIMIT_MS / 60000)} min (${delivery.reruns ?? 0}/${MAX_RERUNS} reruns used).`
+      : delivery.stage === 'publish' && !delivery.slot
+        ? `Verified; publishes once ${delivery.settings.repository} has no other delivery PR in flight.`
+        : 'The lander moves it on its next turn.'
+  return (
+    <p className="text-xs text-muted-foreground">
+      {line} In this state for <Elapsed since={since} />.
+    </p>
+  )
+}
+
 function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
   const { standing } = useWorkspaceIndex()
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string>()
-  const ask = deliveryAsk(delivery)
+  const ask = deliveryAsk(delivery, standing)
   const action = ask ?? (delivery.stage === 'blocked' ? 'recheck' : undefined)
   const approve = async (
     request: 'publish' | 'merge' | 'recheck' | 'stop' | undefined = action,
@@ -540,13 +590,20 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
         </a>
       )}
       {delivery.reason && <p className="text-warning">{delivery.reason}</p>}
-      {delivery.stage === 'blocked' && delivery.wake && (
-        <p className="text-xs text-muted-foreground">
-          {delivery.wake.to === 'user'
-            ? `Needs you: ${delivery.wake.why}.`
-            : 'Its branch was asked to diagnose and repair it.'}
-        </p>
-      )}
+      <Waits delivery={delivery} />
+      {delivery.decisions?.length ? (
+        <details className="text-xs text-muted-foreground">
+          <summary className="cursor-pointer">
+            {plural(delivery.decisions.length, 'decision')}
+          </summary>
+          {delivery.decisions.map((decision) => (
+            <p key={`${decision.at}:${decision.what}`}>
+              {time(decision.at)} · {decision.what}
+              {decision.why ? ` · ${decision.why}` : ''}
+            </p>
+          ))}
+        </details>
+      ) : null}
       <StandingLine grant={standing} />
       {delivery.approvals?.map((approval) => (
         <p
@@ -601,11 +658,11 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
           )}
         </>
       )}
-      {delivery.stage === 'blocked' &&
+      {delivery.stage !== 'merged' &&
         !(delivery.createIntent && !delivery.pr) &&
         !delivery.mergeIntent && (
           <Button size="sm" variant="ghost" disabled={pending} onClick={() => void approve('stop')}>
-            Stop delivery · leave PR unchanged
+            {delivery.pr ? 'Stop delivery · close its PR' : 'Stop delivery'}
           </Button>
         )}
       {error && (

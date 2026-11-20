@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
-import { advanceDelivery, deliveryRuntime, GithubRequestError } from '../delivery.ts'
-import type { Delivery, Github } from '../delivery.ts'
+import { advanceDelivery, deliveryRuntime, github, GithubRequestError } from '../advance.ts'
+import type { Delivery } from '../delivery.ts'
+import type { Github } from '../advance.ts'
+import { exec } from '../../../lib/exec.ts'
 import { git } from '../../../lib/git.ts'
 
 vi.mock('../../../lib/git.ts', () => ({ git: vi.fn<typeof git>() }))
+vi.mock('../../../lib/exec.ts', () => ({ exec: vi.fn<typeof exec>() }))
 const candidate = 'a'.repeat(40)
 const baseline = 'b'.repeat(40)
 const merged = 'c'.repeat(40)
@@ -35,6 +38,11 @@ const pull = (done = false) => ({
   head: { sha: candidate, ref: 'ultimate-delivery/test', repo: { full_name: 'example/my-app' } },
   base: { ref: 'main', sha: baseline, repo: { full_name: 'example/my-app' } },
 })
+const refs = (branch: string, sha: string) => [
+  { ref: `refs/heads/${branch}`, object: { type: 'commit', sha } },
+]
+const baseRef = 'repos/example/my-app/git/matching-refs/heads/main'
+const deliveryRef = 'repos/example/my-app/git/matching-refs/heads/ultimate-delivery/test'
 const protection = {
   enforce_admins: { enabled: true },
   allow_force_pushes: { enabled: false },
@@ -54,10 +62,8 @@ describe('PR delivery', () => {
       }
       let writes = 0
       let done = false
-      vi.mocked(git).mockImplementation(async (...args) =>
-        args.includes('rev-parse') ? baseline : '',
-      )
       const api: Github = async (path, method) => {
+        if (path === baseRef) return refs('main', baseline) as never
         if (path.includes('/pulls?')) return [] as never
         if (path.endsWith('/protection')) return protection as never
         if (path.includes('/check-runs'))
@@ -86,7 +92,7 @@ describe('PR delivery', () => {
       }
       const signal = new AbortController().signal
       await advanceDelivery('/project', saved, save, signal, api)
-      expect(saved.stage).toBe('blocked')
+      expect(saved).toMatchObject({ stage: 'blocked', cause: 'safety' })
       expect(saved.createIntent).toBeUndefined()
       expect(saved.mergeIntent).toBeUndefined()
       saved.stage = saved.resumeStage!
@@ -106,9 +112,6 @@ describe('PR delivery', () => {
       const controller = new AbortController()
       vi.mocked(git).mockImplementation(async (...args) => {
         if (args.includes('get-url')) return 'git@github.com:example/my-app.git'
-        if (args.includes('ls-remote'))
-          return happened ? `${candidate}\trefs/heads/ultimate-delivery/test` : ''
-        if (args.includes('rev-parse')) return baseline
         if (args.includes('push')) {
           writes++
           happened = true
@@ -118,6 +121,8 @@ describe('PR delivery', () => {
         return ''
       })
       const api: Github = async (path, method) => {
+        if (path === baseRef) return refs('main', baseline) as never
+        if (path === deliveryRef) return (happened ? refs(saved.branch, candidate) : []) as never
         if (path.endsWith('/protection')) return protection as never
         if (path.includes('/check-runs'))
           return {
@@ -160,19 +165,25 @@ describe('PR delivery', () => {
 
   it('checks the exact candidate and merges through its PR without pushing the target', async () => {
     vi.mocked(git).mockClear()
-    let saved = makeDelivery()
+    const copy = {
+      title: 'Keep the original run on retry',
+      body: 'Retry now returns the original run.',
+    }
+    let saved: Delivery = { ...makeDelivery(), pullRequest: copy }
     let created = false
     let done = false
     const writes: { intent: boolean | undefined; fields?: Record<string, string> }[] = []
     vi.mocked(git).mockImplementation(async (...args) => {
       if (args.includes('get-url')) return 'git@github.com:example/my-app.git'
-      if (args.includes('rev-parse')) return baseline
+      if (args.includes('ls-remote')) throw new Error('Fetch mirror is not authoritative')
       return ''
     })
     const api: Github = async (path, method, fields) => {
+      if (path === baseRef) return refs('main', baseline) as never
+      if (path === deliveryRef) return [] as never
       if (path.includes('/pulls?')) return (created ? [pull()] : []) as never
       if (path.endsWith('/pulls') && method === 'POST') {
-        writes.push({ intent: saved.createIntent })
+        writes.push({ intent: saved.createIntent, fields })
         created = true
         return pull() as never
       }
@@ -205,12 +216,107 @@ describe('PR delivery', () => {
       await advanceDelivery('/project', saved, save, signal, api)
     expect(saved).toMatchObject({ stage: 'merged', candidate, merged, pr: 3 })
     expect(writes).toEqual([
-      { intent: true },
+      {
+        intent: true,
+        fields: expect.objectContaining({
+          title: copy.title,
+          body: expect.stringContaining(copy.body),
+        }),
+      },
       { intent: true, fields: { sha: candidate, merge_method: 'merge' } },
     ])
+    expect(writes[0].fields?.body).toContain(tree)
+    expect(writes[0].fields?.body).not.toContain(saved.review)
     const pushes = vi.mocked(git).mock.calls.filter((args) => args.includes('push'))
     expect(pushes).toHaveLength(1)
-    expect(pushes[0]).toContain(`${candidate}:refs/heads/ultimate-delivery/test`)
+    expect(pushes[0].slice(-2)).toEqual([
+      'origin',
+      `${candidate}:refs/heads/ultimate-delivery/test`,
+    ])
+    expect(vi.mocked(git).mock.calls).toContainEqual([
+      '/project',
+      'remote',
+      'get-url',
+      '--push',
+      '--all',
+      'origin',
+    ])
+  })
+
+  it('refuses publication to a remote with more than one push destination', async () => {
+    vi.mocked(git)
+      .mockReset()
+      .mockResolvedValue(
+        'https://github.com/example/my-app.git\nhttps://github.com/example/other.git',
+      )
+    const api = vi.fn<() => Promise<never>>(async () => {
+      throw new Error('No GitHub call is expected')
+    })
+    const result = await advanceDelivery(
+      '/project',
+      makeDelivery(),
+      async () => undefined,
+      new AbortController().signal,
+      api,
+    )
+    expect(result).toMatchObject({ stage: 'blocked', cause: 'safety' })
+    expect(result.publishIntent).toBeUndefined()
+    expect(api).not.toHaveBeenCalled()
+    expect(vi.mocked(git).mock.calls).toHaveLength(1)
+  })
+
+  it('writes to no workflow run when the protection names a check outside the configuration', async () => {
+    const saved: Delivery = { ...makeDelivery(), stage: 'ci', pr: 3 }
+    const writes: string[] = []
+    const api: Github = async (path, method) => {
+      if (method === 'POST') {
+        writes.push(path)
+        return {} as never
+      }
+      if (path.endsWith('/protection'))
+        return {
+          ...protection,
+          required_status_checks: { strict: true, checks: [{ context: 'another-job', app_id: 1 }] },
+        } as never
+      if (path.includes('/check-runs'))
+        return {
+          total_count: 1,
+          check_runs: [
+            {
+              name: 'another-job',
+              head_sha: candidate,
+              status: 'completed',
+              conclusion: 'timed_out',
+              completed_at: new Date().toISOString(),
+              details_url: 'https://github.com/example/my-app/actions/runs/17',
+              app: { id: 1, slug: 'github-actions' },
+            },
+          ],
+        } as never
+      return pull() as never
+    }
+    const result = await advanceDelivery(
+      '/project',
+      saved,
+      async () => undefined,
+      new AbortController().signal,
+      api,
+    )
+    expect(result).toMatchObject({ stage: 'blocked', cause: 'safety' })
+    expect(writes).toEqual([])
+  })
+
+  it('reads an empty success body as a successful write', async () => {
+    vi.mocked(exec).mockResolvedValueOnce({
+      stdout: 'HTTP/2.0 204 No Content\r\nx-github-request-id: 1\r\n\r\n',
+      stderr: '',
+    })
+    await expect(
+      github('/project', new AbortController().signal)(
+        'repos/example/my-app/actions/runs/1/rerun',
+        'POST',
+      ),
+    ).resolves.toEqual({})
   })
 
   it('reconciles a PR created before interruption using persisted state in a replacement task', async () => {

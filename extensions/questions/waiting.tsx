@@ -28,7 +28,7 @@ const asksOf = (
   asks(
     (messages ?? emptyMessages).messages,
     (workspaces?.queue ?? []).flatMap((entry) =>
-      deliveryAsk(entry.delivery)
+      deliveryAsk(entry.delivery, workspaces?.standing)
         ? [{ conversation: entry.conversationId, entry: entry.at, at: entry.steps[0]?.at ?? 0 }]
         : [],
     ),

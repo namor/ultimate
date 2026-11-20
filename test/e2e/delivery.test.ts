@@ -125,6 +125,7 @@ it('keeps main unchanged and exposes a candidate-bound publication gate with dec
           divergence: 'None',
           risk: 'high',
           review: 'Independent fixture review, exact tip approved',
+          pullRequest: { title: 'Add the fixture feature', body: 'The feature file now exists.' },
         }),
       ],
       { stopReason: 'toolUse' },
@@ -148,6 +149,10 @@ it('keeps main unchanged and exposes a candidate-bound publication gate with dec
   const entry = snapshot.queue[0]
   const delivery = entry.delivery!
   expect(delivery.stage).toBe('publish')
+  expect(delivery.pullRequest).toEqual({
+    title: 'Add the fixture feature',
+    body: 'The feature file now exists.',
+  })
   expect(projectDecision(project, home)).toBe(false)
   expect(await projectSettings(project, home)).toEqual({})
   expect(await git(project, 'rev-parse', 'HEAD')).toBe(baseline)

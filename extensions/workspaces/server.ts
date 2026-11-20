@@ -38,8 +38,9 @@ import {
 import type { GithubRepo } from './refs.ts'
 import { githubRepo, readGithubRepo } from '../../lib/project-identity.ts'
 import { UserInputEvent } from '../../shared/events.ts'
-import { agentRefusal, standingRefusal } from './delivery.ts'
-import type { Approval } from './delivery.ts'
+import { authorize, park, spent } from './delivery.ts'
+import type { Actor, Approval } from './delivery.ts'
+import { deliveryRuntime } from './advance.ts'
 import { sweepChecks } from './lander.ts'
 import { landingPending, pendingLandingCards, Workspaces, workspaces } from './workspaces.ts'
 import { rebuiltOnOpen } from '../../lib/errors.ts'
@@ -195,9 +196,12 @@ export const actions = {
       args.standing === undefined &&
       (action === 'recheck' || action === 'stop') &&
       conversationId !== undefined
-    const approval: Approval = agent
-      ? { action, at: Date.now(), by: 'agent', conversation: conversationId }
-      : await approver(host, { conversationId, device }, action, args, seen.at)
+    const approval: Approval = {
+      ...(agent
+        ? { action, at: Date.now(), by: 'agent', conversation: conversationId }
+        : await approver(host, { conversationId, device }, action, args, seen.at)),
+      candidate: args.candidate,
+    }
     await host.harness().commit(async (tx) => {
       const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
       const entry = index.queue.find((item) => item.id === args.id)
@@ -208,36 +212,40 @@ export const actions = {
         throw new Error('Delivery was reassessed; the user must decide on the new assessment')
       if (approval.by === 'ultimate' && (await goalOpen(host, tx)))
         throw new Error('A hands-off goal cannot approve a delivery; it waits for the user')
-      if (approval.standing !== undefined) {
-        const refusal = standingRefusal(index.standing, delivery, action, Date.now())
-        if (refusal) throw new Error(`Standing approval refused: ${refusal}`)
-        approval.standing = index.standing!.instruction
-      }
+      const actor: Actor =
+        approval.by === 'user'
+          ? { by: 'user' }
+          : approval.by === 'agent'
+            ? {
+                by: 'agent',
+                conversation: approval.conversation!,
+                submitter: entry.conversationId,
+                ultimate: ultimate as number | undefined,
+              }
+            : approval.standing !== undefined
+              ? { by: 'ultimate', standing: index.standing }
+              : { by: 'ultimate', instruction: true }
+      const refusal = authorize(actor, action, delivery, entry.state, {
+        now: Date.now(),
+        runtime: deliveryRuntime(),
+      })
+      if (refusal)
+        throw new Error(
+          approval.standing !== undefined ? `Standing approval refused: ${refusal}` : refusal,
+        )
+      if (approval.standing !== undefined) approval.standing = index.standing!.instruction
       if (
         approval.instruction !== undefined &&
         [...index.queue, ...Object.entries(index.results).map(([id, r]) => ({ id, ...r }))].some(
           (item) =>
-            item.id !== entry.id &&
-            item.delivery?.approvals?.some((a) => a.instruction === approval.instruction),
+            item.id !== entry.id && spent(item).some((a) => a.instruction === approval.instruction),
         )
       )
         throw new Error(
           'instruction already decided another delivery; the user must decide this one',
         )
-      if (approval.by === 'agent') {
-        const refusal = agentRefusal(
-          delivery,
-          action,
-          approval.conversation!,
-          entry.conversationId,
-          ultimate as number | undefined,
-        )
-        if (refusal) throw new Error(refusal)
-      }
       delivery.approvals = [...(delivery.approvals ?? []), approval]
-      if (action === 'stop' && delivery.stage === 'blocked') {
-        if ((delivery.createIntent && !delivery.pr) || delivery.mergeIntent)
-          throw new Error('Reconcile the uncertain write before stopping this delivery')
+      if (action === 'stop') {
         const by =
           approval.by === 'user'
             ? 'user'
@@ -246,8 +254,9 @@ export const actions = {
               : "@ultimate on the user's instruction"
         index.results[entry.id] = {
           outcome: 'failed',
-          reason: `Stopped by ${by}; remote branch and PR were not changed`,
+          reason: `Stopped by ${by}; the delivery branch stays, its PR is closed`,
           delivery,
+          ...(entry.approvals ? { approvals: entry.approvals } : {}),
           at: entry.at,
           divergence: entry.divergence,
           target: entry.target,
@@ -258,17 +267,27 @@ export const actions = {
           ...(entry.subject ? { subject: entry.subject } : {}),
         }
         index.queue = index.queue.filter((item) => item.id !== entry.id)
-      } else if (action === 'publish' && delivery.stage === 'publish')
-        delivery.publishApproved = true
-      else if (action === 'merge' && delivery.stage === 'merge') delivery.mergeApproved = true
-      else if (action === 'recheck' && delivery.stage === 'blocked' && delivery.resumeStage) {
-        delivery.stage = delivery.resumeStage
+        if (delivery.pr)
+          index.closing = [
+            ...(index.closing ?? []),
+            {
+              source: entry.source,
+              repository: delivery.settings.repository,
+              pr: delivery.pr,
+              note: `Stopped by ${by}.`,
+            },
+          ]
+      } else if (action === 'publish') delivery.publishApproved = true
+      else if (action === 'merge') delivery.mergeApproved = true
+      else {
+        delivery.stage = delivery.resumeStage!
         delete delivery.reason
+        delete delivery.cause
         delete delivery.wake
-        delivery.deadline = Date.now() + 60 * 60 * 1000
-      } else throw new Error('Delivery stage changed; reload its card')
-      if (action === 'publish' || action === 'merge')
-        delivery.deadline = Date.now() + 60 * 60 * 1000
+        delete delivery.resumeStage
+        delivery.since = Date.now()
+      }
+      delete delivery.pollAt
     }, context)
     await workspaces(host).resume(context)
     host.harness().resume()
@@ -293,10 +312,17 @@ export const actions = {
           d: NonNullable<(typeof index.queue)[number]['delivery']>,
           a: string,
         ) => d.approvals?.findLast((approval) => approval.action === a)?.standing !== undefined
-        for (const { delivery: d } of index.queue) {
+        for (const item of index.queue) {
+          const d = item.delivery
           if (!d) continue
+          delete d.asked
           const stage = d.stage === 'blocked' ? d.resumeStage : d.stage
-          if (stage === 'publish' && d.publishApproved && standingLast(d, 'publish'))
+          if (
+            stage === 'publish' &&
+            d.publishApproved &&
+            !d.publishIntent &&
+            standingLast(d, 'publish')
+          )
             delete d.publishApproved
           if (
             (stage === 'ci' || stage === 'merge') &&
@@ -305,6 +331,7 @@ export const actions = {
             standingLast(d, 'merge')
           )
             delete d.mergeApproved
+          if (item.state !== 'landing') park(item)
         }
       }, context)
       return { ok: true as const }
@@ -334,7 +361,7 @@ export const actions = {
         throw new Error('Renewing a standing approval needs a newer instruction from the user')
       if (
         [...index.queue, ...Object.values(index.results)].some((item) =>
-          item.delivery?.approvals?.some((a) => a.instruction === instruction),
+          spent(item).some((a) => a.instruction === instruction),
         )
       )
         throw new Error('instruction already decided a delivery; it cannot also grant')
@@ -342,6 +369,8 @@ export const actions = {
         throw new Error('A hands-off goal cannot grant a standing approval; it waits for the user')
       index.standing = grant
     }, context)
+    await workspaces(host).resume(context)
+    host.harness().resume()
     return grant
   }),
   github: implementAction(
@@ -503,6 +532,23 @@ export default function workspaceExtension(host: ExtensionHost) {
         parameters: obj({
           action: strEnum(['status', 'submit']),
           risk: opt(strEnum(['low', 'medium', 'high'])),
+          pullRequest: opt(
+            obj({
+              title: str({
+                minLength: 1,
+                maxLength: 72,
+                pattern: '^[^\\r\\n]*\\S[^\\r\\n]*$',
+                description: 'Public PR title. Name the behavior change.',
+              }),
+              body: str({
+                minLength: 1,
+                maxLength: 16000,
+                pattern: '\\S',
+                description:
+                  'Public PR Markdown. Explain why, evidence and limits, blast radius and rollback. Never include private chat or raw review notes. The lander appends the exact verification receipt.',
+              }),
+            }),
+          ),
           reviewedTree: opt(
             str({
               description:
@@ -522,7 +568,11 @@ export default function workspaceExtension(host: ExtensionHost) {
             }),
           ),
         }),
-        async execute({ action, divergence, risk, review, reviewedTree }, api, caller) {
+        async execute(
+          { action, divergence, risk, review, reviewedTree, pullRequest },
+          api,
+          caller,
+        ) {
           if (action === 'status')
             return finish({
               conversationId: api.conversationId,
@@ -545,7 +595,12 @@ export default function workspaceExtension(host: ExtensionHost) {
               divergence ?? '',
               caller,
               risk && review
-                ? { risk, review, ...(reviewedTree ? { reviewedTree } : {}) }
+                ? {
+                    risk,
+                    review,
+                    ...(reviewedTree ? { reviewedTree } : {}),
+                    ...(pullRequest ? { pullRequest } : {}),
+                  }
                 : undefined,
             ),
           )

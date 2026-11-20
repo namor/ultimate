@@ -2,14 +2,15 @@ import type { ConversationId, EntryId } from '@earendil-works/pi-durable'
 import { expect, it, vi } from 'vitest'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import { createLander } from '../lander.ts'
-import { advanceDelivery, deliveryRuntime } from '../delivery.ts'
+import { advanceDelivery, deliveryRuntime } from '../advance.ts'
+import { pick } from '../delivery.ts'
 import type { Delivery } from '../delivery.ts'
 import type { WorkspaceIndex } from '../types.ts'
 import { git } from '../../../lib/git.ts'
 
 vi.mock('../../../lib/git.ts', () => ({ git: vi.fn<typeof git>() }))
-vi.mock('../delivery.ts', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../delivery.ts')>()),
+vi.mock('../advance.ts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../advance.ts')>()),
   advanceDelivery: vi.fn<typeof advanceDelivery>(),
   deliveryRuntime: vi.fn<() => string>(() => 'runtime-B'),
 }))
@@ -74,7 +75,7 @@ function fixture(delivery?: Delivery) {
   return { index, commits, run }
 }
 
-it('continues when approval commits after its snapshot but before the transactional pause', async () => {
+it('parks through the scheduler, so an approval committed after its snapshot is picked up next', async () => {
   const delivery: Delivery = {
     settings: {
       repository: 'example/my-app',
@@ -100,12 +101,9 @@ it('continues when approval commits after its snapshot but before the transactio
     return snapshot
   })
   await f.run()
-  expect(f.commits.at(-1)).toEqual({
-    status: 'running',
-    checkpoint: { phase: 'land', id: 'submission', attempt: 1 },
-  })
+  expect(f.commits.at(-1)).toEqual({ status: 'running', checkpoint: { phase: 'next' } })
   expect(f.index.queue[0].delivery?.mergeApproved).toBe(true)
-  expect(f.index.queue[0].state).toBe('landing')
+  expect(pick(f.index.queue, Date.now())).toEqual({ ready: 0 })
 })
 
 it('refuses to record a merge intent once its approval was withdrawn mid-transition (#58492)', async () => {

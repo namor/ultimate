@@ -26,19 +26,26 @@ import { CheckRan, SubmissionFailed, SubmissionLanded } from './api.ts'
 import { setup } from './setup.ts'
 import type { DeliverySettings } from './delivery-settings.ts'
 import {
-  advanceDelivery,
+  askedUnderStanding,
+  authorize,
   BRANCH_WAKES,
-  deliveryRuntime,
-  github,
+  MAX_REBUILDS,
+  needsSlot,
   needsUser,
-  standingRefusal,
+  park,
+  pick,
+  POLL_MS,
+  standingAsk,
+  waits,
 } from './delivery.ts'
+import { advanceDelivery, closePull, deliveryRuntime, github } from './advance.ts'
 import { addCheckout, treePath } from './tree.ts'
 import type { Landed, LanderEntry, LanderOutcome, QueueEntry, WorkspaceIndex } from './types.ts'
 import { LanderLog } from './entries.ts'
 import { LanderReportEntry } from './refs.ts'
 
 const recentSubmitCardOutcomeLimit = 50
+const maxCloseTries = 3
 export async function landerPath(home: string, source: string, settings: JsonObject) {
   const configured = await treePath(settings, landerName(source))
   if (configured) return configured
@@ -358,7 +365,6 @@ type UnderwayReportPhase = {
 type State =
   | { phase: 'next' }
   | { phase: 'land'; id: string; attempt: number; pushRetried?: boolean }
-  | { phase: 'delivery-wait'; id: string; until: number }
   | UnderwayReportPhase
   | CommittedDeliveryDecision
   | { phase: 'card-failed'; error: string }
@@ -385,6 +391,63 @@ export async function activeLandingCards(tx: Tx, index: WorkspaceIndex) {
   return results
 }
 
+export const standingAskOwed = (
+  index: Pick<WorkspaceIndex, 'standing'>,
+  entry: Pick<QueueEntry, 'delivery'>,
+  env: { now: number; runtime: string },
+) => {
+  const delivery = entry.delivery
+  const wait = delivery && waits(delivery)
+  if (!delivery || (wait?.on !== 'publish' && wait?.on !== 'merge')) return undefined
+  const grant = index.standing
+  if (authorize({ by: 'ultimate', standing: grant }, wait.on, delivery, 'waiting', env))
+    return undefined
+  return askedUnderStanding(delivery, wait.on, grant, env.now) ? undefined : wait.on
+}
+
+export async function askStanding(
+  host: Pick<Host, 'harness' | 'notice'>,
+  Workspaces: ConversationDocToken<WorkspaceIndex>,
+  index: Pick<WorkspaceIndex, 'standing'>,
+  entry: Pick<QueueEntry, 'id' | 'delivery'>,
+  lander: ConversationId,
+  context: Context,
+) {
+  const env = { now: Date.now(), runtime: deliveryRuntime() }
+  const action = standingAskOwed(index, entry, env)
+  if (!action) return true
+  const delivery = entry.delivery!
+  const grant = index.standing!
+  const ultimate = await host.harness().conversation(grant.conversation, context)
+  const sent = await ultimate
+    ?.submit(
+      {
+        type: 'input',
+        whenBusy: 'followUp',
+        requestId: `delivery-standing:${entry.id}:${action}:${delivery.candidate}:${grant.instruction}`,
+        content: `Delivery ${entry.id} (${delivery.risk} risk, ${delivery.candidate}) awaits ${action} approval and qualifies under the user's standing approval until ${new Date(grant.until).toISOString()}. Decide it: call workspaces/delivery with standing: true and your reason, or leave it for the user. Log: lander conversation #${lander}.`,
+      },
+      context,
+    )
+    .then(
+      () => true,
+      (error: unknown) => {
+        context.abortSignal?.throwIfAborted()
+        host.notice(`Delivery ${entry.id} standing wake failed: ${failure(error)}`)
+        return false
+      },
+    )
+  if (sent)
+    await host.harness().commit(async (tx) => {
+      const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
+        (item) => item.id === entry.id,
+      )
+      if (saved?.delivery?.candidate === delivery.candidate)
+        saved.delivery.asked = standingAsk(delivery, action, grant)
+    }, context)
+  return sent === true
+}
+
 export async function reportBlocked(
   host: Pick<Host, 'harness' | 'doc' | 'notice'>,
   Workspaces: ConversationDocToken<WorkspaceIndex>,
@@ -400,14 +463,15 @@ export async function reportBlocked(
     if (!delivery.wake) {
       const block = (delivery.blocks ?? 0) + 1
       const item = index.items[String(entry.conversationId)]
-      const why =
-        needsUser(delivery) ??
-        ((item?.deliveryWakes ?? 0) >= BRANCH_WAKES
-          ? `its branch already had ${BRANCH_WAKES} repair attempts`
-          : undefined)
+      const why = needsUser(delivery)
+      const exhausted = !why && (item?.deliveryWakes ?? 0) >= BRANCH_WAKES
       delivery.blocks = block
-      delivery.wake = why ? { block, to: 'user', why } : { block, to: 'branch' }
-      if (!why && item) item.deliveryWakes = (item.deliveryWakes ?? 0) + 1
+      delivery.wake = why
+        ? { block, to: 'user', why }
+        : exhausted
+          ? { block, to: 'ultimate' }
+          : { block, to: 'branch' }
+      if (!why && !exhausted && item) item.deliveryWakes = (item.deliveryWakes ?? 0) + 1
     }
     const standing = host.doc('ultimate.standing-agents')
     return {
@@ -431,13 +495,15 @@ export async function reportBlocked(
   const hint =
     wake.to === 'user'
       ? `Needs the user: ${wake.why}.`
-      : 'Diagnose and repair it: recheck or stop it, or resubmit a repaired candidate.'
+      : wake.to === 'ultimate'
+        ? `Its branch already had ${BRANCH_WAKES} repair attempts; decide for it: recheck, stop, or ask the user.`
+        : 'Diagnose and repair it: recheck or stop it, or resubmit a repaired candidate.'
   const card = {
     kind: LanderReportEntry.kind,
     data: {
       id,
       outcome: {
-        outcome: 'failed',
+        outcome: 'failed' as const,
         reason,
         hint,
         divergence: entry.divergence,
@@ -465,11 +531,26 @@ export async function reportBlocked(
     requestId,
     entry: { ...card, model: [{ role: 'user' as const, content, timestamp: Date.now() }] },
   })
-  await branch?.submit(note(`${text} The user decides; do not recheck it.`), context)
-  if (ultimate !== undefined)
-    await (
-      await host.harness().conversation(ultimate, context)
-    )?.submit(note(`#${entry.conversationId}'s ${text} Ask the user with a card.`), context)
+  const decider = wake.to === 'ultimate' ? '@ultimate decides' : 'The user decides'
+  await branch?.submit(note(`${text} ${decider}; do not recheck it.`), context)
+  if (ultimate === undefined) return
+  const standing = await host.harness().conversation(ultimate, context)
+  if (wake.to === 'ultimate')
+    await standing?.submit(
+      {
+        type: 'input',
+        whenBusy: 'followUp',
+        requestId,
+        content: `#${entry.conversationId}'s ${text}`,
+        entry: card,
+      },
+      context,
+    )
+  else
+    await standing?.submit(
+      note(`#${entry.conversationId}'s ${text} Ask the user with a card.`),
+      context,
+    )
 }
 
 export function createLander(
@@ -500,29 +581,103 @@ export function createLander(
     version: 1,
     initial: () => ({ phase: 'next' }),
     phases: {
-      next: (task, runtime, context) =>
-        runtime.commit(async (tx) => {
+      next: async (task, runtime, context) => {
+        const { source } = task.input
+        const closing = (await runtime.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))?.closing
+        for (const pull of closing?.filter((item) => item.source === source) ?? []) {
+          const closed = await closePull(
+            github(source, runtime.signal),
+            pull.repository,
+            pull.pr,
+            `${pull.note} Closed by the lander; nothing was merged.`,
+          ).then(
+            () => true,
+            (error: unknown) => {
+              runtime.signal.throwIfAborted()
+              host.notice(`Closing PR #${pull.pr} failed: ${failure(error)}`)
+              return false
+            },
+          )
+          await runtime.commit(async (tx) => {
+            const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+            const same = (item: { pr: number; repository: string }) =>
+              item.pr === pull.pr && item.repository === pull.repository
+            const exhausted = !closed && (pull.tries ?? 0) + 1 >= maxCloseTries
+            index.closing = index.closing?.flatMap((item) =>
+              !same(item)
+                ? [item]
+                : closed || exhausted
+                  ? []
+                  : [{ ...item, tries: (item.tries ?? 0) + 1 }],
+            )
+            if (exhausted) {
+              const warning = `PR #${pull.pr} could not be closed, close it by hand`
+              const owner = [
+                ...Object.values(index.results),
+                ...index.queue.filter((item) => item.source === pull.source),
+              ].find(
+                (item) =>
+                  item.delivery?.settings.repository === pull.repository &&
+                  (item.delivery.pr === pull.pr || 'rebuilds' in item),
+              )
+              if (owner && 'reason' in owner) owner.reason = `${owner.reason ?? ''}; ${warning}`
+              else if (owner?.delivery)
+                owner.delivery.decisions = [
+                  ...(owner.delivery.decisions ?? []),
+                  { at: runtime.now(), what: 'close failed', why: warning },
+                ]
+              host.notice(warning)
+            }
+          }, context)
+        }
+        const owed = await runtime.snapshot(Workspaces, ROOT_CONVERSATION_ID, context)
+        const env = { now: runtime.now(), runtime: deliveryRuntime() }
+        let asked = true
+        for (const item of owed?.queue ?? [])
+          if (item.source === source && standingAskOwed(owed!, item, env))
+            asked =
+              (await askStanding(host, Workspaces, owed!, item, runtime.conversationId, context)) &&
+              asked
+        await runtime.commit(async (tx) => {
           const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
-          const entry = index.queue.find((item) => item.source === task.input.source)
-          if (!entry) {
+          const mine = index.queue.filter((item) => item.source === source)
+          for (const item of mine) park(item)
+          const choice = pick(index.queue, runtime.now(), (item) => item.source === source)
+          const pending =
+            !asked ||
+            index.closing?.some((item) => item.source === source) ||
+            mine.some((item) => needsSlot(index.queue, item) || standingAskOwed(index, item, env))
+          if (!choice && pending)
+            return {
+              status: 'sleeping',
+              until: runtime.now() + POLL_MS,
+              checkpoint: { phase: 'next' },
+            }
+          if (!choice) {
             delete index.landers[task.input.source]
             return { status: 'terminal', outcome: { status: 'completed', result: null } }
           }
+          if ('until' in choice)
+            return { status: 'sleeping', until: choice.until, checkpoint: { phase: 'next' } }
+          const entry = index.queue[choice.ready]
           entry.state = 'landing'
-          await log(tx, runtime.conversationId, entry, { step: 'started' })
+          if (entry.delivery) entry.delivery.slot = true
+          else await log(tx, runtime.conversationId, entry, { step: 'started' })
           return { status: 'running', checkpoint: { phase: 'land', id: entry.id, attempt: 1 } }
-        }, context),
-      'delivery-wait': (task, runtime, context) =>
-        runtime.sleepUntil(
-          task.state.checkpoint.until,
-          { phase: 'land', id: task.state.checkpoint.id, attempt: 1 },
-          context,
-        ),
+        }, context)
+      },
       land: async (task, runtime, context) => {
         const { id, attempt, pushRetried } = task.state.checkpoint
         const { signal } = runtime
         const index = (await runtime.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
-        const entry = index.queue.find((item) => item.id === id)!
+        const entry = index.queue.find((item) => item.id === id)
+        if (!entry)
+          return runtime.commit(
+            () => ({ status: 'running', checkpoint: { phase: 'next' } }),
+            context,
+          )
+        const { source, target } = entry
+        const round = entry.rebuilds ? `${entry.rebuilds}.${attempt}` : `${attempt}`
         const recordedFirstFastForward = async () =>
           (await runtime.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!.queue.find(
             (item) => item.id === id,
@@ -544,7 +699,8 @@ export function createLander(
           runtime.commit(async (tx) => {
             const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
               (item) => item.id === id,
-            )!
+            )
+            if (!saved) return
             saved.step = text
             await log(tx, runtime.conversationId, saved, {
               step: text,
@@ -560,45 +716,45 @@ export function createLander(
                 ms: Math.round(ran.ms),
               })
           }, context)
-        const pauseDelivery = () =>
-          runtime.commit(async (tx) => {
-            const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
-              (item) => item.id === id,
-            )
+        const next = () =>
+          runtime.commit(() => ({ status: 'running', checkpoint: { phase: 'next' } }), context)
+        const rebuild = async (delivery: NonNullable<QueueEntry['delivery']>) => {
+          const rebuilds = (entry.rebuilds ?? 0) + 1
+          if (rebuilds > MAX_REBUILDS) {
+            await runtime.commit(async (tx) => {
+              const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
+                (item) => item.id === id,
+              )
+              if (!saved?.delivery) return
+              const block = (saved.delivery.blocks ?? 0) + 1
+              saved.delivery.wake = { block, to: 'ultimate' }
+              saved.delivery.blocks = block
+              park(saved)
+            }, context)
+            await reportBlocked(host, Workspaces, id, context)
+            return next()
+          }
+          await step(`rebuilding ${rebuilds}/${MAX_REBUILDS}: ${delivery.reason}`)
+          await runtime.commit(async (tx) => {
+            const draft = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+            const saved = draft.queue.find((item) => item.id === id)
             if (!saved) return { status: 'running', checkpoint: { phase: 'next' } }
-            const delivery = saved.delivery
-            const waiting =
-              !delivery ||
-              delivery.stage === 'blocked' ||
-              delivery.stage === 'review' ||
-              (delivery.stage === 'publish' &&
-                delivery.risk === 'high' &&
-                !delivery.publishApproved) ||
-              (delivery.stage === 'merge' && delivery.risk !== 'low' && !delivery.mergeApproved)
-            if (!waiting)
-              return { status: 'running', checkpoint: { phase: 'land', id, attempt: 1 } }
-            saved.state = 'waiting'
-            return { status: 'terminal', outcome: { status: 'completed', result: null } }
+            if (delivery.pr)
+              draft.closing = [
+                ...(draft.closing ?? []),
+                {
+                  source,
+                  repository: delivery.settings.repository,
+                  pr: delivery.pr,
+                  note: `Superseded: ${delivery.reason}. The lander rebuilds this submission on the current base and opens a new PR.`,
+                },
+              ]
+            saved.rebuilds = rebuilds
+            saved.approvals = [...(saved.approvals ?? []), ...(delivery.approvals ?? [])]
+            delete saved.delivery
+            saved.state = 'queued'
+            return { status: 'running', checkpoint: { phase: 'next' } }
           }, context)
-        const askStanding = async (delivery: NonNullable<QueueEntry['delivery']>) => {
-          const grant = (await runtime.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))
-            ?.standing
-          const action = delivery.stage as 'publish' | 'merge'
-          if (standingRefusal(grant, delivery, action, Date.now())) return
-          const ultimate = await host.harness().conversation(grant!.conversation, context)
-          await ultimate
-            ?.submit(
-              {
-                type: 'input',
-                whenBusy: 'followUp',
-                requestId: `delivery-standing:${id}:${action}:${delivery.candidate}`,
-                content: `Delivery ${id} (${delivery.risk} risk, ${delivery.candidate}) awaits ${action} approval and qualifies under the user's standing approval until ${new Date(grant!.until).toISOString()}. Decide it: call workspaces/delivery with standing: true and your reason, or leave it for the user.`,
-              },
-              context,
-            )
-            .catch((error: unknown) =>
-              host.notice(`Delivery ${id} standing wake failed: ${failure(error)}`),
-            )
         }
         const commitLandingOutcome = (text: string, outcome: LanderOutcome, sha = outcome.sha) =>
           runtime.commit(async (tx) => {
@@ -619,6 +775,7 @@ export function createLander(
               steps,
               conversationId: entry.conversationId,
               ...(entry.subject ? { subject: entry.subject } : {}),
+              ...(entry.approvals ? { approvals: entry.approvals } : {}),
             }
             for (const old of Object.keys(draft.results).slice(0, -recentSubmitCardOutcomeLimit))
               delete draft.results[old]
@@ -711,7 +868,6 @@ export function createLander(
             }),
             context,
           )
-        const { source, target } = entry
         const checkContext = withAbortSignal(signal, context)
         const push = async (settings: Settings, checkedCommit: string) => {
           if (!settings.push) return { text: 'Not pushed.' }
@@ -770,7 +926,8 @@ export function createLander(
               runtime.commit(async (tx) => {
                 const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
                   (item) => item.id === id,
-                )!
+                )
+                if (!saved) throw new Error('Delivery was withdrawn while the lander advanced it')
                 const current = saved.delivery
                 if (
                   delivery.mergeIntent &&
@@ -779,37 +936,41 @@ export function createLander(
                   !current?.mergeApproved
                 )
                   throw new Error('Merge approval was withdrawn; approve again to merge')
-                const { publishApproved: _p, mergeApproved: _m, approvals: _a, ...rest } = delivery
+                if (
+                  delivery.publishIntent &&
+                  !current?.publishIntent &&
+                  delivery.risk === 'high' &&
+                  !current?.publishApproved
+                )
+                  throw new Error('Publish approval was withdrawn; approve again to publish')
+                const {
+                  publishApproved: _p,
+                  mergeApproved: _m,
+                  approvals: _a,
+                  slot: _s,
+                  asked: _k,
+                  ...rest
+                } = delivery
                 saved.delivery = {
                   ...rest,
+                  pollAt: runtime.now() + POLL_MS,
+                  ...(current?.slot ? { slot: true } : {}),
+                  ...(current?.asked ? { asked: current.asked } : {}),
                   ...(current?.publishApproved ? { publishApproved: true } : {}),
                   ...(current?.mergeApproved ? { mergeApproved: true } : {}),
                   ...(current?.approvals ? { approvals: current.approvals } : {}),
                 }
+                if (waits(saved.delivery)) park(saved)
+                else saved.state = 'landing'
               }, context)
-            const expired = Date.now() > (previous.deadline ?? previous.checkedAt + 60 * 60 * 1000)
-            let delivery = previous
-            if (expired && previous.stage !== 'blocked' && previous.stage !== 'merged')
+            const delivery = await advanceDelivery(source, previous, save, signal)
+            if (delivery.stage === previous.stage && delivery.reason === previous.reason)
               await runtime.commit(async (tx) => {
                 const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
                   (item) => item.id === id,
-                )!
-                const current = saved.delivery!
-                if (
-                  current.stage === previous.stage &&
-                  current.deadline === previous.deadline &&
-                  current.stage !== 'blocked' &&
-                  current.stage !== 'merged'
                 )
-                  saved.delivery = {
-                    ...current,
-                    stage: 'blocked',
-                    resumeStage: current.stage,
-                    reason: 'Delivery waited over one hour; recheck explicitly',
-                  }
-                delivery = copyJson(saved.delivery!) as NonNullable<QueueEntry['delivery']>
+                if (saved?.delivery) saved.delivery.pollAt = runtime.now() + POLL_MS
               }, context)
-            else delivery = await advanceDelivery(source, previous, save, signal)
             if (delivery.stage !== previous.stage || delivery.reason !== previous.reason)
               await step(
                 delivery.reason
@@ -848,31 +1009,14 @@ export function createLander(
                 pr: delivery.url,
               })
             }
-            if (delivery.stage === 'blocked') {
-              await reportBlocked(host, Workspaces, id, context)
-              return pauseDelivery()
-            }
-            if (
-              delivery.stage === 'review' ||
-              (delivery.stage === 'publish' &&
-                delivery.risk === 'high' &&
-                !delivery.publishApproved) ||
-              (delivery.stage === 'merge' && delivery.risk !== 'low' && !delivery.mergeApproved)
-            ) {
-              await askStanding(delivery)
-              return pauseDelivery()
-            }
-            return runtime.commit(
-              () => ({
-                status: 'running',
-                checkpoint: { phase: 'delivery-wait', id, until: runtime.now() + 30000 },
-              }),
-              context,
-            )
+            if (delivery.stage === 'blocked' && delivery.cause === 'stale')
+              return await rebuild(delivery)
+            if (delivery.stage === 'blocked') await reportBlocked(host, Workspaces, id, context)
+            return next()
           }
           const verification = settings.delivery
             ? await runtime.memo(
-                `verification-runtime:${id}:${attempt}`,
+                `verification-runtime:${id}:${round}`,
                 { runtime: deliveryRuntime() },
                 context,
               )
@@ -888,12 +1032,12 @@ export function createLander(
           )
             return await landedReport(settings, landingFromEarlierTask, landingFromEarlierTask.sha)
           let checkedIntegration = await runtime.memo<CheckedIntegration>(
-            `prepared:${id}:${attempt}`,
+            `prepared:${id}:${round}`,
             context,
           )
           if (!checkedIntegration) {
             let mergedBeforeChecks = await runtime.memo<{ base: string; sha: string }>(
-              `merged:${id}:${attempt}`,
+              `merged:${id}:${round}`,
               context,
             )
             const path = await resetTrackedIntegration(
@@ -949,7 +1093,7 @@ export function createLander(
               )
                 return
               mergedBeforeChecks = await runtime.memo(
-                `merged:${id}:${attempt}`,
+                `merged:${id}:${round}`,
                 { base, sha: await git(path, 'rev-parse', 'HEAD') },
                 context,
               )
@@ -976,7 +1120,7 @@ export function createLander(
                   limitsFor(members[member], limits),
                 )
               const runCheckWithOneDurableRerun = async (command: string, member: number) => {
-                const attemptMemoKey = `check:${id}:${attempt}:${Array.isArray(group) ? `${position}.${member}` : position}`
+                const attemptMemoKey = `check:${id}:${round}:${Array.isArray(group) ? `${position}.${member}` : position}`
                 const causeMemoKey = `${attemptMemoKey}:cause`
                 let memoizedFirstRun =
                   (await runtime.memo<'passed' | 'failed'>(attemptMemoKey, context)) ??
@@ -1065,7 +1209,7 @@ export function createLander(
                 'Submit again.',
               )
             checkedIntegration = await runtime.memo<CheckedIntegration>(
-              `prepared:${id}:${attempt}`,
+              `prepared:${id}:${round}`,
               {
                 base,
                 integrated: mergedBeforeChecks.sha,
@@ -1088,28 +1232,33 @@ export function createLander(
               throw new Error(
                 'PR delivery requires clean verification; fix flaky checks before publication',
               )
-            const branch = `ultimate-delivery/${entry.id}`
+            const branch = `ultimate-delivery/${entry.id}${entry.rebuilds ? `-r${entry.rebuilds}` : ''}`
             const api = github(source, signal)
             const remoteBase = await api<{ commit: { sha: string } }>(
               `repos/${settings.delivery.repository}/branches/${encodeURIComponent(target)}`,
             )
             await git(source, 'merge-base', '--is-ancestor', remoteBase.commit.sha, integrated)
             const tree = await git(source, 'rev-parse', `${integrated}^{tree}`)
+            const record: NonNullable<QueueEntry['delivery']> = {
+              settings: settings.delivery,
+              ...entry.assessment,
+              baseline: remoteBase.commit.sha,
+              candidate: integrated,
+              tree,
+              branch,
+              checkedAt: checkedIntegration.checkedAt,
+              runtime: checkedIntegration.runtime,
+              stage: entry.assessment.reviewedTree === tree ? 'publish' : 'review',
+              since: Date.now(),
+              ...(entry.approvals ? { approvals: entry.approvals } : {}),
+            }
             await runtime.commit(async (tx) => {
               const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
                 (item) => item.id === id,
               )!
-              saved.delivery = {
-                settings: settings.delivery!,
-                ...entry.assessment!,
-                baseline: remoteBase.commit.sha,
-                candidate: integrated,
-                tree,
-                branch,
-                checkedAt: checkedIntegration.checkedAt,
-                runtime: checkedIntegration.runtime,
-                stage: entry.assessment!.reviewedTree === tree ? 'publish' : 'review',
-              }
+              saved.delivery = record
+              if (waits(record)) park(saved)
+              else saved.state = 'landing'
             }, context)
             if (entry.assessment.reviewedTree !== tree) {
               await (
@@ -1118,7 +1267,7 @@ export function createLander(
                 {
                   type: 'input',
                   whenBusy: 'followUp',
-                  requestId: `delivery-review:${id}`,
+                  requestId: `delivery-review:${id}:${tree}${entry.rebuilds ? `:r${entry.rebuilds}` : ''}`,
                   content: `Integration changed the reviewed tree. Independently review ${remoteBase.commit.sha}..${integrated}, then resubmit this same tip with reviewedTree ${tree}, risk and review evidence. No publication occurred.`,
                   entry: {
                     kind: LanderReportEntry.kind,
@@ -1140,7 +1289,7 @@ export function createLander(
                 ? 'delivery: publish'
                 : `delivery: review ${integrated}`,
             )
-            return retry()
+            return next()
           }
           await step('fast-forwarding')
           let refused: string | undefined
@@ -1189,18 +1338,21 @@ export function createLander(
             await runtime.commit(async (tx) => {
               const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
                 (item) => item.id === id,
-              )!
+              )
+              if (!saved?.delivery) return
+              const current = saved.delivery
               saved.delivery = {
-                ...saved.delivery!,
+                ...current,
                 stage: 'blocked',
-                resumeStage:
-                  saved.delivery!.stage === 'merged' ? 'merged' : saved.delivery!.resumeStage,
+                cause: 'github',
+                resumeStage: current.stage === 'blocked' ? current.resumeStage : current.stage,
                 reason: 'Delivery recovery failed; inspect the lander log',
               }
+              park(saved)
             }, context)
             host.notice(`Delivery ${id} recovery failed: ${failure(error)}`)
             await reportBlocked(host, Workspaces, id, context)
-            return pauseDelivery()
+            return next()
           }
           return fail('it failed', failure(error))
         }
