@@ -1,11 +1,14 @@
+import type { ConversationId, EntryId } from '@earendil-works/pi-durable'
 import type { ReactNode } from 'react'
 import { ChevronRightIcon, GitMergeIcon } from 'lucide-react'
 import { MentionText } from '@/components/ai/message'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { ConversationEmptyState } from '@/components/ai/conversation'
 import {
-  ConversationEmpty,
+  cn,
+  column,
   defineWebExtension,
+  EmptyTranscript,
   provide,
   useConversation,
   useSystem,
@@ -15,10 +18,10 @@ import { landerSource, useWorkspaceIndex } from './data.tsx'
 import { CommitCount, LandingCard, useGithubRepo } from './landing.tsx'
 import { LanderLogEntry, LanderReport, WorkspaceCall } from './log.tsx'
 import { compareUrl } from '../../lib/compare.ts'
-import type { EntryRecord } from '@earendil-works/pi-durable'
+import { NoteEntry } from '../entries/ui.tsx'
+import type { NoteData } from '../entries/refs.ts'
 
-/** The lander's note in the root: the landing's card, from the note's own data, with the state it froze. */
-function LandingNote({ entry }: { entry: EntryRecord }) {
+function LandingNote({ id, data }: { id: EntryId; data: Extract<NoteData, { source: 'lander' }> }) {
   const {
     from,
     at,
@@ -34,42 +37,27 @@ function LandingNote({ entry }: { entry: EntryRecord }) {
     more,
     pushed,
     abstract,
-  } = entry.data as {
-    from: number
-    at?: number
-    divergence?: string
-    sha: string
-    base?: string
-    target: string
-    title?: string
-    summary?: string
-    feature?: string
-    commits: { sha: string; subject: string }[]
-    paths: string[]
-    more: number
-    pushed?: string
-    abstract?: { at: number; text: string }
-  }
+    submission,
+  } = data
   const github = useGithubRepo()
-  // A note from before landings recorded their base: the landing before it, where the lander's serial queue left the
-  // target.
   const transcript = useTranscript()
-  const previous = base
+  const previousLandingForLegacyBase = base
     ? undefined
-    : (
-        transcript.findLast(
-          (other) =>
-            other.kind === 'lineage.note' &&
-            other.id < entry.id &&
-            (other.data as { source?: string })?.source === 'lander',
-        )?.data as { sha?: string } | undefined
-      )?.sha
-  const rangeBase = base ?? previous
+    : transcript.findLast(
+        (other) => NoteEntry.is(other) && other.id < id && other.data.source === 'lander',
+      )
+  const rangeBase =
+    base ??
+    (NoteEntry.is(previousLandingForLegacyBase) &&
+    previousLandingForLegacyBase.data.source === 'lander'
+      ? previousLandingForLegacyBase.data.sha
+      : undefined)
   return (
     <div data-lineage-note="lander">
       <LandingCard
-        card={entry.id}
+        card={id}
         sha={sha}
+        submission={submission}
         from={from}
         sourceEntry={at}
         divergence={divergence}
@@ -116,7 +104,6 @@ function LandingNote({ entry }: { entry: EntryRecord }) {
   )
 }
 
-/** The lander's conversation is its log: in place of a composer, a line saying what it is. */
 function LanderComposer({ core, dock }: { core: ReactNode; dock?: boolean }) {
   const id = useConversation((conversation) => conversation.id)
   const index = useWorkspaceIndex()
@@ -127,7 +114,7 @@ function LanderComposer({ core, dock }: { core: ReactNode; dock?: boolean }) {
   const queued = queue.filter((item) => item.state === 'queued').length
   const waiting = queue.some((item) => item.state === 'waiting')
   return (
-    <div className={`${dock ? 'w-full px-4' : 'mx-auto w-full max-w-[46rem] px-3 sm:px-6'} pb-3`}>
+    <div className={cn(column(dock), 'pb-3')}>
       <div
         className="flex items-start gap-2.5 rounded-lg border border-border/70 bg-muted/30 px-3.5 py-2.5 text-[12.5px] text-muted-foreground"
         data-lander-log={id}
@@ -152,10 +139,9 @@ function LanderComposer({ core, dock }: { core: ReactNode; dock?: boolean }) {
   )
 }
 
-function useEmptyLander() {
-  const id = useConversation((conversation) => conversation.id)
-  const source = landerSource(useWorkspaceIndex(), id ?? -1, useSystem()?.project.root)
-  if (!source) return undefined
+function useEmptyLander({ conversation, core }: { conversation: ConversationId; core: ReactNode }) {
+  const source = landerSource(useWorkspaceIndex(), conversation, useSystem()?.project.root)
+  if (!source) return core
   return (
     <ConversationEmptyState className="min-h-[55vh]">
       <GitMergeIcon className="mb-3 size-5 text-brand" />
@@ -168,13 +154,13 @@ function useEmptyLander() {
 }
 
 export default defineWebExtension({
-  provides: [provide(ConversationEmpty, useEmptyLander)],
+  provides: [provide(EmptyTranscript, useEmptyLander)],
   composer: LanderComposer,
   tools: { workspace: WorkspaceCall },
   entries: {
     'lineage.note': ({ entry, core }) =>
-      (entry.data as { source?: string })?.source === 'lander' ? (
-        <LandingNote entry={entry} />
+      NoteEntry.is(entry) && entry.data.source === 'lander' ? (
+        <LandingNote id={entry.id} data={entry.data} />
       ) : (
         core
       ),
