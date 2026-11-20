@@ -641,11 +641,11 @@ export function createLander(
           }
           await step(`rebuilding ${rebuilds}/${MAX_REBUILDS}: ${delivery.reason}`)
           await runtime.commit(async (tx) => {
-            const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
-            const saved = index.queue.find((item) => item.id === id)!
+            const draft = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+            const saved = draft.queue.find((item) => item.id === id)!
             if (delivery.pr)
-              index.closing = [
-                ...(index.closing ?? []),
+              draft.closing = [
+                ...(draft.closing ?? []),
                 {
                   source,
                   repository: delivery.settings.repository,
