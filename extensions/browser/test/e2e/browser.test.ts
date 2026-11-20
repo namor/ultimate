@@ -72,6 +72,9 @@ it('times out a hung step, closes its page and keeps later calls working', async
     return { result, text: JSON.stringify(result.output), ms: Date.now() - started }
   }
   try {
+    const launchedSlowly = await drive([{ eval: 'document.title' }], 1000)
+    expect(launchedSlowly.result.isError).toBeFalsy()
+    expect(launchedSlowly.text).toContain('Step 1: OK \\"Hang\\"')
     for (const hang of ['new Promise(() => {})', 'for (;;) {}']) {
       const hung = await drive([{ eval: '1 + 1' }, { eval: hang }], 1000)
       expect(hung.result.isError).toBe(true)
