@@ -415,9 +415,7 @@ export async function reportBlocked(
       entry: copyJson(entry) as QueueEntry,
       lander: index.landerConversations[entry.source],
       wake: { ...delivery.wake },
-      ultimate: standing
-        ? (await tx.doc(standing, ROOT_CONVERSATION_ID)).ultimate
-        : undefined,
+      ultimate: standing ? (await tx.doc(standing, ROOT_CONVERSATION_ID)).ultimate : undefined,
     }
   }, context)
   if (!decided) return
