@@ -17,6 +17,16 @@ it('opens a local Markdown chat link only through the chooser and renders the se
   const home = await temp('ultimate-markdown-viewer-')
   cleanup.push(() => removeTemp(home))
   const file = join(home, 'report.md')
+  const otherFile = join(home, 'other.md')
+  const longText = (label: string) =>
+    [
+      ...Array.from(
+        { length: 90 },
+        (_, n) => `## ${label} passage ${n + 1}\n\nReading text for this synthetic section.`,
+      ),
+      `${label} final line`,
+    ].join('\n\n')
+  await writeFile(otherFile, longText('Other'))
   await writeFile(
     file,
     [
@@ -37,6 +47,12 @@ it('opens a local Markdown chat link only through the chooser and renders the se
       '![Image](https://viewer-probe.invalid/image.png)',
       '',
       '<img src="https://viewer-probe.invalid/raw.png">',
+      '',
+      '```text',
+      'wide code '.repeat(100),
+      '```',
+      '',
+      longText('Report'),
     ].join('\n'),
   )
   const server = await fauxServer({
@@ -81,8 +97,9 @@ it('opens a local Markdown chat link only through the chooser and renders the se
     }
   })
   await page.goto(`${server.url}/?conversation=${id}`)
-  const chatLink = page.getByRole('button', { name: 'Open report', exact: true })
-  const reference = page.getByRole('button', { name: 'Open reference', exact: true })
+  const chat = page.locator('#app')
+  const chatLink = chat.getByRole('button', { name: 'Open report', exact: true })
+  const reference = chat.getByRole('button', { name: 'Open reference', exact: true })
   await page
     .locator('[data-ui="composer"] label[aria-label="Attach files"] input:enabled')
     .waitFor({ state: 'attached' })
@@ -92,9 +109,12 @@ it('opens a local Markdown chat link only through the chooser and renders the se
   expect(await page.getByText('Remote file [blocked]', { exact: false }).count()).toBeGreaterThan(0)
   const dialog = page.getByRole('dialog')
   expect(await dialog.innerText()).toContain('cannot read it from the link alone')
-  const chooser = page.waitForEvent('filechooser')
-  await dialog.getByRole('button', { name: 'Choose file' }).click()
-  await (await chooser).setFiles(file)
+  async function select(path: string) {
+    const chooser = page.waitForEvent('filechooser')
+    await dialog.getByRole('button', { name: 'Choose file' }).click()
+    await (await chooser).setFiles(path)
+  }
+  await select(file)
   await dialog.getByRole('heading', { name: 'Synthetic report' }).waitFor()
   expect(await dialog.locator('figure').first().innerText()).toMatch(
     /Mermaid diagram.*Start.*▶.*Done/s,
@@ -118,10 +138,66 @@ it('opens a local Markdown chat link only through the chooser and renders the se
     })
   })
   expect(canceled).toEqual([true, true])
-  await page.keyboard.press('Escape')
+
+  const scroll = dialog.getByRole('region', { name: 'Markdown document' })
+  const visible = async (text: string) => {
+    const pane = (await scroll.boundingBox())!
+    const line = (await dialog.getByText(text, { exact: true }).boundingBox())!
+    return pane.y - 1 <= line.y && line.y + line.height <= pane.y + pane.height + 1
+  }
+  const wideCode = dialog.getByText('wide code '.repeat(100).trim(), { exact: true })
+  expect(
+    await wideCode.evaluate((line) => {
+      const block = line.closest('pre')!
+      block.scrollLeft = block.scrollWidth
+      return block.scrollLeft > 0
+    }),
+  ).toBe(true)
+  const top = () => scroll.evaluate((el) => el.scrollTop)
+  await scroll.evaluate((el) => {
+    el.scrollTop = el.scrollHeight
+  })
+  expect(await visible('Report final line')).toBe(true)
+  const expand = dialog.getByRole('button', { name: 'Expand Markdown viewer' })
+  const restore = dialog.getByRole('button', { name: 'Restore Markdown viewer' })
+  await expand.click()
+  expect((await dialog.boundingBox())?.width).toBe(page.viewportSize()?.width)
+  expect(await visible('Report final line')).toBe(true)
+  await restore.click()
+  expect(await visible('Report final line')).toBe(true)
+  expect(await top()).toBeGreaterThan(1000)
+  const passage = dialog.getByRole('heading', { name: 'Report passage 35', exact: true })
+  await passage.evaluate((el) => el.scrollIntoView({ block: 'start' }))
+  await expand.click()
+  expect(await visible('Report passage 35')).toBe(true)
+  await restore.click()
+  expect(await visible('Report passage 35')).toBe(true)
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click()
   await dialog.waitFor({ state: 'hidden' })
   expect(await page.locator('[data-ui="composer"] [data-ui="file-chip"]').count()).toBe(0)
   await reference.click()
   expect(await dialog.innerText()).not.toContain('Synthetic report')
+  await select(otherFile)
+  await dialog.getByRole('heading', { name: 'Other passage 1', exact: true }).waitFor()
+  expect(await top()).toBe(0)
+  await select(file)
+  await dialog.getByRole('heading', { name: 'Synthetic report' }).waitFor()
+  expect(await visible('Report passage 35')).toBe(true)
+  await expand.click()
+  await page.keyboard.press('Escape')
+  await dialog.waitFor({ state: 'hidden' })
+  const persisted = await page.evaluate(() =>
+    Object.entries(localStorage).filter(([key]) => key.startsWith('ultimate.markdown-viewer.')),
+  )
+  expect(JSON.stringify(persisted)).not.toMatch(
+    /report\.md|other\.md|synthetic section|not-a-real-directory/,
+  )
+  expect(persisted.find(([key]) => key.endsWith('.positions'))?.[1]).toMatch(/[a-f0-9]{64}/)
+  await page.reload()
+  await chatLink.click()
+  expect(await restore.isVisible()).toBe(true)
+  await select(file)
+  await dialog.getByRole('heading', { name: 'Synthetic report' }).waitFor()
+  expect(await visible('Report passage 35')).toBe(true)
   expect(requests).toEqual([])
 })
