@@ -17,8 +17,8 @@ app comes up once the page is ready.
   with the rule, then the name lifts away as the overlay fades into onboarding's page beneath, which is already open.
   Without the `onboarding` extension there is no first run.
 - **Reduced motion** (`prefers-reduced-motion`) or no WebGL2: the solid wordmark, no lightning, then a quick fade.
-- **Never stuck**: not ready after 8 s, the core reveals the app anyway, and a small notice names the extensions still
-  loading (`useReady().pending`) and those that failed (`useReady().failed`), until they load or it is dismissed.
+- **Never stuck**: not ready after 8 s, the core reveals the app anyway, and a warning in the notices stack names the
+  extensions still loading (`useReady().pending`) and those that failed (`useReady().failed`).
 - **Once per page load**: mounted when the page is already ready (a very warm start), it shows nothing,
   and nothing after ready brings it back.
 - **Fresh starts only**: a reload of a rendered page (a core restart, a switch to a new web bundle, F5) shows the previous

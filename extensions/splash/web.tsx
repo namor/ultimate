@@ -1,4 +1,3 @@
-import { TriangleAlertIcon, XIcon } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, defineWebExtension, errorMessage, resumed, useReady, useStore } from '@/sdk'
 import { store } from '@/sdk/client'
@@ -403,42 +402,26 @@ function Splash({ replay }: { replay?: () => void }) {
   )
 }
 
-const names = (list: readonly string[]) =>
-  list.map((name, index) => (
-    <span key={name}>
-      {index > 0 && ', '}
-      <span className="text-foreground">{name}</span>
-    </span>
-  ))
-
-/** After the timeout: what had not loaded, until it has or the notice is dismissed. */
+/**
+ * After the timeout: what had not loaded, once, as a warning in the notices stack. Its own toast sat where the notices
+ * do and covered them.
+ */
 function Late() {
   const { failed, pending } = useReady()
-  const [dismissed, setDismissed] = useState(false)
-  if (dismissed || (pending.length === 0 && failed.length === 0)) return null
-  return (
-    <div
-      className="fixed top-12 left-1/2 z-40 flex w-96 max-w-[calc(100vw-1.5rem)] -translate-x-1/2 items-start gap-2 rounded-md border border-border/80 bg-popover px-2.5 py-2 font-mono text-[11.5px] leading-snug shadow-lg"
-      role="alert"
-    >
-      <TriangleAlertIcon className="mt-px size-3.5 shrink-0 text-warning" />
-      <div className="min-w-0 flex-1 text-foreground/90">
-        <p>Not ready after {timeout / 1000} s, so it opened anyway.</p>
-        <p className="mt-0.5 text-muted-foreground">
-          {pending.length > 0 && <>still loading: {names(pending)}. </>}
-          {failed.length > 0 && <>failed: {names(failed)}. </>}
-        </p>
-      </div>
-      <button
-        aria-label="Dismiss"
-        className="shrink-0 text-muted-foreground/60 hover:text-foreground"
-        onClick={() => setDismissed(true)}
-        type="button"
-      >
-        <XIcon className="size-3.5" />
-      </button>
-    </div>
-  )
+  const [said, setSaid] = useState(false)
+  useEffect(() => {
+    if (said || (pending.length === 0 && failed.length === 0)) return
+    setSaid(true)
+    const missing = [
+      pending.length > 0 && `still loading: ${pending.join(', ')}`,
+      failed.length > 0 && `failed: ${failed.join(', ')}`,
+    ].filter(Boolean)
+    store.notify({
+      level: 'warning',
+      message: `Not ready after ${timeout / 1000} s, so it opened anyway; ${missing.join('; ')}.`,
+    })
+  }, [said, pending, failed])
+  return null
 }
 
 export default defineWebExtension({ slots: { overlay: Overlay } })
