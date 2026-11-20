@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
-import { advanceDelivery, deliveryRuntime, GithubRequestError } from '../advance.ts'
+import { advanceDelivery, deliveryRuntime, github, GithubRequestError } from '../advance.ts'
 import type { Delivery } from '../delivery.ts'
 import type { Github } from '../advance.ts'
+import { exec } from '../../../lib/exec.ts'
 import { git } from '../../../lib/git.ts'
 
 vi.mock('../../../lib/git.ts', () => ({ git: vi.fn<typeof git>() }))
+vi.mock('../../../lib/exec.ts', () => ({ exec: vi.fn<typeof exec>() }))
 const candidate = 'a'.repeat(40)
 const baseline = 'b'.repeat(40)
 const merged = 'c'.repeat(40)
@@ -212,6 +214,19 @@ describe('PR delivery', () => {
     const pushes = vi.mocked(git).mock.calls.filter((args) => args.includes('push'))
     expect(pushes).toHaveLength(1)
     expect(pushes[0]).toContain(`${candidate}:refs/heads/ultimate-delivery/test`)
+  })
+
+  it('reads an empty success body as a successful write', async () => {
+    vi.mocked(exec).mockResolvedValueOnce({
+      stdout: 'HTTP/2.0 204 No Content\r\nx-github-request-id: 1\r\n\r\n',
+      stderr: '',
+    })
+    await expect(
+      github('/project', new AbortController().signal)(
+        'repos/example/my-app/actions/runs/1/rerun',
+        'POST',
+      ),
+    ).resolves.toEqual({})
   })
 
   it('reconciles a PR created before interruption using persisted state in a replacement task', async () => {

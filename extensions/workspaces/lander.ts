@@ -35,7 +35,6 @@ import {
   waits,
 } from './delivery.ts'
 import { advanceDelivery, closePull, deliveryRuntime, github } from './advance.ts'
-import { pullRequestText } from './pull-request.ts'
 import { addCheckout, treePath } from './tree.ts'
 import type { Landed, LanderEntry, LanderOutcome, QueueEntry, WorkspaceIndex } from './types.ts'
 import { LanderLog } from './entries.ts'
@@ -388,6 +387,35 @@ export async function activeLandingCards(tx: Tx, index: WorkspaceIndex) {
   return results
 }
 
+export async function askStanding(
+  host: Pick<Host, 'harness' | 'notice'>,
+  index: Pick<WorkspaceIndex, 'standing'>,
+  entry: Pick<QueueEntry, 'id' | 'delivery'>,
+  lander: ConversationId,
+  context: Context,
+) {
+  const delivery = entry.delivery!
+  const wait = waits(delivery)
+  if (wait?.on !== 'publish' && wait?.on !== 'merge') return
+  const grant = index.standing
+  const env = { now: Date.now(), runtime: deliveryRuntime() }
+  if (authorize({ by: 'ultimate', standing: grant }, wait.on, delivery, 'waiting', env)) return
+  const ultimate = await host.harness().conversation(grant!.conversation, context)
+  await ultimate
+    ?.submit(
+      {
+        type: 'input',
+        whenBusy: 'followUp',
+        requestId: `delivery-standing:${entry.id}:${wait.on}:${delivery.candidate}:${grant!.instruction}`,
+        content: `Delivery ${entry.id} (${delivery.risk} risk, ${delivery.candidate}) awaits ${wait.on} approval and qualifies under the user's standing approval until ${new Date(grant!.until).toISOString()}. Decide it: call workspaces/delivery with standing: true and your reason, or leave it for the user. Log: lander conversation #${lander}.`,
+      },
+      context,
+    )
+    .catch((error: unknown) =>
+      host.notice(`Delivery ${entry.id} standing wake failed: ${failure(error)}`),
+    )
+}
+
 export async function reportBlocked(
   host: Pick<Host, 'harness' | 'doc' | 'notice'>,
   Workspaces: ConversationDocToken<WorkspaceIndex>,
@@ -403,14 +431,15 @@ export async function reportBlocked(
     if (!delivery.wake) {
       const block = (delivery.blocks ?? 0) + 1
       const item = index.items[String(entry.conversationId)]
-      const why =
-        needsUser(delivery) ??
-        ((item?.deliveryWakes ?? 0) >= BRANCH_WAKES
-          ? `its branch already had ${BRANCH_WAKES} repair attempts`
-          : undefined)
+      const why = needsUser(delivery)
+      const exhausted = !why && (item?.deliveryWakes ?? 0) >= BRANCH_WAKES
       delivery.blocks = block
-      delivery.wake = why ? { block, to: 'user', why } : { block, to: 'branch' }
-      if (!why && item) item.deliveryWakes = (item.deliveryWakes ?? 0) + 1
+      delivery.wake = why
+        ? { block, to: 'user', why }
+        : exhausted
+          ? { block, to: 'ultimate' }
+          : { block, to: 'branch' }
+      if (!why && !exhausted && item) item.deliveryWakes = (item.deliveryWakes ?? 0) + 1
     }
     const standing = host.doc('ultimate.standing-agents')
     return {
@@ -434,7 +463,9 @@ export async function reportBlocked(
   const hint =
     wake.to === 'user'
       ? `Needs the user: ${wake.why}.`
-      : 'Diagnose and repair it: recheck or stop it, or resubmit a repaired candidate.'
+      : wake.to === 'ultimate'
+        ? `Its branch already had ${BRANCH_WAKES} repair attempts; decide for it: recheck, stop, or ask the user.`
+        : 'Diagnose and repair it: recheck or stop it, or resubmit a repaired candidate.'
   const card = {
     kind: LanderReportEntry.kind,
     data: {
@@ -468,11 +499,26 @@ export async function reportBlocked(
     requestId,
     entry: { ...card, model: [{ role: 'user' as const, content, timestamp: Date.now() }] },
   })
-  await branch?.submit(note(`${text} The user decides; do not recheck it.`), context)
-  if (ultimate !== undefined)
-    await (
-      await host.harness().conversation(ultimate, context)
-    )?.submit(note(`#${entry.conversationId}'s ${text} Ask the user with a card.`), context)
+  const decider = wake.to === 'ultimate' ? '@ultimate decides' : 'The user decides'
+  await branch?.submit(note(`${text} ${decider}; do not recheck it.`), context)
+  if (ultimate === undefined) return
+  const standing = await host.harness().conversation(ultimate, context)
+  if (wake.to === 'ultimate')
+    await standing?.submit(
+      {
+        type: 'input',
+        whenBusy: 'followUp',
+        requestId,
+        content: `#${entry.conversationId}'s ${text}`,
+        entry: card,
+      },
+      context,
+    )
+  else
+    await standing?.submit(
+      note(`#${entry.conversationId}'s ${text} Ask the user with a card.`),
+      context,
+    )
 }
 
 export function createLander(
@@ -552,12 +598,15 @@ export function createLander(
             }
           }, context)
         }
-        await runtime.commit(async (tx) => {
+        const parked = await runtime.commit(async (tx) => {
           const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
           const mine = index.queue.filter((item) => item.source === source)
           for (const item of mine)
-            item.state = item.delivery && waits(item.delivery) ? 'waiting' : 'queued'
-          const choice = pick(mine, runtime.now())
+            if (item.delivery && waits(item.delivery)) {
+              item.state = 'waiting'
+              delete item.delivery.slot
+            } else item.state = 'queued'
+          const choice = pick(index.queue, runtime.now(), (item) => item.source === source)
           if (!choice && index.closing?.some((item) => item.source === source))
             return {
               status: 'sleeping',
@@ -570,11 +619,17 @@ export function createLander(
           }
           if ('until' in choice)
             return { status: 'sleeping', until: choice.until, checkpoint: { phase: 'next' } }
-          const entry = mine[choice.ready]
+          const entry = index.queue[choice.ready]
           entry.state = 'landing'
-          if (!entry.delivery) await log(tx, runtime.conversationId, entry, { step: 'started' })
+          if (entry.delivery) entry.delivery.slot = true
+          else await log(tx, runtime.conversationId, entry, { step: 'started' })
           return { status: 'running', checkpoint: { phase: 'land', id: entry.id, attempt: 1 } }
         }, context)
+        const index = await runtime.snapshot(Workspaces, ROOT_CONVERSATION_ID, context)
+        for (const item of index?.queue ?? [])
+          if (item.source === source && item.delivery && item.state === 'waiting')
+            await askStanding(host, index!, item, runtime.conversationId, context)
+        return parked
       },
       land: async (task, runtime, context) => {
         const { id, attempt, pushRetried } = task.state.checkpoint
@@ -587,7 +642,7 @@ export function createLander(
             context,
           )
         const { source, target } = entry
-        const round = `${entry.rebuilds ?? 0}.${attempt}`
+        const round = entry.rebuilds ? `${entry.rebuilds}.${attempt}` : `${attempt}`
         const recordedFirstFastForward = async () =>
           (await runtime.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!.queue.find(
             (item) => item.id === id,
@@ -669,28 +724,6 @@ export function createLander(
             saved.state = 'queued'
             return { status: 'running', checkpoint: { phase: 'next' } }
           }, context)
-        }
-        const askStanding = async (delivery: NonNullable<QueueEntry['delivery']>) => {
-          const grant = (await runtime.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))
-            ?.standing
-          const action = delivery.stage as 'publish' | 'merge'
-          const actor = { by: 'ultimate', standing: grant } as const
-          const env = { now: Date.now(), runtime: deliveryRuntime() }
-          if (authorize(actor, action, delivery, 'waiting', env)) return
-          const ultimate = await host.harness().conversation(grant!.conversation, context)
-          await ultimate
-            ?.submit(
-              {
-                type: 'input',
-                whenBusy: 'followUp',
-                requestId: `delivery-standing:${id}:${action}:${delivery.candidate}`,
-                content: `Delivery ${id} (${delivery.risk} risk, ${delivery.candidate}) awaits ${action} approval and qualifies under the user's standing approval until ${new Date(grant!.until).toISOString()}. Decide it: call workspaces/delivery with standing: true and your reason, or leave it for the user.`,
-              },
-              context,
-            )
-            .catch((error: unknown) =>
-              host.notice(`Delivery ${id} standing wake failed: ${failure(error)}`),
-            )
         }
         const commitLandingOutcome = (text: string, outcome: LanderOutcome, sha = outcome.sha) =>
           runtime.commit(async (tx) => {
@@ -938,7 +971,6 @@ export function createLander(
             if (delivery.stage === 'blocked' && delivery.cause === 'stale')
               return await rebuild(delivery)
             if (delivery.stage === 'blocked') await reportBlocked(host, Workspaces, id, context)
-            else if (waits(delivery)) await askStanding(delivery)
             return next()
           }
           const verification = settings.delivery
@@ -1166,11 +1198,9 @@ export function createLander(
             )
             await git(source, 'merge-base', '--is-ancestor', remoteBase.commit.sha, integrated)
             const tree = await git(source, 'rev-parse', `${integrated}^{tree}`)
-            const text = pullRequestText({
+            const facts = {
               ...(entry.subject ? { subject: entry.subject } : {}),
               divergence: entry.divergence,
-              risk: entry.assessment.risk,
-              review: entry.assessment.review,
               candidate: integrated,
               tree,
               baseline: remoteBase.commit.sha,
@@ -1183,7 +1213,7 @@ export function createLander(
               conversationId: entry.conversationId,
               lander: runtime.conversationId,
               ...(entry.rebuilds ? { rebuild: entry.rebuilds } : {}),
-            })
+            }
             const record: NonNullable<QueueEntry['delivery']> = {
               settings: settings.delivery,
               ...entry.assessment,
@@ -1191,7 +1221,7 @@ export function createLander(
               candidate: integrated,
               tree,
               branch,
-              text,
+              facts,
               checkedAt: checkedIntegration.checkedAt,
               runtime: checkedIntegration.runtime,
               stage: entry.assessment.reviewedTree === tree ? 'publish' : 'review',
@@ -1212,7 +1242,7 @@ export function createLander(
                 {
                   type: 'input',
                   whenBusy: 'followUp',
-                  requestId: `delivery-review:${id}`,
+                  requestId: `delivery-review:${id}:${tree}`,
                   content: `Integration changed the reviewed tree. Independently review ${remoteBase.commit.sha}..${integrated}, then resubmit this same tip with reviewedTree ${tree}, risk and review evidence. No publication occurred.`,
                   entry: {
                     kind: LanderReportEntry.kind,
@@ -1234,7 +1264,6 @@ export function createLander(
                 ? 'delivery: publish'
                 : `delivery: review ${integrated}`,
             )
-            if (waits(record)?.on === 'publish') await askStanding(record)
             return next()
           }
           await step('fast-forwarding')

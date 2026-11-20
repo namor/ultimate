@@ -366,6 +366,8 @@ export const actions = {
         throw new Error('A hands-off goal cannot grant a standing approval; it waits for the user')
       index.standing = grant
     }, context)
+    await workspaces(host).resume(context)
+    host.harness().resume()
     return grant
   }),
   github: implementAction(

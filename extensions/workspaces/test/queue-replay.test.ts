@@ -45,13 +45,13 @@ const entry = (id: string): Entry => ({
   state: 'queued',
   deliveryConfig: settings,
 })
-const check = (atMinute: number, conclusion: string) => ({
+type Check = { atMinute: number; name: string; status: string; conclusion: string | null }
+const check = (atMinute: number, conclusion: string | null, status = 'completed'): Check => ({
   atMinute,
   name: 'verify',
-  status: 'completed',
+  status,
   conclusion,
 })
-type Check = ReturnType<typeof check>
 type Scenario = {
   name: string
   ids: string
@@ -73,7 +73,7 @@ const fix: Scenario = {
 const missing: Scenario = {
   name: '2. Runner never acquired',
   ids: 'A',
-  checks: [null, check(10, 'success')],
+  checks: [check(0, null, 'queued'), check(10, 'success')],
 }
 const slow: Scenario[] = [
   { name: '3a. One runner timeout', ids: 'A', checks: [timeout, success] },
@@ -90,13 +90,11 @@ const scenarios = [fix, missing, ...slow, external, stale, green, repair, medium
 function ready(queue: Entry[], e: Entry, now: number) {
   const d = e.delivery
   if (d && waits(d)) return false
-  if (d && d.stage !== 'publish') return (d.pollAt ?? 0) <= now
+  if (d?.slot) return (d.pollAt ?? 0) <= now
   const repo = d?.settings.repository ?? e.deliveryConfig.repository
   return !queue.some(
     ({ delivery: other }) =>
-      other?.settings.repository === repo &&
-      ['pr', 'ci', 'merge', 'merged'].includes(other.stage) &&
-      !waits(other),
+      other?.settings.repository === repo && other.slot === true && !waits(other),
   )
 }
 
@@ -172,7 +170,7 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
   if (!s.unstarted) {
     const d = build(entries[0], s.approval ? 'merge' : 'ci')
     const p = publishPR(d)
-    entries[0].delivery = { ...d, pr: p.number, since: 0, published: true }
+    entries[0].delivery = { ...d, pr: p.number, since: 0, published: true, slot: true }
     if (s.stale) entries[0].delivery.pollAt = MIN
     if (s.approval) runs.get(d.candidate)![0] = [check(0, 'success')]
     if (s.external) finish(p)
@@ -225,7 +223,13 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
       if (!latest) return { total_count: 0, check_runs: [] } as never
       const completed_at = new Date(latest.atMinute * MIN).toISOString()
       const app = { id: 1, slug: 'github-actions' }
-      const run = { ...latest, head_sha: sha, completed_at, app }
+      const run = {
+        ...latest,
+        head_sha: sha,
+        completed_at,
+        app,
+        details_url: `https://github.com/${repository}/actions/runs/${pulls.find((pull) => pull.head.sha === sha)!.number}`,
+      }
       return { total_count: 1, check_runs: [run] } as never
     }
     if (path.includes('/actions/runs?')) {
@@ -272,7 +276,7 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
     }
     const d = await advanceDelivery(
       '/fixture',
-      before,
+      { ...before, slot: true },
       async (saved) => {
         e.delivery = saved
       },
@@ -281,9 +285,17 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
       minute * MIN,
     )
     e.delivery = { ...d, pollAt: minute * MIN + POLL_MS }
+    if (waits(e.delivery)) delete e.delivery.slot
     if (d.stage === 'merged') {
       merged.set(e.id, minute)
       queue.splice(queue.indexOf(e), 1)
+    } else if (d.stage === 'blocked' && d.cause === 'stale' && mode === 'OLD') {
+      // The base lander had no rebuild: the user stops the stale PR and the branch resubmits.
+      clicks++
+      retire(e, 'Stopped')
+      const fresh = entry(e.id)
+      queue.push(fresh)
+      entries.push(fresh)
     } else if (d.stage === 'blocked') {
       if (d.cause === 'stale' && (e.rebuilds ?? 0) < MAX_REBUILDS) {
         e.rebuilds = (e.rebuilds ?? 0) + 1
@@ -329,8 +341,24 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
     const head = queue[0]
     const parked = head?.delivery && waits(head.delivery)
     if (mode === 'OLD') {
-      // ponytail: approximate the old slot rule, using the same PR transitions but no Actions retries.
+      // ponytail: approximate the old slot rule, using the same PR transitions but no Actions retries,
+      // and the base lander's one-hour expiry of every wait (11455df7 lander.ts:693-714): an expired wait
+      // blocks until the user clicks Recheck.
       if (!head) continue
+      const d = head.delivery
+      if (d && d.stage !== 'blocked' && d.stage !== 'merged' && now - (d.since ?? 0) > 60 * MIN) {
+        d.resumeStage = d.stage
+        d.stage = 'blocked'
+        d.reason = 'Delivery waited over one hour; recheck explicitly'
+      }
+      if (d?.stage === 'blocked' && d.reason?.startsWith('Delivery waited over one hour')) {
+        clicks++
+        d.stage = d.resumeStage!
+        d.since = now
+        delete d.reason
+        slotHold++
+        continue
+      }
       if (parked) {
         stuck = Math.max(stuck, queue.slice(1).filter((e) => ready(queue, e, now)).length)
         if (s.checks?.[0] === failure && minute === 15) {
@@ -343,7 +371,10 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
       } else if ((head.delivery?.pollAt ?? 0) > now || !(await step(head))) slotHold++
       continue
     }
-    for (const e of queue) e.state = e.delivery && waits(e.delivery) ? 'waiting' : 'queued'
+    for (const e of queue) {
+      e.state = e.delivery && waits(e.delivery) ? 'waiting' : 'queued'
+      if (e.state === 'waiting') delete e.delivery!.slot
+    }
     const choice = pick(queue, now)
     const index = choice && 'ready' in choice ? choice.ready : undefined
     const first = queue.findIndex((e) => ready(queue, e, now))
@@ -463,7 +494,33 @@ it('lets three low PRs merge during the two-hour approval wait', async () => {
   expect(r.merged.get('D')).toBeLessThan(120)
   expect(r.entries[0].rebuilds).toBe(1)
   expect(r.approvals).toEqual(['A-sha', 'A-sha-r1'])
-  expect(await replay(medium, 'OLD')).toMatchObject({ parkedHold: 120, stuck: 3 })
+  expect(await replay(medium, 'OLD')).toMatchObject({ stuck: 3 })
+  expect((await replay(medium, 'OLD')).clicks).toBeGreaterThan(0)
+})
+
+it('keeps one PR in flight per repository when a parked approval resumes', () => {
+  const a: Delivery = {
+    settings,
+    stage: 'merge',
+    risk: 'medium',
+    baseline: 'm',
+    candidate: 'A-sha',
+    tree: 'A-tree',
+    branch: 'ultimate-delivery/A',
+    review: 'r',
+    checkedAt: 0,
+    runtime: deliveryRuntime(),
+    pr: 1,
+  }
+  const b: Delivery = { ...a, stage: 'ci', risk: 'low', candidate: 'B-sha', pr: 2, slot: true }
+  const queue = [{ delivery: a }, { delivery: b }]
+  expect(pick(queue, 0)).toEqual({ ready: 1 })
+  a.mergeApproved = true
+  expect(pick(queue, 0)).toEqual({ ready: 1 })
+  b.pollAt = 60_000
+  expect(pick(queue, 0)).toEqual({ until: 60_000 })
+  delete b.slot
+  expect(pick(queue, 0)).toEqual({ ready: 0 })
 })
 
 it('prints the old-vs-new table', async () => {

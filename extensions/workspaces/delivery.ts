@@ -1,5 +1,6 @@
 import type { ConversationId, EntryId } from '@earendil-works/pi-durable'
 import type { DeliverySettings } from './delivery-settings.ts'
+import type { PullRequestFacts } from './pull-request.ts'
 import type { QueueEntry, StandingGrant } from './types.ts'
 
 export type DeliveryRisk = 'low' | 'medium' | 'high'
@@ -26,9 +27,10 @@ export type Delivery = {
   checkedAt: number
   runtime: string
   stage: Stage
+  slot?: boolean
   since?: number
   pollAt?: number
-  text?: { title: string; body: string }
+  facts?: Omit<PullRequestFacts, 'risk' | 'review'>
   published?: boolean
   publishIntent?: boolean
   createIntent?: boolean
@@ -45,8 +47,9 @@ export type Delivery = {
   rerun?: boolean
   rerunAt?: number
   reruns?: number
+  cancelled?: number
   blocks?: number
-  wake?: { block: number; to: 'branch' | 'user'; why?: string }
+  wake?: { block: number; to: 'branch' | 'ultimate' | 'user'; why?: string }
   decisions?: Decision[]
 }
 export type Approval = {
@@ -59,7 +62,10 @@ export type Approval = {
   standing?: EntryId
   reason?: string
 }
-export type Wait = { on: 'review' | 'publish' | 'merge' | 'repair' | 'user'; why?: string }
+export type Wait = {
+  on: 'review' | 'publish' | 'merge' | 'repair' | 'ultimate' | 'user'
+  why?: string
+}
 export type Actor =
   | { by: 'user' }
   | { by: 'ultimate'; instruction: true }
@@ -100,17 +106,18 @@ export function waits(d: Delivery): Wait | undefined {
   if (d.stage === 'merge' && d.risk !== 'low' && !d.mergeApproved) return { on: 'merge' }
   if (d.stage === 'blocked') {
     const why = d.wake?.to === 'user' ? d.wake.why : needsUser(d)
-    return why ? { on: 'user', why } : { on: 'repair' }
+    if (why) return { on: 'user', why }
+    return d.wake?.to === 'ultimate' ? { on: 'ultimate' } : { on: 'repair' }
   }
   return undefined
 }
 
-export const inFlight = (d: Delivery) =>
-  !waits(d) && (d.stage === 'pr' || d.stage === 'ci' || d.stage === 'merge' || d.stage === 'merged')
+export const inFlight = (d: Delivery) => d.slot === true && !waits(d)
 
-export function pick(
-  queue: readonly Pick<QueueEntry, 'delivery' | 'deliveryConfig'>[],
+export function pick<E extends Pick<QueueEntry, 'delivery' | 'deliveryConfig'>>(
+  queue: readonly E[],
   now: number,
+  mine: (entry: E) => boolean = () => true,
 ): { ready: number } | { until: number } | undefined {
   const flying = new Set(
     queue.flatMap((e) =>
@@ -119,13 +126,15 @@ export function pick(
   )
   let until: number | undefined
   for (const [position, e] of queue.entries()) {
+    if (!mine(e)) continue
     const d = e.delivery
+    const repository = d?.settings.repository ?? (e.deliveryConfig || undefined)?.repository
     if (!d) {
-      if (!e.deliveryConfig || !flying.has(e.deliveryConfig.repository)) return { ready: position }
+      if (!repository || !flying.has(repository)) return { ready: position }
       continue
     }
     if (waits(d)) continue
-    if (d.stage === 'publish') {
+    if (!d.slot) {
       if (!flying.has(d.settings.repository)) return { ready: position }
       continue
     }
@@ -142,7 +151,10 @@ export const supersedes = (
   older.conversationId === newer.conversationId &&
   older.target === newer.target &&
   older.state !== 'landing' &&
-  (!older.delivery || (waits(older.delivery) !== undefined && !uncertainWrite(older.delivery)))
+  (!older.delivery ||
+    (waits(older.delivery) !== undefined &&
+      !uncertainWrite(older.delivery) &&
+      older.delivery.cause !== 'safety'))
 
 export function authorize(
   actor: Actor,
@@ -180,6 +192,8 @@ export function authorize(
     if (actor.by === 'agent') {
       const wait = waits(d)
       if (wait?.on === 'user') return `This block needs the user: ${wait.why}`
+      if (wait?.on === 'ultimate' && actor.conversation !== actor.ultimate)
+        return `This block is @ultimate's to decide after ${BRANCH_WAKES} repair attempts`
       if (
         (d.approvals ?? []).filter(
           (a) => a.by === 'agent' && a.action === 'recheck' && a.candidate === d.candidate,
@@ -194,6 +208,8 @@ export function authorize(
     if (uncertainWrite(d)) return 'Reconcile the uncertain write before stopping this delivery'
     if (actor.by === 'agent' && d.stage !== 'blocked')
       return 'Agents stop only a blocked delivery; resubmit to replace one that waits'
+    if (actor.by === 'agent' && waits(d)?.on === 'user')
+      return `This block needs the user: ${waits(d)!.why}`
   }
   return undefined
 }

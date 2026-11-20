@@ -197,6 +197,12 @@ the PR on the lander's next turn: `closePull` reads the PR first and leaves a me
 is retried three times then dropped with a notice. Each autonomous decision is appended to `delivery.decisions` (at most 20)
 and the card lists them.
 
+`test/queue-replay.test.ts` replays the past incidents (the 2026-11-09 starved CI fix, a runner never acquired,
+slow-runner timeouts, an outside merge, a moved base, two green PRs, the 2026-11-20 PR #33 resubmission, a two-hour
+approval wait) against this scheduler and against the previous serial slot with its one-hour expiry, asserts on every
+tick that a parked entry never delays a ready one, and writes the old-versus-new numbers to
+[`test/queue-replay.md`](test/queue-replay.md).
+
 **Who decides what needs judgment.** No new agent: a real failure wakes the owning branch (its coordinator knows the change),
 which rechecks, stops or resubmits; @ultimate approves publish and merge under the user's standing approval; the user decides
 only medium/high approvals without a grant, credentials, safety holds and uncertain remote writes, each with one card carrying

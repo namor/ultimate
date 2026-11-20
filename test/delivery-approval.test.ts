@@ -637,7 +637,7 @@ describe('a blocked delivery report', () => {
     expect(index.queue[0].delivery!.wake).toEqual({ block: 1, to: 'branch' })
   })
 
-  it('after three wakes stops waking the branch and puts a card before the user', async () => {
+  it('after three wakes stops waking the branch and hands the block to @ultimate', async () => {
     const f = await fixture()
     await f.opened.harness.commit(async (tx) => {
       ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).items[String(f.submitter)] = {
@@ -657,9 +657,16 @@ describe('a blocked delivery report', () => {
     const sent = await report(f)
     expect(sent.map(({ to, type }) => ({ to, type }))).toEqual([
       { to: f.submitter, type: 'write' },
-      { to: f.ultimate, type: 'write' },
+      { to: f.ultimate, type: 'input' },
     ])
     expect(sent[1].content).toContain('3 repair attempts')
+    const index = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+    expect(index.queue[0].delivery!.wake).toMatchObject({ to: 'ultimate' })
+    await expect(f.call({ conversationId: f.submitter }, { action: 'recheck' })).rejects.toThrow(
+      "@ultimate's to decide",
+    )
+    await f.call({ conversationId: f.ultimate }, { action: 'recheck' })
+    expect((await f.queued()).stage).toBe('ci')
   })
 
   it('escalates what needs the user at once, without spending an attempt', async () => {

@@ -2,6 +2,7 @@ import { exec } from '../../lib/exec.ts'
 import { git } from '../../lib/git.ts'
 import { CI_LIMIT_MS, MAX_RERUNS } from './delivery.ts'
 import type { Cause, Delivery, Stage } from './delivery.ts'
+import { pullRequestText } from './pull-request.ts'
 
 export const deliveryRuntime = () => `${process.version}/${process.platform}/${process.arch}`
 
@@ -71,7 +72,8 @@ export const github =
     const boundary = /\r?\n\r?\n/.exec(output)
     try {
       if (!boundary) throw new Error('Missing HTTP headers')
-      return JSON.parse(output.slice(boundary.index + boundary[0].length)) as T
+      const body = output.slice(boundary.index + boundary[0].length).trim()
+      return (body ? JSON.parse(body) : {}) as T
     } catch {
       throw new GithubRequestError()
     }
@@ -213,14 +215,13 @@ export async function advanceDelivery(
         d.createIntent = true
         await persist()
         write = 'create'
-        pull = await api<Pull>(`${prefix}/pulls`, 'POST', {
-          head: d.branch,
-          base,
-          title: d.text?.title ?? `Delivery ${d.candidate.slice(0, 7)}`,
-          body:
-            d.text?.body ??
-            `Risk: ${d.risk}\n\nCandidate: ${d.candidate}\nTested tree: ${d.tree}\n\nIndependent review: ${d.review}`,
-        })
+        const text = d.facts
+          ? pullRequestText({ ...d.facts, risk: d.risk, review: d.review })
+          : {
+              title: `Delivery ${d.candidate.slice(0, 7)}`,
+              body: `Risk: ${d.risk}\n\nCandidate: ${d.candidate}\nTested tree: ${d.tree}\n\nIndependent review: ${d.review}`,
+            }
+        pull = await api<Pull>(`${prefix}/pulls`, 'POST', { head: d.branch, base, ...text })
       }
       assertPull(d, pull)
       d.pr = pull.number
@@ -249,29 +250,27 @@ export async function advanceDelivery(
     )
     if (pages.total_count > 100)
       throw new Block('safety', 'Too many checks to establish unambiguous delivery evidence')
-    const rerun = async (why: string, check?: Check) => {
+    const ours = (check: Check) =>
+      check.head_sha === d.candidate &&
+      check.app.slug === 'github-actions' &&
+      protection.required_status_checks.checks.some(
+        (required) => required.context === check.name && required.app_id === check.app.id,
+      )
+    const rerun = async (why: string, check: Check) => {
       if ((d.reruns ?? 0) >= MAX_RERUNS)
         throw new Block('infra', `${why}; ${MAX_RERUNS} automatic reruns spent`)
-      const own = /\/actions\/runs\/(\d+)/.exec(check?.details_url ?? '')?.[1]
-      const runs = own
-        ? {
-            workflow_runs: [
-              await api<{ id: number; status: string; head_sha: string }>(
-                `${prefix}/actions/runs/${own}`,
-              ),
-            ],
-          }
-        : await api<{ workflow_runs: { id: number; status: string; head_sha: string }[] }>(
-            `${prefix}/actions/runs?head_sha=${d.candidate}&per_page=2`,
-          )
-      if (runs.workflow_runs.length > 1)
-        throw new Block('infra', `${why}; several workflow runs share the candidate, none rerun`)
-      const run = runs.workflow_runs[0]
-      if (!run) throw new Block('infra', 'No workflow run exists for the candidate')
+      const own = /\/actions\/runs\/(\d+)/.exec(check.details_url ?? '')?.[1]
+      if (!own) throw new Block('infra', `${why}; the check names no workflow run to rerun`)
+      const run = await api<{ id: number; status: string; head_sha: string }>(
+        `${prefix}/actions/runs/${own}`,
+      )
       if (run.head_sha !== d.candidate)
         throw new Block('safety', 'The workflow run is not for the candidate')
       const done = run.status === 'completed'
+      if (!done && d.cancelled === run.id)
+        throw new Block('infra', `${why}; its cancellation never completed`)
       if (done) d.reruns = (d.reruns ?? 0) + 1
+      else d.cancelled = run.id
       d.rerunAt = now
       d.since = now
       delete d.rerun
@@ -281,8 +280,7 @@ export async function advanceDelivery(
     }
     const failed = pages.check_runs.find(
       (check) =>
-        d.settings.requiredChecks.includes(check.name) &&
-        check.head_sha === d.candidate &&
+        ours(check) &&
         check.status === 'completed' &&
         check.conclusion !== 'success' &&
         (d.rerunAt === undefined || Date.parse(check.completed_at ?? '') > d.rerunAt),
@@ -296,16 +294,13 @@ export async function advanceDelivery(
     }
     if (!checksPassed(d, protection, pages.check_runs)) {
       if (now - (d.since ?? d.checkedAt) > CI_LIMIT_MS) {
-        const required = pages.check_runs.find(
-          (check) =>
-            d.settings.requiredChecks.includes(check.name) && check.head_sha === d.candidate,
-        )
-        if (!required && pages.check_runs.length)
+        const stuck = pages.check_runs.find((check) => ours(check) && check.status !== 'completed')
+        if (!stuck)
           throw new Block(
             'infra',
-            'Required checks did not start within an hour; other workflows ran, nothing rerun',
+            'A required check did not start within an hour; nothing to rerun',
           )
-        await rerun('required checks did not finish within an hour', required)
+        await rerun('required checks did not finish within an hour', stuck)
       }
       d.stage = 'ci'
       return persist()

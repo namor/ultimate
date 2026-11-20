@@ -16,7 +16,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Button } from '@/components/ui/button'
 import { DeliveryAction, StandingAction } from './refs.ts'
 import { deliveryAsk } from './ask.tsx'
-import { CI_LIMIT_MS, MAX_RERUNS, waits } from './delivery.ts'
+import { BRANCH_WAKES as MAX_WAKES, CI_LIMIT_MS, MAX_RERUNS, waits } from './delivery.ts'
 import type { Delivery } from './delivery.ts'
 import type { StandingGrant } from './types.ts'
 import {
@@ -420,9 +420,11 @@ function StatusChip({ state }: { state: Submission }) {
             ? 'Needs you'
             : wait.on === 'repair'
               ? 'Branch repairing'
-              : wait.on === 'review'
-                ? 'Awaiting independent review'
-                : 'Awaiting your approval'}
+              : wait.on === 'ultimate'
+                ? '@ultimate deciding'
+                : wait.on === 'review'
+                  ? 'Awaiting independent review'
+                  : 'Awaiting your approval'}
         </span>
       )
     if (state.delivery && !state.landing)
@@ -503,12 +505,16 @@ function Waits({ delivery }: { delivery: Delivery }) {
       ? `Needs you: ${wait.why}.`
       : wait.on === 'repair'
         ? 'Its branch was asked to diagnose and repair it; recheck, stop or a resubmission clears it.'
-        : wait.on === 'review'
-          ? 'Waits on an independent review of the integration tree; the branch resubmits with reviewedTree.'
-          : `Waits on your ${wait.on} approval (or @ultimate under a standing approval).`
+        : wait.on === 'ultimate'
+          ? `Its branch had ${MAX_WAKES} repair attempts; @ultimate rechecks, stops or asks you.`
+          : wait.on === 'review'
+            ? 'Waits on an independent review of the integration tree; the branch resubmits with reviewedTree.'
+            : `Waits on your ${wait.on} approval (or @ultimate under a standing approval).`
     : delivery.stage === 'ci'
       ? `Waits on GitHub; the lander rechecks every 30 s and reruns a check that never finishes after ${Math.round(CI_LIMIT_MS / 60000)} min (${delivery.reruns ?? 0}/${MAX_RERUNS} reruns used).`
-      : 'The lander moves it on its next turn.'
+      : delivery.stage === 'publish' && !delivery.slot
+        ? `Verified; publishes once ${delivery.settings.repository} has no other delivery PR in flight.`
+        : 'The lander moves it on its next turn.'
   return (
     <p className="text-xs text-muted-foreground">
       {line} In this state for <Elapsed since={since} />.
@@ -520,7 +526,7 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
   const { standing } = useWorkspaceIndex()
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string>()
-  const ask = deliveryAsk(delivery)
+  const ask = deliveryAsk(delivery, standing)
   const action = ask ?? (delivery.stage === 'blocked' ? 'recheck' : undefined)
   const approve = async (
     request: 'publish' | 'merge' | 'recheck' | 'stop' | undefined = action,
