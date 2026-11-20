@@ -170,16 +170,26 @@ it('fires every 2s into distinct answered conversations and supports pause, resu
     prompt: 'Scheduled report',
     schedule: 'every 2s',
   })) as Automation
-  await until(
+  // Advance fake time only between runs: fires skipped behind a slow model call would count toward the
+  // six-per-hour runaway guard and turn the manual run below into a refused seventh fire.
+  const betweenRuns = (test: () => Promise<boolean>, timeout = 7000) =>
+    waitFor(test, timeout, async () =>
+      (await f.records())[0].runs.some((r) => r.status === 'running')
+        ? undefined
+        : vi.advanceTimersByTimeAsync(50),
+    )
+  await betweenRuns(
     async () => (await f.records())[0].runs.filter((r) => r.status === 'done').length >= 2,
-    7000,
   )
   await f.action('pause', { id: a.id })
+  // Pause stops new fires but not one in flight, and on a slow runner a fire can land while the
+  // previous run is still busy and be recorded as skipped (main CI 43152240483): settle, then check the real runs.
   await until(async () => (await f.records())[0].runs.every((r) => r.status !== 'running'))
-  const runs = (await f.records())[0].runs
-  const started = runs.filter((r) => r.status !== 'skipped')
-  expect(new Set(started.map((r) => r.conversationId)).size).toBe(started.length)
-  for (const run of started) {
+  const all = (await f.records())[0].runs
+  const runs = all.filter((r) => r.status !== 'skipped')
+  expect(runs.every((r) => r.status === 'done')).toBe(true)
+  expect(new Set(runs.map((r) => r.conversationId)).size).toBe(runs.length)
+  for (const run of runs) {
     expect(run.answer).toBe('Answer: Scheduled report')
     const child = (await f.opened.harness.conversation(run.conversationId!, context))!
     const view = await child.context(context)
@@ -192,15 +202,15 @@ it('fires every 2s into distinct answered conversations and supports pause, resu
     expect((await f.opened.harness.snapshot(Metadata, child.id, context))?.label).toBe('automation')
   }
   await vi.advanceTimersByTimeAsync(2200)
-  expect((await f.records())[0].runs).toHaveLength(runs.length)
+  expect((await f.records())[0].runs).toHaveLength(all.length)
   await f.action('run', { id: a.id })
-  await until(async () => (await f.records())[0].runs.at(-1)?.status === 'done')
-  expect((await f.records())[0].runs).toHaveLength(runs.length + 1)
+  await betweenRuns(async () => (await f.records())[0].runs.at(-1)?.status === 'done')
+  expect((await f.records())[0].runs).toHaveLength(all.length + 1)
   await f.action('resume', { id: a.id })
-  await until(
-    async () => (await f.records())[0].runs.slice(runs.length + 1).some((r) => r.status === 'done'),
-    3500,
-  )
+  await betweenRuns(async () => {
+    const current = (await f.records())[0].runs
+    return current.length === all.length + 2 && current.at(-1)?.status === 'done'
+  }, 3500)
   await f.action('delete', { id: a.id })
   expect(await f.records()).toEqual([])
   expect(await f.opened.harness.conversation(runs[0].conversationId!, context)).toBeDefined()
@@ -277,7 +287,11 @@ it('pause keeps a running profile run alive, skips overlap, and abort cancels a 
     schedule: 'every 1s',
     agent: 'writer',
   })) as Automation
-  await until(f.held)
+  // Wait for the hold on real time only: skipped fires count toward the six-per-hour runaway guard, and
+  // advancing fake time through a slow model call piled up enough of them that the manual run below was
+  // refused as a seventh fire (PR #33 CI run 44697743889).
+  await until(async () => (await f.records())[0].runs.length > 0)
+  await waitFor(f.held, 7000)
   const run = (await f.records())[0].runs[0]
   const child = (await f.opened.harness.conversation(run.conversationId!, context))!
   const agent = await child.agent(context)
