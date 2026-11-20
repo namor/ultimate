@@ -152,7 +152,9 @@ workspace tip with `reviewedTree`, `risk` and `review`. No main-branch merge in 
 
 Only then does delivery push the immutable SHA to its submission branch and create/reconcile a PR in the explicit repository.
 The queue record holds the candidate, tree, destination, check time, write intents and PR identity across replacement tasks.
-An interrupted push reconciles the exact remote ref. An uncertain PR creation/merge is reconciled before further writes;
+The named Git remote must have exactly one effective push destination, the authorized GitHub repository. The lander
+reads branch SHAs and compares commits in that repository on GitHub, not on a local fetch mirror. It reconciles an
+interrupted push against the exact delivery ref. An uncertain PR creation/merge is reconciled before further writes;
 missing or conflicting evidence stops delivery rather than blindly repeating a create. Blocked records stay visible for
 **Recheck outcome**. Rechecking does not fabricate a new local-check timestamp or clear an uncertain-write intent.
 A delivery can be stopped at any stage short of `merged` while retaining its record; the lander then closes its own PR with a

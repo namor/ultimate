@@ -38,6 +38,11 @@ const pull = (done = false) => ({
   head: { sha: candidate, ref: 'ultimate-delivery/test', repo: { full_name: 'example/my-app' } },
   base: { ref: 'main', sha: baseline, repo: { full_name: 'example/my-app' } },
 })
+const refs = (branch: string, sha: string) => [
+  { ref: `refs/heads/${branch}`, object: { type: 'commit', sha } },
+]
+const baseRef = 'repos/example/my-app/git/matching-refs/heads/main'
+const deliveryRef = 'repos/example/my-app/git/matching-refs/heads/ultimate-delivery/test'
 const protection = {
   enforce_admins: { enabled: true },
   allow_force_pushes: { enabled: false },
@@ -57,10 +62,8 @@ describe('PR delivery', () => {
       }
       let writes = 0
       let done = false
-      vi.mocked(git).mockImplementation(async (...args) =>
-        args.at(-1) === 'refs/heads/main' ? `${baseline}\trefs/heads/main` : '',
-      )
       const api: Github = async (path, method) => {
+        if (path === baseRef) return refs('main', baseline) as never
         if (path.includes('/pulls?')) return [] as never
         if (path.endsWith('/protection')) return protection as never
         if (path.includes('/check-runs'))
@@ -109,9 +112,6 @@ describe('PR delivery', () => {
       const controller = new AbortController()
       vi.mocked(git).mockImplementation(async (...args) => {
         if (args.includes('get-url')) return 'git@github.com:example/my-app.git'
-        if (args.at(-1) === 'refs/heads/main') return `${baseline}\trefs/heads/main`
-        if (args.includes('ls-remote'))
-          return happened ? `${candidate}\trefs/heads/ultimate-delivery/test` : ''
         if (args.includes('push')) {
           writes++
           happened = true
@@ -121,6 +121,8 @@ describe('PR delivery', () => {
         return ''
       })
       const api: Github = async (path, method) => {
+        if (path === baseRef) return refs('main', baseline) as never
+        if (path === deliveryRef) return (happened ? refs(saved.branch, candidate) : []) as never
         if (path.endsWith('/protection')) return protection as never
         if (path.includes('/check-runs'))
           return {
@@ -169,10 +171,12 @@ describe('PR delivery', () => {
     const writes: { intent: boolean | undefined; fields?: Record<string, string> }[] = []
     vi.mocked(git).mockImplementation(async (...args) => {
       if (args.includes('get-url')) return 'git@github.com:example/my-app.git'
-      if (args.at(-1) === 'refs/heads/main') return `${baseline}\trefs/heads/main`
+      if (args.includes('ls-remote')) throw new Error('Fetch mirror is not authoritative')
       return ''
     })
     const api: Github = async (path, method, fields) => {
+      if (path === baseRef) return refs('main', baseline) as never
+      if (path === deliveryRef) return [] as never
       if (path.includes('/pulls?')) return (created ? [pull()] : []) as never
       if (path.endsWith('/pulls') && method === 'POST') {
         writes.push({ intent: saved.createIntent })
@@ -213,7 +217,40 @@ describe('PR delivery', () => {
     ])
     const pushes = vi.mocked(git).mock.calls.filter((args) => args.includes('push'))
     expect(pushes).toHaveLength(1)
-    expect(pushes[0]).toContain(`${candidate}:refs/heads/ultimate-delivery/test`)
+    expect(pushes[0].slice(-2)).toEqual([
+      'origin',
+      `${candidate}:refs/heads/ultimate-delivery/test`,
+    ])
+    expect(vi.mocked(git).mock.calls).toContainEqual([
+      '/project',
+      'remote',
+      'get-url',
+      '--push',
+      '--all',
+      'origin',
+    ])
+  })
+
+  it('refuses publication to a remote with more than one push destination', async () => {
+    vi.mocked(git)
+      .mockReset()
+      .mockResolvedValue(
+        'https://github.com/example/my-app.git\nhttps://github.com/example/other.git',
+      )
+    const api = vi.fn<() => Promise<never>>(async () => {
+      throw new Error('No GitHub call is expected')
+    })
+    const result = await advanceDelivery(
+      '/project',
+      makeDelivery(),
+      async () => undefined,
+      new AbortController().signal,
+      api,
+    )
+    expect(result).toMatchObject({ stage: 'blocked', cause: 'safety' })
+    expect(result.publishIntent).toBeUndefined()
+    expect(api).not.toHaveBeenCalled()
+    expect(vi.mocked(git).mock.calls).toHaveLength(1)
   })
 
   it('writes to no workflow run when the protection names a check outside the configuration', async () => {

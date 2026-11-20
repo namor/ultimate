@@ -59,7 +59,7 @@ const responseStatus = (output: string) => {
 export const github =
   (cwd: string, signal: AbortSignal): Github =>
   async <T>(path: string, method = 'GET', fields: Record<string, string> = {}) => {
-    const args = ['api', '--include', '--method', method, path]
+    const args = ['api', '--hostname', 'github.com', '--include', '--method', method, path]
     for (const [key, value] of Object.entries(fields)) args.push('-f', `${key}=${value}`)
     let output: string
     try {
@@ -163,21 +163,28 @@ export async function advanceDelivery(
     await save(d)
     return d
   }
-  const requireBaseline = async (destination: string, unresolvedPush = false) => {
-    const opts = { cwd: source, signal, timeout: 300000 }
-    const ref = `refs/heads/${base}`
-    const [target, found] = (await git(opts, 'ls-remote', '--refs', destination, ref)).split('\t')
-    if (found !== ref) throw new Block('safety', `Cannot establish the current ${base} ref`)
+  const head = async (branch: string) => {
+    const path = branch.split('/').map(encodeURIComponent).join('/')
+    const refs = await api<{ ref: string; object: { type: string; sha: string } }[]>(
+      `${prefix}/git/matching-refs/heads/${path}`,
+    )
+    const found = refs.find((item) => item.ref === `refs/heads/${branch}`)
+    if (!found) return undefined
+    if (found.object.type !== 'commit' || !found.object.sha)
+      throw new Block('safety', `Cannot establish the current ${branch} commit`)
+    return found.object.sha
+  }
+  const requireBaseline = async () => {
+    const target = await head(base)
+    if (!target) throw new Block('safety', `Cannot establish the current ${base} ref`)
     if (target === d.baseline) return
-    if (unresolvedPush)
+    if (d.publishIntent && !d.published)
       throw new Block('uncertain-write', `${base} changed while publication was unconfirmed`)
-    await git(opts, 'fetch', '--no-tags', '--no-write-fetch-head', destination, target)
-    try {
-      await git(opts, 'merge-base', '--is-ancestor', d.baseline, target)
-    } catch (error) {
-      if ((error as { code?: number }).code !== 1) throw error
+    const comparison = await api<{ status: string; merge_base_commit: { sha: string } }>(
+      `${prefix}/compare/${d.baseline}...${target}?per_page=1`,
+    )
+    if (comparison.status !== 'ahead' || comparison.merge_base_commit.sha !== d.baseline)
       throw new Block('safety', `${base} is no longer a descendant of the verified base`)
-    }
     throw new Block('stale', `${base} moved to ${target.slice(0, 7)} since the candidate was built`)
   }
   let write: 'create' | 'merge' | undefined
@@ -189,25 +196,20 @@ export async function advanceDelivery(
       if (d.risk === 'high' && !d.publishApproved && !d.publishIntent) return d
       if (d.publishIntent && !d.published)
         decide('reconcile publication', 'a recorded push intent was not confirmed')
-      const url = await git(source, 'remote', 'get-url', '--push', remote)
+      const destinations = await git(source, 'remote', 'get-url', '--push', '--all', remote)
       if (
         ![
           `git@github.com:${repository}.git`,
           `https://github.com/${repository}.git`,
           `https://github.com/${repository}`,
-        ].includes(url)
+        ].includes(destinations)
       )
         throw new Block('safety', 'Push remote does not match the authorized repository')
-      const existing = await git(
-        { cwd: source, signal, timeout: 30000 },
-        'ls-remote',
-        url,
-        `refs/heads/${d.branch}`,
-      )
-      if (existing && existing.split(/\s/)[0] !== d.candidate)
+      const existing = await head(d.branch)
+      if (existing && existing !== d.candidate)
         throw new Block('safety', 'Delivery branch collision; refusing to overwrite it')
       if (!existing) {
-        await requireBaseline(url, d.publishIntent)
+        await requireBaseline()
         if (!d.publishIntent) {
           d.publishIntent = true
           await persist()
@@ -215,7 +217,9 @@ export async function advanceDelivery(
         await git(
           { cwd: source, signal, timeout: 300000 },
           'push',
-          url,
+          '--no-follow-tags',
+          '--recurse-submodules=no',
+          remote,
           `${d.candidate}:refs/heads/${d.branch}`,
         )
       }
@@ -337,7 +341,7 @@ export async function advanceDelivery(
     if (d.risk !== 'low' && !d.mergeApproved) return d
     const fresh = await api<Pull>(`${prefix}/pulls/${d.pr}`)
     assertPull(d, fresh)
-    await requireBaseline(remote)
+    await requireBaseline()
     d.mergeIntent = true
     try {
       await persist()

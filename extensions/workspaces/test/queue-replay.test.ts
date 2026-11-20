@@ -181,20 +181,10 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
   }
   if (s.stale) entries[1].delivery = build(entries[1])
   vi.mocked(git).mockImplementation(async (_source, command, ...args) => {
-    if (command === 'fetch' || command === 'merge-base') return ''
     if (command === 'remote' && args[0] === 'get-url') return `https://github.com/${repository}.git`
-    if (command === 'ls-remote') {
-      if (args.at(-1) === 'refs/heads/main') {
-        // OLD published after the wait without checking the base; model that admission, not a new guard.
-        const oldBase = queue[0]?.delivery?.baseline
-        const oldAdmission = mode === 'OLD' && args.includes(`https://github.com/${repository}.git`)
-        return `${oldAdmission ? oldBase : main}\trefs/heads/main`
-      }
-      const pushed = pushes.get(args[1])
-      return pushed ? `${pushed.sha}\t${args[1]}` : ''
-    }
     if (command === 'push') {
-      const [sha, ref] = args[1].split(':')
+      assert.equal(args.at(-2), 'origin')
+      const [sha, ref] = args.at(-1)!.split(':')
       pushes.set(ref, { sha, minute })
       return ''
     }
@@ -204,6 +194,20 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
     calls.push({ path, method, minute, body: fields.body })
     const p = pulls[Number(/\/(?:pulls|issues)\/(\d+)/.exec(path)?.[1]) - 1]
     const query = new URLSearchParams(path.split('?')[1])
+    const branch = path.split('/git/matching-refs/heads/')[1]
+    if (branch) {
+      const ref = `refs/heads/${branch}`
+      // OLD pushed after the wait with no new check of its verified base.
+      const old = mode === 'OLD' && queue[0]?.delivery?.stage === 'publish'
+      const sha =
+        branch === 'main' ? (old ? queue[0].delivery!.baseline : main) : pushes.get(ref)?.sha
+      return (sha ? [{ ref, object: { type: 'commit', sha } }] : []) as never
+    }
+    if (path.includes('/compare/')) {
+      const [from, to] = path.split('/compare/')[1].split('?')[0].split('...')
+      assert.equal(to, main)
+      return { status: 'ahead', merge_base_commit: { sha: from } } as never
+    }
     if (path.includes('/pulls?'))
       return pulls.filter((pull) => query.get('head') === `example:${pull.head.ref}`) as never
     if (path.endsWith('/pulls') && method === 'POST') {
