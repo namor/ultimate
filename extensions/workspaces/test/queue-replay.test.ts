@@ -6,8 +6,11 @@ import { advanceDelivery, closePull, deliveryRuntime, GithubRequestError } from 
 import type { Github } from '../advance.ts'
 import {
   authorize,
+  inFlight,
   MAX_REBUILDS,
+  needsSlot,
   needsUser,
+  park,
   pick,
   POLL_MS,
   supersedes,
@@ -37,6 +40,7 @@ type Entry = Pick<QueueEntry, 'conversationId' | 'target' | 'state' | 'delivery'
   id: string
   deliveryConfig: typeof settings
   result?: { status: 'failed'; reason: string }
+  deadline?: number
 }
 const entry = (id: string): Entry => ({
   id,
@@ -290,10 +294,10 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
       merged.set(e.id, minute)
       queue.splice(queue.indexOf(e), 1)
     } else if (d.stage === 'blocked' && d.cause === 'stale' && mode === 'OLD') {
-      // The base lander had no rebuild: the user stops the stale PR and the branch resubmits.
+      // The base lander had no rebuild: the user stops the stale PR and the branch resubmits a new tip.
       clicks++
       retire(e, 'Stopped')
-      const fresh = entry(e.id)
+      const fresh = { ...entry(e.id), id: `${e.id}'`, rebuilds: (e.rebuilds ?? 0) + 1 }
       queue.push(fresh)
       entries.push(fresh)
     } else if (d.stage === 'blocked') {
@@ -346,7 +350,12 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
       // blocks until the user clicks Recheck.
       if (!head) continue
       const d = head.delivery
-      if (d && d.stage !== 'blocked' && d.stage !== 'merged' && now - (d.since ?? 0) > 60 * MIN) {
+      if (
+        d &&
+        d.stage !== 'blocked' &&
+        d.stage !== 'merged' &&
+        now > (head.deadline ?? d.checkedAt + 60 * MIN)
+      ) {
         d.resumeStage = d.stage
         d.stage = 'blocked'
         d.reason = 'Delivery waited over one hour; recheck explicitly'
@@ -354,7 +363,7 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
       if (d?.stage === 'blocked' && d.reason?.startsWith('Delivery waited over one hour')) {
         clicks++
         d.stage = d.resumeStage!
-        d.since = now
+        head.deadline = now + 60 * MIN
         delete d.reason
         slotHold++
         continue
@@ -521,6 +530,26 @@ it('keeps one PR in flight per repository when a parked approval resumes', () =>
   expect(pick(queue, 0)).toEqual({ until: 60_000 })
   delete b.slot
   expect(pick(queue, 0)).toEqual({ ready: 0 })
+  // Parking releases the slot in the same write, so an approval between two scheduler turns cannot revive it.
+  const parked = {
+    state: 'landing' as const,
+    delivery: { ...b, stage: 'merge' as const, risk: 'medium' as const, slot: true },
+  }
+  park(parked)
+  expect(parked).toMatchObject({ state: 'waiting' })
+  expect(parked.delivery.slot).toBeUndefined()
+  parked.delivery.mergeApproved = true
+  expect(inFlight(parked.delivery)).toBe(false)
+  // A source whose only entry waits for another source's slot stays scheduled, not terminated.
+  expect(
+    needsSlot(
+      [
+        { delivery: { ...a, stage: 'publish' as const, risk: 'low' as const } },
+        { delivery: { ...b, slot: true } },
+      ],
+      { delivery: { ...a, stage: 'publish' as const, risk: 'low' as const } },
+    ),
+  ).toBe(true)
 })
 
 it('prints the old-vs-new table', async () => {

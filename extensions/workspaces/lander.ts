@@ -29,7 +29,9 @@ import {
   authorize,
   BRANCH_WAKES,
   MAX_REBUILDS,
+  needsSlot,
   needsUser,
+  park,
   pick,
   POLL_MS,
   waits,
@@ -387,33 +389,61 @@ export async function activeLandingCards(tx: Tx, index: WorkspaceIndex) {
   return results
 }
 
+export const standingAskOwed = (
+  index: Pick<WorkspaceIndex, 'standing'>,
+  entry: Pick<QueueEntry, 'delivery'>,
+  env: { now: number; runtime: string },
+) => {
+  const delivery = entry.delivery
+  const wait = delivery && waits(delivery)
+  if (!delivery || (wait?.on !== 'publish' && wait?.on !== 'merge')) return undefined
+  const grant = index.standing
+  if (authorize({ by: 'ultimate', standing: grant }, wait.on, delivery, 'waiting', env))
+    return undefined
+  return delivery.asked === grant!.instruction ? undefined : wait.on
+}
+
 export async function askStanding(
   host: Pick<Host, 'harness' | 'notice'>,
+  Workspaces: ConversationDocToken<WorkspaceIndex>,
   index: Pick<WorkspaceIndex, 'standing'>,
   entry: Pick<QueueEntry, 'id' | 'delivery'>,
   lander: ConversationId,
   context: Context,
 ) {
-  const delivery = entry.delivery!
-  const wait = waits(delivery)
-  if (wait?.on !== 'publish' && wait?.on !== 'merge') return
-  const grant = index.standing
   const env = { now: Date.now(), runtime: deliveryRuntime() }
-  if (authorize({ by: 'ultimate', standing: grant }, wait.on, delivery, 'waiting', env)) return
-  const ultimate = await host.harness().conversation(grant!.conversation, context)
-  await ultimate
+  const action = standingAskOwed(index, entry, env)
+  if (!action) return true
+  const delivery = entry.delivery!
+  const grant = index.standing!
+  const ultimate = await host.harness().conversation(grant.conversation, context)
+  const sent = await ultimate
     ?.submit(
       {
         type: 'input',
         whenBusy: 'followUp',
-        requestId: `delivery-standing:${entry.id}:${wait.on}:${delivery.candidate}:${grant!.instruction}`,
-        content: `Delivery ${entry.id} (${delivery.risk} risk, ${delivery.candidate}) awaits ${wait.on} approval and qualifies under the user's standing approval until ${new Date(grant!.until).toISOString()}. Decide it: call workspaces/delivery with standing: true and your reason, or leave it for the user. Log: lander conversation #${lander}.`,
+        requestId: `delivery-standing:${entry.id}:${action}:${delivery.candidate}:${grant.instruction}`,
+        content: `Delivery ${entry.id} (${delivery.risk} risk, ${delivery.candidate}) awaits ${action} approval and qualifies under the user's standing approval until ${new Date(grant.until).toISOString()}. Decide it: call workspaces/delivery with standing: true and your reason, or leave it for the user. Log: lander conversation #${lander}.`,
       },
       context,
     )
-    .catch((error: unknown) =>
-      host.notice(`Delivery ${entry.id} standing wake failed: ${failure(error)}`),
+    .then(
+      () => true,
+      (error: unknown) => {
+        context.abortSignal?.throwIfAborted()
+        host.notice(`Delivery ${entry.id} standing wake failed: ${failure(error)}`)
+        return false
+      },
     )
+  if (sent)
+    await host.harness().commit(async (tx) => {
+      const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
+        (item) => item.id === entry.id,
+      )
+      if (saved?.delivery?.candidate === delivery.candidate)
+        saved.delivery.asked = grant.instruction
+    }, context)
+  return sent === true
 }
 
 export async function reportBlocked(
@@ -598,16 +628,24 @@ export function createLander(
             }
           }, context)
         }
-        const parked = await runtime.commit(async (tx) => {
+        const owed = await runtime.snapshot(Workspaces, ROOT_CONVERSATION_ID, context)
+        const env = { now: runtime.now(), runtime: deliveryRuntime() }
+        let asked = true
+        for (const item of owed?.queue ?? [])
+          if (item.source === source && standingAskOwed(owed!, item, env))
+            asked =
+              (await askStanding(host, Workspaces, owed!, item, runtime.conversationId, context)) &&
+              asked
+        await runtime.commit(async (tx) => {
           const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
           const mine = index.queue.filter((item) => item.source === source)
-          for (const item of mine)
-            if (item.delivery && waits(item.delivery)) {
-              item.state = 'waiting'
-              delete item.delivery.slot
-            } else item.state = 'queued'
+          for (const item of mine) park(item)
           const choice = pick(index.queue, runtime.now(), (item) => item.source === source)
-          if (!choice && index.closing?.some((item) => item.source === source))
+          const pending =
+            !asked ||
+            index.closing?.some((item) => item.source === source) ||
+            mine.some((item) => needsSlot(index.queue, item))
+          if (!choice && pending)
             return {
               status: 'sleeping',
               until: runtime.now() + POLL_MS,
@@ -625,11 +663,6 @@ export function createLander(
           else await log(tx, runtime.conversationId, entry, { step: 'started' })
           return { status: 'running', checkpoint: { phase: 'land', id: entry.id, attempt: 1 } }
         }, context)
-        const index = await runtime.snapshot(Workspaces, ROOT_CONVERSATION_ID, context)
-        for (const item of index?.queue ?? [])
-          if (item.source === source && item.delivery && item.state === 'waiting')
-            await askStanding(host, index!, item, runtime.conversationId, context)
-        return parked
       },
       land: async (task, runtime, context) => {
         const { id, attempt, pushRetried } = task.state.checkpoint
@@ -692,13 +725,9 @@ export function createLander(
               )
               if (!saved?.delivery) return
               const block = (saved.delivery.blocks ?? 0) + 1
-              saved.delivery.wake = {
-                block,
-                to: 'user',
-                why: `the base moved ${MAX_REBUILDS} times while it waited; resubmit or stop it`,
-              }
+              saved.delivery.wake = { block, to: 'ultimate' }
               saved.delivery.blocks = block
-              saved.state = 'waiting'
+              park(saved)
             }, context)
             await reportBlocked(host, Workspaces, id, context)
             return next()
@@ -920,7 +949,8 @@ export function createLander(
                   ...(current?.mergeApproved ? { mergeApproved: true } : {}),
                   ...(current?.approvals ? { approvals: current.approvals } : {}),
                 }
-                saved.state = waits(saved.delivery) ? 'waiting' : 'landing'
+                if (waits(saved.delivery)) park(saved)
+                else saved.state = 'landing'
               }, context)
             const delivery = await advanceDelivery(source, previous, save, signal)
             if (delivery.stage === previous.stage && delivery.reason === previous.reason)
@@ -1233,7 +1263,8 @@ export function createLander(
                 (item) => item.id === id,
               )!
               saved.delivery = record
-              saved.state = waits(record) ? 'waiting' : 'landing'
+              if (waits(record)) park(saved)
+              else saved.state = 'landing'
             }, context)
             if (entry.assessment.reviewedTree !== tree) {
               await (
@@ -1323,7 +1354,7 @@ export function createLander(
                 resumeStage: current.stage === 'blocked' ? current.resumeStage : current.stage,
                 reason: 'Delivery recovery failed; inspect the lander log',
               }
-              saved.state = 'waiting'
+              park(saved)
             }, context)
             host.notice(`Delivery ${id} recovery failed: ${failure(error)}`)
             await reportBlocked(host, Workspaces, id, context)

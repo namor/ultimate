@@ -28,6 +28,7 @@ export type Delivery = {
   runtime: string
   stage: Stage
   slot?: boolean
+  asked?: number
   since?: number
   pollAt?: number
   facts?: Omit<PullRequestFacts, 'risk' | 'review'>
@@ -113,6 +114,29 @@ export function waits(d: Delivery): Wait | undefined {
 }
 
 export const inFlight = (d: Delivery) => d.slot === true && !waits(d)
+
+export function park(entry: Pick<QueueEntry, 'state' | 'delivery'>) {
+  const d = entry.delivery
+  if (d && waits(d)) {
+    entry.state = 'waiting'
+    delete d.slot
+  } else entry.state = 'queued'
+}
+
+export const needsSlot = (
+  queue: readonly Pick<QueueEntry, 'delivery' | 'deliveryConfig'>[],
+  entry: Pick<QueueEntry, 'delivery' | 'deliveryConfig'>,
+) => {
+  const d = entry.delivery
+  const repository = d?.settings.repository ?? (entry.deliveryConfig || undefined)?.repository
+  if (!repository || (d && (waits(d) || d.slot))) return false
+  return queue.some(
+    (other) =>
+      other.delivery &&
+      inFlight(other.delivery) &&
+      other.delivery.settings.repository === repository,
+  )
+}
 
 export function pick<E extends Pick<QueueEntry, 'delivery' | 'deliveryConfig'>>(
   queue: readonly E[],

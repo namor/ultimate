@@ -314,6 +314,7 @@ export const actions = {
         ) => d.approvals?.findLast((approval) => approval.action === a)?.standing !== undefined
         for (const { delivery: d } of index.queue) {
           if (!d) continue
+          delete d.asked
           const stage = d.stage === 'blocked' ? d.resumeStage : d.stage
           if (
             stage === 'publish' &&

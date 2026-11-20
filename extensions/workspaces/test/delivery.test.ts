@@ -216,6 +216,47 @@ describe('PR delivery', () => {
     expect(pushes[0]).toContain(`${candidate}:refs/heads/ultimate-delivery/test`)
   })
 
+  it('writes to no workflow run when the protection names a check outside the configuration', async () => {
+    const saved: Delivery = { ...makeDelivery(), stage: 'ci', pr: 3 }
+    const writes: string[] = []
+    const api: Github = async (path, method) => {
+      if (method === 'POST') {
+        writes.push(path)
+        return {} as never
+      }
+      if (path.endsWith('/protection'))
+        return {
+          ...protection,
+          required_status_checks: { strict: true, checks: [{ context: 'another-job', app_id: 1 }] },
+        } as never
+      if (path.includes('/check-runs'))
+        return {
+          total_count: 1,
+          check_runs: [
+            {
+              name: 'another-job',
+              head_sha: candidate,
+              status: 'completed',
+              conclusion: 'timed_out',
+              completed_at: new Date().toISOString(),
+              details_url: 'https://github.com/example/my-app/actions/runs/17',
+              app: { id: 1, slug: 'github-actions' },
+            },
+          ],
+        } as never
+      return pull() as never
+    }
+    const result = await advanceDelivery(
+      '/project',
+      saved,
+      async () => undefined,
+      new AbortController().signal,
+      api,
+    )
+    expect(result).toMatchObject({ stage: 'blocked', cause: 'safety' })
+    expect(writes).toEqual([])
+  })
+
   it('reads an empty success body as a successful write', async () => {
     vi.mocked(exec).mockResolvedValueOnce({
       stdout: 'HTTP/2.0 204 No Content\r\nx-github-request-id: 1\r\n\r\n',

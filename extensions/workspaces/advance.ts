@@ -102,7 +102,7 @@ export function assertPull(delivery: Delivery, pull: Pull) {
     throw new Block('safety', 'PR identity changed; delivery stopped')
 }
 
-export function checksPassed(delivery: Delivery, protection: Protection, checks: Check[]) {
+export function assertProtection(delivery: Delivery, protection: Protection) {
   const required = protection.required_status_checks
   if (
     !protection.enforce_admins?.enabled ||
@@ -116,6 +116,11 @@ export function checksPassed(delivery: Delivery, protection: Protection, checks:
     )
   )
     throw new Block('safety', 'Strict PR/check protection including administrators is required')
+  return required
+}
+
+export function checksPassed(delivery: Delivery, protection: Protection, checks: Check[]) {
+  const required = assertProtection(delivery, protection)
   return required.checks.every((expected) => {
     const matches = checks.filter(
       (check) => check.name === expected.context && check.head_sha === delivery.candidate,
@@ -250,11 +255,13 @@ export async function advanceDelivery(
     )
     if (pages.total_count > 100)
       throw new Block('safety', 'Too many checks to establish unambiguous delivery evidence')
+    const required = assertProtection(d, protection)
     const ours = (check: Check) =>
       check.head_sha === d.candidate &&
       check.app.slug === 'github-actions' &&
-      protection.required_status_checks.checks.some(
-        (required) => required.context === check.name && required.app_id === check.app.id,
+      d.settings.requiredChecks.includes(check.name) &&
+      required.checks.some(
+        (expected) => expected.context === check.name && expected.app_id === check.app.id,
       )
     const rerun = async (why: string, check: Check) => {
       if ((d.reruns ?? 0) >= MAX_RERUNS)
