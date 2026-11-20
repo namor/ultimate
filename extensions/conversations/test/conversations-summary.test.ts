@@ -141,6 +141,11 @@ afterEach(async () => {
 let ultimateRoot: string
 beforeAll(async () => {
   ultimateRoot = await sourceCopy(await temp('ultimate-summary-source-'))
+  // These tests install a summary stub in memory. A file reload would replace it with the real facet.
+  await writeFile(
+    join(ultimateRoot, 'vite.config.ts'),
+    "export default { root: 'web', cacheDir: '.vite-cache', optimizeDeps: { noDiscovery: true }, server: { watch: null } }",
+  )
 })
 /** Waits for the test's gate, or gives up when the summary task is aborted, as when a failed test closes its server. */
 const held = (gate: Promise<void>, signal: AbortSignal) =>
