@@ -182,9 +182,14 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
   if (s.stale) entries[1].delivery = build(entries[1])
   vi.mocked(git).mockImplementation(async (_source, command, ...args) => {
     if (command === 'fetch' || command === 'merge-base') return ''
-    if (command === 'rev-parse' && args[0] === 'FETCH_HEAD') return main
     if (command === 'remote' && args[0] === 'get-url') return `https://github.com/${repository}.git`
     if (command === 'ls-remote') {
+      if (args.at(-1) === 'refs/heads/main') {
+        // OLD published after the wait without checking the base; model that admission, not a new guard.
+        const oldBase = queue[0]?.delivery?.baseline
+        const oldAdmission = mode === 'OLD' && args.includes(`https://github.com/${repository}.git`)
+        return `${oldAdmission ? oldBase : main}\trefs/heads/main`
+      }
       const pushed = pushes.get(args[1])
       return pushed ? `${pushed.sha}\t${args[1]}` : ''
     }
@@ -468,18 +473,19 @@ it('parks an externally merged PR for reconciliation', async () => {
 it.each([stale, green])('$name: B publishes after A merges', async (s) => {
   const r = await replay(s, 'NEW')
   expect([...r.merged.keys()]).toEqual(['A', 'B'])
-  expect(r.pushes.get('refs/heads/ultimate-delivery/B')!.minute).toBeGreaterThan(r.merged.get('A')!)
+  const branch = r.entries[1].delivery!.branch
+  expect(r.pushes.get(`refs/heads/${branch}`)!.minute).toBeGreaterThan(r.merged.get('A')!)
 })
 
-it(`${stale.name}: closes the stale PR and rebuilds once`, async () => {
+it(`${stale.name}: rebuilds before spending a push or a CI run on the obsolete SHA`, async () => {
   const r = await replay(stale, 'NEW')
   expect(r.entries[1]).toMatchObject({
     rebuilds: 1,
     delivery: { branch: 'ultimate-delivery/B-r1' },
   })
-  expect(r.pulls[1]).toMatchObject({ state: 'closed', merged: false })
-  expect(r.calls).toContainEqual(comment(2, 'main moved'))
-  expect(r.wasted).toBe(1)
+  expect(r.pushes.has('refs/heads/ultimate-delivery/B')).toBe(false)
+  expect(r.pulls.map((p) => p.head.sha)).toEqual(['A-sha', 'B-sha-r1'])
+  expect(r.wasted).toBe(0)
 })
 
 it('supersedes the parked PR #33 submission unless a merge is uncertain', async () => {

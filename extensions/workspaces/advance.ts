@@ -163,6 +163,23 @@ export async function advanceDelivery(
     await save(d)
     return d
   }
+  const requireBaseline = async (destination: string, unresolvedPush = false) => {
+    const opts = { cwd: source, signal, timeout: 300000 }
+    const ref = `refs/heads/${base}`
+    const [target, found] = (await git(opts, 'ls-remote', '--refs', destination, ref)).split('\t')
+    if (found !== ref) throw new Block('safety', `Cannot establish the current ${base} ref`)
+    if (target === d.baseline) return
+    if (unresolvedPush)
+      throw new Block('uncertain-write', `${base} changed while publication was unconfirmed`)
+    await git(opts, 'fetch', '--no-tags', '--no-write-fetch-head', destination, target)
+    try {
+      await git(opts, 'merge-base', '--is-ancestor', d.baseline, target)
+    } catch (error) {
+      if ((error as { code?: number }).code !== 1) throw error
+      throw new Block('safety', `${base} is no longer a descendant of the verified base`)
+    }
+    throw new Block('stale', `${base} moved to ${target.slice(0, 7)} since the candidate was built`)
+  }
   let write: 'create' | 'merge' | undefined
   if (d.stage === 'blocked' || d.stage === 'merged' || d.stage === 'review') return d
   try {
@@ -190,6 +207,7 @@ export async function advanceDelivery(
       if (existing && existing.split(/\s/)[0] !== d.candidate)
         throw new Block('safety', 'Delivery branch collision; refusing to overwrite it')
       if (!existing) {
+        await requireBaseline(url, d.publishIntent)
         if (!d.publishIntent) {
           d.publishIntent = true
           await persist()
@@ -197,7 +215,7 @@ export async function advanceDelivery(
         await git(
           { cwd: source, signal, timeout: 300000 },
           'push',
-          remote,
+          url,
           `${d.candidate}:refs/heads/${d.branch}`,
         )
       }
@@ -319,20 +337,7 @@ export async function advanceDelivery(
     if (d.risk !== 'low' && !d.mergeApproved) return d
     const fresh = await api<Pull>(`${prefix}/pulls/${d.pr}`)
     assertPull(d, fresh)
-    await git(
-      { cwd: source, signal, timeout: 300000 },
-      'fetch',
-      '--no-tags',
-      remote,
-      `refs/heads/${base}`,
-    )
-    const target = await git(source, 'rev-parse', 'FETCH_HEAD')
-    await git(source, 'merge-base', '--is-ancestor', d.baseline, target)
-    if (target !== d.baseline)
-      throw new Block(
-        'stale',
-        `${base} moved to ${target.slice(0, 7)} since the candidate was built`,
-      )
+    await requireBaseline(remote)
     d.mergeIntent = true
     try {
       await persist()

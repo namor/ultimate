@@ -178,19 +178,21 @@ all read it.
 | `merge` (medium/high)         | merge approval                             | no             | user, @ultimate on instruction or standing approval                         | none                                                     |
 | `merge` (low or approved)     | GitHub                                     | no             | lander: head-sha merge after a fresh base check                             | none                                                     |
 | `merged`                      | the lander                                 | yes            | lander: fast-forwards the local target                                      | none                                                     |
-| `blocked`, branch             | the submitting branch                      | no             | branch or @ultimate: recheck (3 per candidate), stop, resubmit (supersedes) | 3 wakes per branch chain, then the user                  |
+| `blocked`, branch             | the submitting branch                      | no             | branch or @ultimate: recheck (3 per candidate), stop, resubmit (supersedes) | 3 wakes per branch chain, then @ultimate                 |
 | `blocked`, user               | the user                                   | no             | user, or @ultimate on instruction: recheck or stop                          | none                                                     |
-| `blocked`, `stale`            | the lander                                 | yes (briefly)  | lander: closes its PR, rebuilds the same submission on the current base     | 3 rebuilds, then the user                                |
+| `blocked`, `stale`            | the lander                                 | yes (briefly)  | lander: closes its PR, rebuilds the same submission on the current base     | 3 rebuilds, then @ultimate                               |
 
 **Mechanical decisions are the lander's code.** Every block carries a structured `cause` (`check-failed`, `infra`, `closed`,
 `runtime`, `github`, `uncertain-write`, `auth`, `safety`, `stale`); nothing matches reason text. A required check that
 concluded `failure` blocks to the branch. One that concluded otherwise (`cancelled`, `timed_out`, `startup_failure`) or never
 ran within an hour is an infrastructure failure: the lander cancels a stuck run and reruns the completed one through the Actions API, at
-most `MAX_RERUNS` (2) times per candidate, then blocks to the branch with cause `infra`. A base that moved before the merge
-(`target !== baseline` after the ancestry check) marks the delivery `stale`: the lander queues its own PR for closing with a
-comment, deletes the delivery record (keeping spent approvals on the entry so an instruction cannot decide a second delivery),
+most `MAX_RERUNS` (2) times per candidate, then blocks to the branch with cause `infra`. Before a new push or merge, the
+lander reads the base ref. If it has advanced from the verified baseline, the lander rebuilds without spending CI on an
+unpublished candidate. A rewritten base, unconfirmed push, or HTTP 405/409 alone does not authorize a rebuild. For a
+proven advance, the lander queues its own PR for closing with a comment if it exists and deletes the delivery record
+(keeping spent approvals on the entry so an instruction cannot decide a second delivery),
 bumps `rebuilds` and verifies the same tip again on the current base with fresh memos and a `-r<n>` delivery branch; after
-`MAX_REBUILDS` (3) it asks the user. A resubmission of the same branch to the same target supersedes its parked predecessor in
+`MAX_REBUILDS` (3) it asks @ultimate. A resubmission of the same branch to the same target supersedes its parked predecessor in
 the submit transaction (`supersedes`: parked, not landing, no uncertain write): the old entry becomes a `failed` result
 "Superseded by <id>", its PR goes on `closing`, and no Stop click is needed (PR #33, 2026-11-20). A stop or supersede closes
 the PR on the lander's next turn: `closePull` reads the PR first and leaves a merged or already closed one alone; a failed close

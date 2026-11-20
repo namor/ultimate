@@ -58,7 +58,7 @@ describe('PR delivery', () => {
       let writes = 0
       let done = false
       vi.mocked(git).mockImplementation(async (...args) =>
-        args.includes('rev-parse') ? baseline : '',
+        args.at(-1) === 'refs/heads/main' ? `${baseline}\trefs/heads/main` : '',
       )
       const api: Github = async (path, method) => {
         if (path.includes('/pulls?')) return [] as never
@@ -89,7 +89,7 @@ describe('PR delivery', () => {
       }
       const signal = new AbortController().signal
       await advanceDelivery('/project', saved, save, signal, api)
-      expect(saved.stage).toBe('blocked')
+      expect(saved).toMatchObject({ stage: 'blocked', cause: 'safety' })
       expect(saved.createIntent).toBeUndefined()
       expect(saved.mergeIntent).toBeUndefined()
       saved.stage = saved.resumeStage!
@@ -109,9 +109,9 @@ describe('PR delivery', () => {
       const controller = new AbortController()
       vi.mocked(git).mockImplementation(async (...args) => {
         if (args.includes('get-url')) return 'git@github.com:example/my-app.git'
+        if (args.at(-1) === 'refs/heads/main') return `${baseline}\trefs/heads/main`
         if (args.includes('ls-remote'))
           return happened ? `${candidate}\trefs/heads/ultimate-delivery/test` : ''
-        if (args.includes('rev-parse')) return baseline
         if (args.includes('push')) {
           writes++
           happened = true
@@ -169,7 +169,7 @@ describe('PR delivery', () => {
     const writes: { intent: boolean | undefined; fields?: Record<string, string> }[] = []
     vi.mocked(git).mockImplementation(async (...args) => {
       if (args.includes('get-url')) return 'git@github.com:example/my-app.git'
-      if (args.includes('rev-parse')) return baseline
+      if (args.at(-1) === 'refs/heads/main') return `${baseline}\trefs/heads/main`
       return ''
     })
     const api: Github = async (path, method, fields) => {
