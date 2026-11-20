@@ -186,11 +186,9 @@ export const actions = {
       await host.harness().snapshot(Workspaces, ROOT_CONVERSATION_ID, context)
     )?.queue.find((item) => item.id === args.id)
     if (!seen || !bound(seen)) throw new Error('Delivery candidate changed; approval refused')
-    // The submitting branch, or @ultimate, rechecks or stops a blocked delivery on its own: neither publishes nor merges.
     const standing = host.doc('ultimate.standing-agents')
     const ultimate =
       standing && (await host.harness().snapshot(standing, ROOT_CONVERSATION_ID, context))?.ultimate
-    // Recheck or stop without the user's instruction is an agent's own call, judged by `agentRefusal` in the commit.
     const agent =
       !device &&
       args.instruction === undefined &&
@@ -266,7 +264,6 @@ export const actions = {
       else if (action === 'recheck' && delivery.stage === 'blocked' && delivery.resumeStage) {
         delivery.stage = delivery.resumeStage
         delete delivery.reason
-        // Its next block is a new one, reported once again.
         delete delivery.wake
         delivery.deadline = Date.now() + 60 * 60 * 1000
       } else throw new Error('Delivery stage changed; reload its card')
@@ -298,8 +295,6 @@ export const actions = {
         ) => d.approvals?.findLast((approval) => approval.action === a)?.standing !== undefined
         for (const { delivery: d } of index.queue) {
           if (!d) continue
-          // A blocked delivery keeps its approvals for the stage a recheck resumes: withdraw those too, or a recheck
-          // (the user's, or since #53902 its branch's) would publish or merge under a revoked grant.
           const stage = d.stage === 'blocked' ? d.resumeStage : d.stage
           if (stage === 'publish' && d.publishApproved && standingLast(d, 'publish'))
             delete d.publishApproved

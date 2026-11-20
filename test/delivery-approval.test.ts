@@ -503,13 +503,13 @@ describe('agents on a blocked delivery', () => {
       }
       delete queued.delivery.wake
     }, context)
-  const agent = (f: Awaited<ReturnType<typeof fixture>>, id: number, action: string) =>
+  const agent = (f: Awaited<ReturnType<typeof fixture>>, id: ConversationId, action: string) =>
     f.call({ conversationId: id }, { action })
 
   it('lets the submitting branch and @ultimate recheck and stop, recording who', async () => {
     const f = await fixture()
     await f.opened.harness.commit(async (tx) => {
-      ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).landerConversations['/fixture'] = 1
+      ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).landerConversations['/fixture'] = f.ultimate
     }, context)
     await block(f)
     await agent(f, f.submitter, 'recheck')

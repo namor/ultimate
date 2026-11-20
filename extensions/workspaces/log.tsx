@@ -476,7 +476,6 @@ function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
   const { standing } = useWorkspaceIndex()
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string>()
-  // What the card offers: what the delivery asks of the user, or a recheck of a block its branch is repairing.
   const ask = deliveryAsk(delivery)
   const action = ask ?? (delivery.stage === 'blocked' ? 'recheck' : undefined)
   const approve = async (

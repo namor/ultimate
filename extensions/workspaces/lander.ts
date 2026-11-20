@@ -385,13 +385,6 @@ export async function activeLandingCards(tx: Tx, index: WorkspaceIndex) {
   return results
 }
 
-/**
- * Report blocked delivery `id` once per block. One its branch can repair wakes that branch with the reason, the candidate
- * and where the failing check logs are, up to `BRANCH_WAKES` blocks across the branch's resubmissions. One that needs the
- * user (`needsUser`), or one past that cap, wakes no model: it is a card in @ultimate's conversation, to ask the user,
- * and a note in the branch. The decision is recorded on the delivery before anything is sent, and each send has a
- * per-block request id, so a replay or a second lander pass sends nothing twice.
- */
 export async function reportBlocked(
   host: Pick<Host, 'harness' | 'doc' | 'notice'>,
   Workspaces: ConversationDocToken<WorkspaceIndex>,
@@ -423,7 +416,7 @@ export async function reportBlocked(
       lander: index.landerConversations[entry.source],
       wake: { ...delivery.wake },
       ultimate: standing
-        ? ((await tx.doc(standing, ROOT_CONVERSATION_ID)).ultimate as ConversationId | undefined)
+        ? (await tx.doc(standing, ROOT_CONVERSATION_ID)).ultimate
         : undefined,
     }
   }, context)
@@ -459,9 +452,8 @@ export async function reportBlocked(
   }
   const text = `Delivery ${id} of candidate ${delivery.candidate} is blocked: ${reason}.${logs} ${hint}`
   const requestId = `delivery-blocked:${id}:${wake.block}`
-  const branch = await host.harness().conversation(entry.conversationId as ConversationId, context)
+  const branch = await host.harness().conversation(entry.conversationId, context)
   if (wake.to === 'branch') {
-    // An input brings a concluded branch back (conversations' beforeInput hook): its owner is always found.
     await branch?.submit(
       { type: 'input', whenBusy: 'followUp', requestId, content: text, entry: card },
       context,
@@ -615,7 +607,6 @@ export function createLander(
             draft.queue = draft.queue.filter((item) => item.id !== id)
             if (outcome.sha) {
               draft.items[String(entry.conversationId)].landed = outcome.sha
-              // A landing ends the chain of repairs: a later delivery of this branch starts its own.
               delete draft.items[String(entry.conversationId)].deliveryWakes
             }
             draft.results[id] = {
