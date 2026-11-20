@@ -43,7 +43,7 @@ export function workWakes(host: ExtensionHost, active: Active) {
         typeof question.from === 'number' &&
         (await messages.starterIn(tx, question.from)) === to
       )
-        return `Branch #${question.from} is waiting on the user for question ${question.id}. Check whether the hands-off goal can proceed without a user decision.`
+        return `Branch #${question.from} asked the user question ${question.id}. Check whether it still needs an answer and whether the hands-off goal can proceed.`
       return undefined
     }
     const concluded = await conversations.concludedIn(tx)
@@ -51,7 +51,7 @@ export function workWakes(host: ExtensionHost, active: Active) {
     for (const id of work.branches)
       if (concluded.has(id) && (await messages.starterIn(tx, id)) === to) branches.push(`#${id}`)
     return branches.length
-      ? `Branch work was concluded: ${branches.join(', ')}. Check what this means for the hands-off goal.`
+      ? `Branch work was concluded: ${branches.join(', ')}. Check its current state and what it means for the hands-off goal.`
       : undefined
   }
 

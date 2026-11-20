@@ -19,6 +19,7 @@ import { AutomationsApi } from '../automations/api.ts'
 import { Standing } from '../subagents/api.ts'
 import { deliver, deliverTask } from './delivery.ts'
 import { LegacyReminderTask, retireReminders } from './reminder.ts'
+import type { GoalState } from './reminder.ts'
 import { eventFence, withdrawWakes, workWakes } from './wake.ts'
 import { EndAction, GoalDoc, ImagesAction, StartAction } from './refs.ts'
 import type { Criterion, Decision, Ending, Goal } from './refs.ts'
@@ -26,7 +27,7 @@ import type { Criterion, Decision, Ending, Goal } from './refs.ts'
 export const TRIES = 3
 const TEXT_CHARS = 2000
 
-export const Goals = defineDoc<{ next: number; goals: Goal[] }>({
+export const Goals = defineDoc<GoalState>({
   kind: GoalDoc.kind,
   checkpointWhen: () => false,
   version: 1,
@@ -52,7 +53,7 @@ const text = (value: unknown, name: string) => {
   return value.trim()
 }
 
-export async function start(tx: Tx, words: unknown, now: number) {
+export async function start(tx: Tx, words: unknown, now: number, afterEvent?: EntryId) {
   const goals = await tx.doc(Goals, ROOT_CONVERSATION_ID)
   const open = goals.goals.find((goal) => !goal.ended)
   if (open) throw new Error(`Goal ${open.id} is still open; end it first`)
@@ -61,6 +62,8 @@ export async function start(tx: Tx, words: unknown, now: number) {
     id: goals.next++,
     text: goalText,
     startedAt: now,
+    workEvents: true,
+    ...(afterEvent === undefined ? {} : { afterEvent }),
     criteria: [],
     decisions: [],
   }
@@ -228,9 +231,7 @@ export const userActions = ['start', 'end']
 export const actions = {
   start: implementAction(StartAction, (args, { host }) =>
     host.harness().commit(async (tx) => {
-      const goal = await start(tx, field(args, 'text'), Date.now())
-      const fence = await eventFence(host, tx)
-      if (fence !== undefined) goal.afterEvent = fence
+      const goal = await start(tx, field(args, 'text'), Date.now(), await eventFence(host, tx))
       await enqueueGoalNotice(host, tx, 'goal.started', goal)
       return detachGoal(goal)
     }, context),

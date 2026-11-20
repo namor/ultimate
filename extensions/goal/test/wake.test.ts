@@ -83,7 +83,12 @@ it('wakes an active goal once for related work and never replays paused, finishe
     }, context)
   try {
     await reactor!.start()
+    await ask(other)
+    await ready()
+    await reactor!.stop()
+    await ask()
     await actions.start({ text: 'Ship the sidebar' }, { host } as never)
+    await reactor!.start()
     await ask(other)
     await opened.harness.commit(
       (tx) =>

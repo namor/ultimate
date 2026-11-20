@@ -34,6 +34,8 @@ export type Goal = {
   startedAt: number
   criteria: Criterion[]
   decisions: Decision[]
+  /** New goals never had a scheduled timer, even if an automation matches their ID. */
+  workEvents?: true
   /** Last event before the current active interval. */
   afterEvent?: EntryId
   /** Legacy scheduled reminder ID, retained for upgrade cleanup. */
