@@ -246,11 +246,11 @@ export async function advanceDelivery(
       if (!run) throw new Block('infra', 'No workflow run exists for the candidate')
       const done = run.status === 'completed'
       await api(`${prefix}/actions/runs/${run.id}/${done ? 'rerun' : 'cancel'}`, 'POST')
-      d.reruns = (d.reruns ?? 0) + 1
+      if (done) d.reruns = (d.reruns ?? 0) + 1
       d.rerunAt = now
       d.since = now
       delete d.rerun
-      decide(done ? 'rerun CI' : 'cancel CI for a rerun', why)
+      decide(done ? 'rerun CI' : 'cancel the stuck CI run; its cancellation is rerun next', why)
     }
     const failed = pages.check_runs.find(
       (check) =>
