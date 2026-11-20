@@ -1,4 +1,4 @@
-import { render } from 'grok-mermaid'
+import { render } from 'lovely-mermaid'
 import { FileTextIcon, FolderOpenIcon, Maximize2Icon, Minimize2Icon } from 'lucide-react'
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
@@ -46,7 +46,6 @@ function Diagram({ code }: CustomRendererProps) {
       const result = render(code)
       return result && !result.warnings.length ? result.plain.join('\n') : undefined
     } catch {
-      // A failed layout leaves the original source readable.
       return undefined
     }
   }, [code])
@@ -68,7 +67,6 @@ function Diagram({ code }: CustomRendererProps) {
   )
 }
 
-// The private reader does not use chat extensions, parse raw HTML, or create navigable/resource-bearing elements.
 const passiveTags = [
   'p',
   'h1',
@@ -96,7 +94,6 @@ const passiveTags = [
   'td',
 ]
 const rehypePlugins = [defaultRehypePlugins.sanitize]
-// Streamdown 2.7 also calls its block splitter in static mode. Its default retains the last document.
 const singleBlock = (markdown: string) => [markdown]
 const plugins = { renderers: [{ language: 'mermaid', component: Diagram }] }
 const controls = { code: false, table: false, mermaid: false } as const
@@ -295,7 +292,6 @@ function Viewer() {
   }
   useLayoutEffect(() => {
     if (!open) return undefined
-    // The composer accepts page-wide file drops. Do not let drops on this dialog or its backdrop upload files.
     const blockFileDrop = (event: DragEvent) => {
       if (!event.dataTransfer?.types.includes('Files')) return
       event.preventDefault()

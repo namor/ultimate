@@ -1,3 +1,13 @@
+import type {
+  AgentState,
+  EntryRecord,
+  InboxItem,
+  JsonObject,
+  LiveState,
+  UsageState,
+  ConversationId,
+  EntryId,
+} from '@earendil-works/pi-durable'
 import {
   createContext,
   useCallback,
@@ -8,26 +18,24 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react'
-import type { JsonValue } from '@earendil-works/chord'
+import type { JsonValue } from '@earendil-works/chord/json'
+import { deadline, every } from '../../../lib/timers.ts'
+import type { Cancel } from '../../../lib/timers.ts'
 import type { ToolCall } from '@earendil-works/pi-ai'
-import type {
-  AgentState,
-  EntryRecord,
-  InboxItem,
-  JsonObject,
-  LiveState,
-  UsageState,
-} from '@earendil-works/pi-durable'
 import { actions, allCommands, ownDefault, regionKeys, shellKeys, shownSurface } from './actions.ts'
 import type { Region } from './actions.ts'
-import { actionMessage, ROOT } from './api.ts'
+import { ROOT } from './api.ts'
 import { EVENT_FEED } from '../../../shared/events.ts'
+import { historyCursorFromStreamBefore } from '../../../shared/protocol.ts'
 import type { StreamedView } from '../../../shared/protocol.ts'
 import type { EventData, EventRecord, EventToken } from '../../../shared/events.ts'
-import type { ActionArgs, ActionError, ActionOptions } from './api.ts'
-import { actionRef, docRef } from '../../../shared/extension-api.ts'
+import type { ActionArgs, ActionError } from './api.ts'
+import { docRef } from '../../../shared/extension-api.ts'
 import type { ActionRef, DocRef } from '../../../shared/extension-api.ts'
-import { api, registry, store, uiState } from './client.ts'
+import { api, reads, registry, store, uiState } from './client.ts'
+import type { Reader } from './reads.ts'
+import { extensionUiKey, writeUiState } from './ui-state.ts'
+import type { UiUpdate, Widen } from './ui-state.ts'
 import {
   HOME,
   compactDocs,
@@ -38,6 +46,8 @@ import {
 } from './registry.ts'
 import type { State } from './store.ts'
 import { errorMessage, formatDuration } from './format.ts'
+import { restartAccepted, restartPhase, restartTimedOut } from './restart.ts'
+import type { RestartPhase } from './restart.ts'
 import type { CompactRow, ToolCallView, UltimateContext } from './types.ts'
 import { useViewport } from './viewport.ts'
 import { ConversationIdContext, TranscriptContext } from './conversation-scope.tsx'
@@ -60,7 +70,7 @@ export function useStore<T>(select: (state: State) => T): T {
 
 export interface ConversationState {
   /** The scoped (or shown) conversation, once its snapshot arrived. */
-  id?: number
+  id?: ConversationId
   /** True until this conversation's snapshot arrived. */
   loading: boolean
   /**
@@ -69,7 +79,7 @@ export interface ConversationState {
    */
   entries: readonly EntryRecord[]
   /** The exclusive `api.history` cursor for entries the stream left out; absent when it sent them all. */
-  older?: number
+  older?: EntryId
   /** `pi.agent`: model, thinking level, cwd, extensions, tools. */
   agent: AgentState
   /** `pi.usage`: spend per model and per tool. */
@@ -103,7 +113,7 @@ function derive(view: StreamedView | undefined): ConversationState {
       id: view.conversation.id,
       loading: false,
       entries: view.entries,
-      older: view.before === undefined ? undefined : view.before + 1,
+      older: historyCursorFromStreamBefore(view.before),
       agent: docs['pi.agent'] ?? {},
       usage: (docs['pi.usage'] ?? empty.usage) as UsageState,
       live,
@@ -133,7 +143,7 @@ export function useConversation<T>(select?: (conversation: ConversationState) =>
  * The shown conversation now, or the streamed conversation `id` (a command's `context.conversationId`), outside React:
  * for commands and callbacks. Components use `useConversation()`.
  */
-export const getConversation = (id?: number): ConversationState => {
+export const getConversation = (id?: ConversationId): ConversationState => {
   const { view, viewsOf } = store.getState()
   return derive(id === undefined || id === view?.conversation.id ? view : viewsOf[id])
 }
@@ -145,7 +155,7 @@ export const useConversations = () => useStore((state) => state.conversations)
  * One conversation's summary: it re-renders only when that row changes, not when another conversation's busy, title or
  * answer time does. Use it instead of `useConversations().find(…)`.
  */
-export const useConversationSummary = (id: number | undefined) =>
+export const useConversationSummary = (id: ConversationId | undefined) =>
   useStore((state) =>
     id === undefined ? undefined : state.conversations.find((summary) => summary.id === id),
   )
@@ -182,7 +192,7 @@ export function useDocKind(kind: string): Readonly<JsonObject> | null | undefine
  * `conversation` is undefined and until its stream delivers it. Every hook on one conversation shares one stream.
  */
 export function useDocOf<T>(
-  conversation: number | undefined,
+  conversation: ConversationId | undefined,
   ref: DocRef<T>,
 ): Readonly<T> | null | undefined {
   const { kind } = ref
@@ -226,7 +236,6 @@ export function useUltimate(): UltimateContext {
   return useMemo(() => ({ ...actions, conversationId, surface }), [conversationId, surface])
 }
 
-/** `shownSurface()` that re-renders when the facets, the choice, or the project's default change. */
 export function useShownSurface() {
   const records = useExtensions()
   const [chosen] = useUiState<JsonValue>(shellKeys.surface, null)
@@ -242,20 +251,17 @@ export function useShownSurface() {
 export function useUiState<T extends JsonValue>(
   key: string,
   initial: T,
-): [Widen<T>, (next: Widen<T> | ((previous: Widen<T>) => Widen<T>)) => void] {
+): [Widen<T>, (next: UiUpdate<T>) => void] {
   const stored = useSyncExternalStore(uiState.subscribe, () => uiState.get(key))
   const fallback = useRef(initial)
   fallback.current = initial
   const set = useCallback(
-    (next: Widen<T> | ((previous: Widen<T>) => Widen<T>)) => {
-      const previous = (uiState.get(key) ?? fallback.current) as Widen<T>
-      uiState.set(key, typeof next === 'function' ? next(previous) : next)
-    },
+    (next: UiUpdate<T>) => writeUiState(uiState, key, fallback.current, next),
     [key],
   )
   return [(stored ?? initial) as Widen<T>, set]
 }
-/** Whether the sidebar or the panel is open: shared on a desktop, this tab's own below it (viewport.ts). */
+
 export function useRegionOpen(region: Region) {
   const [key, fallback] = regionKeys[region]
   const [shared] = useUiState<boolean>(key, fallback)
@@ -275,14 +281,8 @@ export function usePanels() {
   const [selected] = useUiState<string | null>(shellKeys.panel, null)
   return { open, ...shownPanels(panels, selected) }
 }
-/** `true` → boolean, `'a'` → string: an initial value names its type, not the only value. */
-export type Widen<T> = T extends boolean
-  ? boolean
-  : T extends string
-    ? string
-    : T extends number
-      ? number
-      : T
+
+export type { Widen } from './ui-state.ts'
 
 /**
  * The entries the transcript around a contribution has loaded, oldest first: the active context and any earlier
@@ -295,17 +295,14 @@ export function useTranscript(): readonly EntryRecord[] {
   return entries ?? (scoped === undefined ? empty.entries : active)
 }
 
-/** The extension whose contribution is rendering; the shell provides it. */
 export const ExtensionNameContext = createContext<string | undefined>(undefined)
 
 /** `useUiState` under `ext.<extension name>.<key>`, for state an extension's UI keeps across reloads. */
 export function useExtensionUiState<T extends JsonValue>(
   key: string,
   initial: T,
-): [Widen<T>, (next: Widen<T> | ((previous: Widen<T>) => Widen<T>)) => void] {
-  const extension = useContext(ExtensionNameContext)
-  if (!extension) throw new Error('useExtensionUiState works inside an extension contribution only')
-  return useUiState(`ext.${extension}.${key}`, initial)
+): [Widen<T>, (next: UiUpdate<T>) => void] {
+  return useUiState(extensionUiKey(useContext(ExtensionNameContext), key), initial)
 }
 
 /** Whether dialog `id` is open, and a setter; `useUltimate().open(id)` opens it from anywhere. */
@@ -319,12 +316,12 @@ export function useExtensions() {
   return useSyncExternalStore(registry.subscribe, registry.getSnapshot)
 }
 const compactFailures = new Set<string>()
-/** Reports a `compact.when` that threw once per message, as a notice naming its extension. */
+
 function reportCompact(extension: string, error: unknown) {
   const message = `extension ${extension}: compact is off, its when() threw: ${errorMessage(error)}`
   if (compactFailures.has(message)) return
   compactFailures.add(message)
-  // Predicates run while React renders the transcript; notify after that render.
+
   queueMicrotask(() => store.notify({ level: 'error', message }))
 }
 const noDocs = {}
@@ -336,10 +333,7 @@ export function useCompact(): ((call: ToolCall) => boolean) | undefined {
   const { compact, docs } = useCompactConfig()
   return useMemo(() => compact && ((call: ToolCall) => compact.keeps(call, docs)), [compact, docs])
 }
-/**
- * Which rows of the shown compact transcript are the thread the reader follows, and the line a receded stretch between
- * them shows (`compact` contributions' `thread` and `summary`), else `undefined`.
- */
+
 export function useCompactThread() {
   const { compact, docs } = useCompactConfig()
   return useMemo(() => {
@@ -353,7 +347,7 @@ function useCompactConfig() {
   const conversation = useConversationSummary(id)
   const kinds = useMemo(() => compactDocs(records).join(','), [records])
   useEffect(() => {
-    const releases = kinds ? kinds.split(',').map((kind) => store.watchDocOf(1, kind)) : []
+    const releases = kinds ? kinds.split(',').map((kind) => store.watchDocOf(ROOT, kind)) : []
     return () => releases.forEach((release) => release())
   }, [kinds])
   const docs = useStore((state) => (kinds ? state.docsOf[1] : undefined)) ?? noDocs
@@ -392,54 +386,26 @@ export interface Restart {
  */
 export function useRestart(timeoutMs = 120000): Restart {
   const system = useStore((state) => state.system)
-  const connection = useStore((state) => state.connection.status)
-  const [state, setState] = useState<{
-    phase: 'idle' | 'asking' | 'swapping'
-    target?: number
-    /** System info when the stream dropped; a different object after reconnecting is fresh. */
-    dropped?: object
-    error?: string
-  }>({ phase: 'idle' })
-  const serving = system?.process.generation ?? 0
+  const open = useStore((state) => state.connection.status === 'open')
+  const [state, setState] = useState<RestartPhase>({ phase: 'idle' })
   useEffect(() => {
-    if (state.phase !== 'swapping' || state.target === undefined) return undefined
-    if (serving >= state.target) {
-      setState({ phase: 'idle' })
-      return undefined
-    }
-    if (connection !== 'open' && !state.dropped) {
-      setState({ ...state, dropped: system ?? {} })
-      return undefined
-    }
-    if (state.dropped && connection === 'open' && system && system !== state.dropped) {
-      setState({
-        phase: 'idle',
-        error: `Generation ${state.target} failed to activate and was rolled back; generation ${serving} keeps serving. The reason is in the supervisor's output.`,
-      })
-      return undefined
-    }
-    const timer = setTimeout(
-      () =>
-        setState({
-          phase: 'idle',
-          error: `Generation ${state.target} did not start serving within ${Math.round(timeoutMs / 1000)} s.`,
-        }),
-      timeoutMs,
-    )
-    return () => clearTimeout(timer)
-  }, [state, serving, connection, system, timeoutMs])
+    const next = restartPhase(state, system, open)
+    if (next !== state) setState(next)
+  }, [state, system, open])
+  const pending = state.phase === 'swapping' ? state.target : undefined
+  useEffect(() => {
+    if (pending === undefined) return undefined
+    return deadline(timeoutMs, () => setState(restartTimedOut(pending, timeoutMs)))
+  }, [pending, timeoutMs])
   return {
-    pending: state.phase === 'swapping' ? state.target : undefined,
+    pending,
     busy: state.phase !== 'idle',
-    error: state.error,
+    error: state.phase === 'idle' ? state.error : undefined,
     clear: () => setState({ phase: 'idle' }),
     run: () => {
       setState({ phase: 'asking' })
       api.restart().then(
-        (result) => {
-          const target = (result as { generation?: number } | undefined)?.generation
-          setState(target === undefined ? { phase: 'idle' } : { phase: 'swapping', target })
-        },
+        (result) => setState(restartAccepted(result)),
         (error: unknown) => setState({ phase: 'idle', error: errorMessage(error) }),
       )
     },
@@ -461,91 +427,67 @@ export interface ActionState<T> {
 }
 
 /** Options of `useAction`. */
-export type UseActionOptions = { enabled?: boolean; onError?: (error: ActionError) => void }
+export type UseActionOptions = {
+  enabled?: boolean
+  onError?: (error: ActionError) => void
+  /** Call again whenever this value changes (compared as JSON), such as a document, an event id or a busy flag. */
+  on?: unknown
+  /** Call again this many ms after the last answer, while enabled. */
+  every?: number
+  /** Call again when the window regains focus. */
+  focus?: boolean
+}
 
 /**
- * Call the server action `ref` names and keep its result: on mount and whenever the action or `args` (compared as
- * JSON) change, unless `enabled` is false. A newer call, new args, or an unmount abort the call in flight, also one
- * `refetch` started; its late result is ignored. Calls act on the nearest conversation scope, or the shown
- * conversation outside one. A failure shows as a notice unless you pass `onError`.
+ * Call the server action `ref` names and keep its result: on mount, whenever the action or `args` (compared as JSON)
+ * change, when `on` changes, every `every` ms, on focus with `focus`, and after the server restarts; never while
+ * `enabled` is false. Components reading the same action and args share one call and one result, so a remount shows
+ * the last answer at once while it asks again. A newer call aborts the older one. Calls act on the nearest conversation scope, or the shown conversation outside one. A failure
+ * shows as a notice unless a reader passes `onError`.
  */
 export function useAction<Args, T>(
   ref: ActionRef<Args, T>,
   ...[args, options = {}]: ActionArgs<Args, UseActionOptions>
 ): ActionState<T> {
-  const { extension, name } = ref
-  const conversationId = useContext(ConversationIdContext)
-  const key = JSON.stringify([extension, name, args ?? null, conversationId ?? null])
-  const [state, setState] = useState<{
-    key: string
-    data?: T
-    error?: ActionError
-    loading: boolean
-  }>({ key, loading: options.enabled !== false })
-  const latest = useRef({
-    args,
-    onError: options.onError,
-    controller: undefined as AbortController | undefined,
-  })
-  latest.current.args = args
-  latest.current.onError = options.onError
-  const call = useCallback(async () => {
-    latest.current.controller?.abort()
-    const controller = new AbortController()
-    latest.current.controller = controller
-    setState((previous) => ({ ...(previous.key === key ? previous : { key }), loading: true }))
-    try {
-      // Rebuilt from its strings, so a ref made during render does not refetch on every render.
-      const data = await api.action(
-        actionRef<Args, T>(extension, name),
-        ...([latest.current.args, { signal: controller.signal, conversationId }] as ActionArgs<
-          Args,
-          ActionOptions
-        >),
-      )
-      if (controller.signal.aborted) return undefined
-      setState({ key, data, loading: false })
-      return data
-    } catch (error) {
-      if (controller.signal.aborted) {
-        // Disabled or unmounted rather than replaced by a newer call: nothing is in flight anymore.
-        if (latest.current.controller === controller)
-          setState((previous) => ({ ...previous, loading: false }))
-        return undefined
-      }
-      const failure = error as ActionError
-      setState((previous) => ({ ...previous, key, error: failure, loading: false }))
-      const { onError } = latest.current
-      if (onError) onError(failure)
-      else store.notify({ level: 'error', message: actionMessage(failure) })
-      return undefined
-    }
-    // `key` stands for args too, which are read through `latest`.
-  }, [key, extension, name, conversationId])
+  const scoped = useContext(ConversationIdContext)
+  const shown = useStore((state) => state.view?.conversation.id ?? state.requested ?? ROOT)
+  const readConversation = scoped ?? shown
+  const read = reads.get(ref.extension, ref.name, args, readConversation)
+  const state = useSyncExternalStore(read.subscribe, read.get)
   const enabled = options.enabled !== false
+  const reader = useRef<Reader>({}).current
+  reader.onError = options.onError
+  reader.focus = options.focus
+  reader.every = options.every
+  useEffect(() => (enabled ? read.use(reader) : undefined), [read, reader, enabled])
+  useEffect(() => read.repoll(), [read, options.every])
+  const on = JSON.stringify(options.on ?? null)
+  const seen = useRef(on)
   useEffect(() => {
-    // oxlint-disable-next-line typescript/no-floating-promises -- useAction reports failures and resolves undefined rather than rejecting.
-    if (enabled) void call()
-    // Disabled too: a `refetch` in flight must not outlive the component or its args.
-    // oxlint-disable-next-line react/exhaustive-deps -- abort the call in flight at cleanup, possibly a later refetch
-    return () => latest.current.controller?.abort()
-  }, [call, enabled])
-  const current = state.key === key ? state : { key, loading: enabled }
-  return { data: current.data, error: current.error, loading: current.loading, refetch: call }
+    if (seen.current === on) return
+    seen.current = on
+    if (enabled) void read.refetch()
+  }, [read, on, enabled])
+  return {
+    data: state.data as T | undefined,
+    error: state.error,
+    loading: state.loading || (enabled && !state.settled),
+    refetch: read.refetch as () => Promise<T | undefined>,
+  }
 }
 
 /** `copy(text)` puts text on the clipboard; `copied` is true for 1.2 s after, and a failure becomes an error notice. */
 export function useCopy() {
   const [copied, setCopied] = useState(false)
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  useEffect(() => () => clearTimeout(timer.current), [])
+  const cancelReset = useRef<Cancel>(undefined)
+  useEffect(() => () => cancelReset.current?.(), [])
   const copy = (text: string) =>
     void navigator.clipboard
       .writeText(text)
       .then(() => {
         setCopied(true)
-        clearTimeout(timer.current)
-        timer.current = setTimeout(() => setCopied(false), 1200)
+        cancelReset.current?.()
+        cancelReset.current = deadline(1200, () => setCopied(false))
       })
       .catch((error: unknown) => store.notify({ level: 'error', message: errorMessage(error) }))
   return { copied, copy }
@@ -557,8 +499,7 @@ export function useNow(intervalMs = 1000, active = true): number {
   useEffect(() => {
     if (!active) return undefined
     setNow(Date.now())
-    const timer = setInterval(() => setNow(Date.now()), intervalMs)
-    return () => clearInterval(timer)
+    return every(intervalMs, () => setNow(Date.now()))
   }, [intervalMs, active])
   return now
 }
@@ -568,6 +509,7 @@ export function useToolDuration(call: ToolCallView): string | undefined {
   const running = call.startedAt !== undefined && call.endedAt === undefined
   const now = useNow(100, running)
   if (call.startedAt === undefined) return undefined
-  // The start is the server's clock; a browser clock behind it must not show a negative time.
-  return formatDuration(Math.max(0, (call.endedAt ?? now) - call.startedAt))
+
+  const elapsedMsWithoutNegativeClockSkew = Math.max(0, (call.endedAt ?? now) - call.startedAt)
+  return formatDuration(elapsedMsWithoutNegativeClockSkew)
 }

@@ -2,7 +2,6 @@ import type { JsonObject } from '@earendil-works/pi-durable'
 import { projectKey } from './families-settings.ts'
 import { readSettings, userSettingsPath } from './settings.ts'
 
-/** Personal commands replace setup only for this project's main checkout; otherwise use gated project settings. */
 export async function readWorktreeSetup(
   userHome: string,
   projectRoot: string,
@@ -12,7 +11,6 @@ export async function readWorktreeSetup(
   try {
     personal = await readSettings(userSettingsPath(userHome))
   } catch {
-    // JSON parser and filesystem errors can include settings contents; report only the relevant source.
     throw new Error('Cannot read personal worktree setup settings')
   }
   const map = personal.worktreeSetup

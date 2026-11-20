@@ -3,8 +3,6 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { availableParallelism, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-// #45669: verification must not inherit the host's credentials or live-server configuration.
-// Resolve pnpm's normal store outside the project; a temporary store would invalidate node_modules after cleanup.
 const store = spawnSync('pnpm', ['store', 'path', '--silent'], {
   cwd: tmpdir(),
   env: { PATH: process.env.PATH, HOME: process.env.HOME, CI: '1' },

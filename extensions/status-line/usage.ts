@@ -40,7 +40,6 @@ const sum = (buckets: UsageFigures[]): UsageFigures =>
     ]),
   ) as UsageFigures
 
-/** Native pi.usage is own spend and starts empty on fork; never add inherited history or parent-inclusive totals. */
 export async function subtreeUsage(
   host: Pick<ExtensionHost, 'harness' | 'metadata'>,
   conversation: ConversationId,
@@ -70,7 +69,6 @@ export async function subtreeUsage(
   }, context)
   const conversations: ConversationUsage[] = []
   for (const record of tree) {
-    // ponytail: like Harness.usage(), snapshots are read in sequence; this is a checkpoint, not an atomic live meter.
     const usage = await harness.snapshot(UsageDoc, record.id, context)
     const metadata = await harness.snapshot(host.metadata, record.id, context)
     const models = Object.fromEntries(

@@ -1,8 +1,7 @@
 import { parseMarkdownIntoBlocks } from 'streamdown'
 
 const prefix = '#local-markdown-'
-// oxlint-disable-next-line eslint/no-control-regex -- Reject control characters in the displayed filename.
-const isMarkdownName = (name: string) => /^[^/\\\u0000-\u001f\u007f]+\.md$/iu.test(name)
+const isMarkdownName = (name: string) => /^[^/\\\p{Cc}]+\.md$/iu.test(name)
 
 export function localMarkdownName(marker: string) {
   if (!marker.startsWith(prefix)) return undefined
@@ -10,14 +9,12 @@ export function localMarkdownName(marker: string) {
     const name = decodeURIComponent(marker.slice(prefix.length))
     return isMarkdownName(name) ? name : undefined
   } catch {
-    // An invalid escape cannot name a Markdown file.
     return undefined
   }
 }
 
 type Node = { type: string; url?: string; identifier?: string; children?: Node[] }
 
-// Streamdown 2.7 parses each block separately; keep a local file reference with its definition.
 export const chatMarkdownBlocks = (markdown: string) =>
   /^ {0,3}\[[^\]\n]+\]:\s*<?file:\/\/\//im.test(markdown)
     ? [markdown]
@@ -29,7 +26,6 @@ function markerOf(url: string) {
   return name ? prefix + encodeURIComponent(name) : undefined
 }
 
-/** Keep only a display name, never a navigable file URL or an authority to read it. */
 export function remarkLocalMarkdownLinks() {
   const walk = (node: Node, visit: (node: Node) => void) => {
     visit(node)

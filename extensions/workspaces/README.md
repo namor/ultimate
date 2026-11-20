@@ -75,11 +75,13 @@ The existing `workspace_workflow` prompt section starts and waits for the same d
 on creation; setup commands run again before the model can use tools.
 Failed setup keeps its output tail and never force-removes dirty output. The conversation's next tool call retries it (checkout and setup again), so fixing the cause, such as a PATH without `pnpm`, takes effect in the same conversation; until it succeeds every tool call is blocked with the setup's error.
 
-Info's Workspace section (`Workspaces` in `ui.tsx`) shows the lander queue, the shown conversation's checkout and
+Info's Workspace section (`Workspaces` in `ui.solid.tsx`) shows the lander queue, the shown conversation's checkout and
 statistics over every checkout, read-only: landing goes through agents. Concluding a conversation can release its clean, landed checkout.
 `isolation` says why the project cannot be isolated, if it cannot; `info {id}` reads the record and current tips; `create {cwd?, title?}` returns a new conversation ID.
 `github` returns `https://github.com/<owner>/<repo>` of the project's `origin`, or null off GitHub; landing cards and
-the root row link commit ranges with it.
+the root row link commit ranges with it. `repo` returns the same repository as `{key, name, url, visibility?}` for the
+sidebar's project header: `name` and `visibility` come from one `gh repo view` per process (`readGithubRepo`,
+`lib/project-identity.ts`), and without `gh`, signed out or offline it is the key's `owner/repo` without a visibility.
 The service's `land(id)` fast-forwards a worker's source (its owner's checkout) to the worker's clean tip, for
 `subagent land`; it refuses moved or diverged targets and never rebases or pushes. The only way to the project's
 target branch is `workspace submit`.
@@ -156,6 +158,18 @@ missing or conflicting evidence stops delivery rather than blindly repeating a c
 A known blocked delivery can be stopped while retaining its record and leaving its remote branch/PR unchanged; uncertain writes
 must be reconciled first.
 
+**Blocked deliveries are the branch's to repair.** Each block is reported once (`delivery.wake`, numbered by `blocks`, with a
+per-block request id). A block the branch can repair (a failed check, a timeout, a closed PR) wakes the submitting branch with
+the reason, the candidate and the PR's checks page; a concluded branch is resumed by that input. The branch, or @ultimate,
+then calls `delivery` with `recheck` or `stop` itself, without an instruction: recorded as `by: 'agent'` with its conversation,
+and a stop reads "Stopped by conversation #id". Agents get at most three rechecks per candidate; after that the user's click
+(or @ultimate on their instruction) can still recheck, and stop is always allowed. A repaired candidate is a fresh `workspace
+submit`, with its own review and approvals. A branch is woken for at most three blocks across its resubmissions (reset when it
+lands); a later block, or one that needs the user (an uncertain remote write, a GitHub login or credential, a publish or merge
+approval, a safety hold such as a branch collision or an outside merge), wakes no model: it goes to @ultimate's conversation as
+a card to ask the user, and to the branch as a note, and agents cannot recheck it. Agents never publish or merge this way;
+those stay with the user as below.
+
 Automatic merge requires strict required-check protection including administrators, no force/deletion bypass, a PR requirement
 (with zero mandatory platform approvals allowed for a solo maintainer), and genuine successful named GitHub Actions checks on the
 candidate. Empty, missing, skipped, neutral, cancelled and timed-out checks are not success. The current base must descend from the
@@ -167,7 +181,8 @@ Low-risk work is eligible for automatic merge only after independent review. Med
 candidate content invalidates the prior evidence/approvals. Chat scope agreement is separate from GitHub's platform review
 requirements and cannot satisfy a required second GitHub approver.
 
-**Who may act.** The `delivery` action (`publish`, `merge`, `recheck`, `stop`) takes the user's own click on the card, or a
+**Who may approve.** Apart from an agent's recheck or stop of a blocked delivery (above), the `delivery` action (`publish`,
+`merge`, `recheck`, `stop`) takes the user's own click on the card, or a
 codemode call from @ultimate, the root standing agent, when the user told it to in its chat. @ultimate passes `instruction`: the
 entry id of the user's input in its conversation that gave the order. The action checks that a `user.input` event from a browser
 (`device` set) names that entry: only the user's composer and answer card emit one, so a `pi.user` input the server placed, an
@@ -243,7 +258,8 @@ conversation; it keeps the full log, grouped by submission, and shows in the Age
 The commit that records a landed outcome (also when only its push failed) emits the durable event
 `workspaces.landed` (`SubmissionLanded` in `api.ts`): submission, submitter and its `at`, `sha`, `base`, `target`,
 lander, divergence, the submit-time title, summary and feature, the first ten commits with `commitCount`, the first
-eight paths and `pushed`. Failures emit nothing. Each check run, a rerun included, emits `workspaces.check`
+eight paths and `pushed`. A failed outcome emits `workspaces.landing-failed` (`SubmissionFailed`): submission,
+submitter, target and `reason`; it `fails` `workspaces.landed`, so a browser `until` on a landing ends with it. Each check run, a rerun included, emits `workspaces.check`
 (`CheckRan`): submission, command, `passed`, `failed`, `flaky` or `timeout` (a watchdog stopped it) and its `ms`, in the
 commit that logs its result. Lineage reacts to it with a landing note in the submitter's tree
 root, exactly once, unless the submitter is that root or has none; the lander itself calls no lineage service. Its
@@ -274,7 +290,8 @@ lander's sidebar row shows the feature it lands or landed last.
    `{ "command": "pnpm test", "timeout": 180 }`.
    A failing check
    reruns once: passing then is reported as flaky, failing again reports the output tail to the submitter once every
-   command of its group settled. Each command keeps its own memo, steps and flaky note. A passed or flaky check records its last
+   command of its group settled. Each command keeps its own memo, steps and flaky note; the note names what failed on the
+   first run (`pnpm test · exit 1: test/a.test.ts > its name`, or `Out of memory: exit 137`). A passed or flaky check records its last
    output line (ANSI stripped, at most 200 characters) as `summary`, shown muted after the command on its step row.
    A failed run's log entry keeps its output tail as `output` (not in `steps`), under a collapsed "Output" in the
    lander's log, so a check that then passed as flaky can still be diagnosed.
@@ -282,15 +299,16 @@ lander's sidebar row shows the feature it lands or landed last.
    moved meanwhile it starts again, at most three attempts.
 5. With `lander.push`, pushes the target branch (never forced); a rejection integrates again once, then is reported.
 6. Records `landed`, emitting `workspaces.landed` in the same commit, then reports (request id `lander:<submission>`
-   for each write): the landed commit and commits, flaky checks, whether it pushed, "Needs restart." for `server/`
-   or `shared/` changes to the running clone, and the lander conversation id for the full log.
+   for each write): the landed commit and commits, flaky checks, whether it pushed, "Needs restart." for `server/`,
+   `shared/`, `patches/` or `pnpm-lock.yaml` changes to the running clone (`needsRestart` in `lib/layers.ts`), and the lander conversation id for the full log.
    - A failure is a waking input to the submitter (a `workspaces.lander-report` entry): it fixes the cause in its
      workspace and submits again.
    - A landing is the end of the branch's work. The report is a note in the submitter, which starts no run. In one
      commit the submitter is concluded unless work is still under way: messages' `underway` (a run or queued input, a
      busy subagent, a reply-enabled message of its own still open, a pending notify or subagent report), through the
      `workspaces.branches` extension point messages provides. Then the conversation that started the branch
-     (`starter`, from the same extension point) wakes with the same card, saying whether the branch is concluded or
+     (`starter`, from the same extension point) wakes with the same card, its text cut to one line (branch, sha,
+     pushed, `needs restart`, flaky checks) plus the divergence, saying whether the branch is concluded or
      still has work under way (which then reports when it stops, as any branch does). Last, a concluded branch's
      checkout is released. A root or standing agent refuses concluding and stays open. Any later input resumes a
      concluded branch.
@@ -313,5 +331,5 @@ when the harness opens, on each reload of the extension, and at once when a task
 of the current code's own task waits for the next submit or open, so a deterministic fault does not loop.
 
 Top-level mains use `workspace status` and `workspace submit` for their own checkout.
-Landing reports commits and changed paths, with a restart hint for core changes to the running clone.
+Landing reports commits and changed paths, with a restart hint for core or package changes to the running clone.
 Landing never restarts Ultimate.

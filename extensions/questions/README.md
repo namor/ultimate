@@ -40,23 +40,31 @@ Under the outgoing `message` card in the asker's transcript, through messages’
 open at a time; the others fold to a line with their answer (`1b drop them`) or “not answered”, and a dot per question
 shows progress. Kinds: `choice` (one option), `multi` (any), `confirm` (Yes/No), `scale` (numbered steps with end
 labels) and `text` (a field); options offer “Something else…” with an inline field, and an option's Markdown `preview`
-shows beside the options for the hovered or chosen one. Recommended options (@ultimate's picks, also on a branch's card) carry a “my pick” chip. Under the questions,
+shows beside the options for the hovered or chosen one. Recommended options (@ultimate's picks, also on a branch's card) carry a “my pick” chip and
+come already chosen: the card opens with them in its draft, on the first question without a pick. Under the questions,
 a note field is always there: whatever it holds goes after the answer lines, or on its own (“Send note”), and never
-changes a pick. **Accept picks** chooses every pick still open; Send sends what is answered (“Send 2 of 5”). Sending
-opens a 3 s window with Undo before the answer goes out, then the card settles into the summary of what was sent, the
-note on its own line. Dismiss closes the message without an answer. A message without questions gets a one-line answer
+changes a pick. Send sends what is answered (“Send 2 of 5”). Sending locks the card as it is and turns Send into
+**Undo**, which fills over a 3 s window before the answer goes out; Undo keeps the picks and the note. Holding Send for
+1 s fills it and sends at once, with no window; released earlier it is a plain click. With Reduce Motion the fills
+advance in steps. Dismiss closes the message without an answer. Beside it, the `questions.card-actions` point
+(`CardActions`) takes another extension's control: side-chat's **Talk it through**. A card in a layer marked
+`data-receded` (a transcript behind a side chat's sheet) takes no keys. A message without questions gets a one-line answer
 field (sent as a Reply to that message) and Dismiss. On desktop, 1–9 or an option's letter (`y`/`n` for Yes/No, `o`
-for Something else) chooses, ↑/↓ moves between questions, Enter takes the open question's pick or goes to the next,
-and sends from the last one; ⇧Enter accepts every pick and sends; `/` focuses the note field, where Enter sends and
-⇧Enter breaks a line; Esc clears an answer, leaves the note field or, while sending, undoes. Only the shown
+for Something else) chooses, ↑/↓ moves between questions, Enter goes to the next question while one is unanswered,
+and sends from the last one or once all are answered; ⇧Enter sends at once, like a held Send; `/` focuses the note field, where Enter sends and
+⇧Enter breaks a line; Esc clears an answer, leaves the note field or, while Undo fills, undoes (so does `u`; Enter sends at once). Only the shown
 conversation's newest open card takes these keys; they leave alone input/textarea editing and keys pressed in another
 card, on another control or in the panel, whose cards take no global keys.
 
+What the user picked and typed on a card lives in durable UI state, by message (`ext.questions.cards`), so leaving a
+surface for another, a reload or another window or device shows it again where they left it; it goes as soon as the
+message settles (answered, dismissed, or settled for them by @ultimate).
+
 ## Where open questions wait
 
-The To-dos tab lists every message that waits on the user at its top, newest first, named by its first question; a
-row opens the asking conversation at the message, where this card answers or dismisses it. ⌘K “Show open
-questions" opens the tab; meanwhile @ultimate's mark is amber, and an asking branch's row says `waits on you`.
+The Inbox (`extensions/inbox`) lists every message that waits on the user, oldest first, and shows this card under the
+selected one, so it is answered or dismissed there; the To-dos tab keeps one `Inbox · N` row that opens it. ⌘K “Show
+open questions" opens the To-dos tab; meanwhile @ultimate's mark is amber, and an asking branch's row says `waits on you`.
 
 On every surface the title bar shows a purple `N waiting` pill while any message waits; it and ⌥W (Alt+W) open the
 message that has waited longest in its asker's conversation, through `messages:open`.
@@ -65,10 +73,9 @@ message that has waited longest in its asker's conversation, through `messages:o
 
 Both are user-only.
 
-- `answer { messageId, answers: [{ question, answer }], note? }` validates against the message's questions, refusing
+- `answer { messageId, answers: [{ question, answer }], note? }`, a multi answer as its list of labels, validates against the message's questions, refusing
   unknown or duplicate answers, and posts a normal user reply to the sender with `re: messageId`, one paragraph per
-  answer in the message's own numbering: `1a. Topic: option` for an option, `2a,c. Topic: a, c` for several (a multi
-  answer joins its labels with ", "), `3: text` for typed text or a rating (`Topic: answer` when the message numbered
+  answer in the message's own numbering: `1a. Topic: option` for an option, `2a,c. Topic: a, c` for several, `3: text` for typed text or a rating (`Topic: answer` when the message numbered
   nothing), then `Note: …`; with no answers the note alone is the reply. Returns `{ id }`. `answer { messageId, text }`
   posts `text` instead, for a message with or without questions. Messages admission atomically verifies that the
   original remains open, so concurrent answers produce exactly one reply; normal Messages delivery wakes the sender.

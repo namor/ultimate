@@ -1,5 +1,6 @@
 import { MessageCircleQuestionIcon } from 'lucide-react'
-import { events, getState, useDocOf, useUltimate } from '@/sdk'
+import { events, getState, ROOT, useDocOf, useUltimate } from '@/sdk'
+import type { UltimateContext } from '@/sdk'
 import { MessagesDoc, emptyMessages } from '../messages/ui.tsx'
 import type { MessagesData } from '../messages/refs.ts'
 import { deliveryAsk, WorkspacesDoc } from '../workspaces/ui.tsx'
@@ -7,13 +8,9 @@ import type { WorkspaceIndex } from '../workspaces/types.ts'
 import { asks } from './open.tsx'
 import type { Ask } from './open.tsx'
 
-/**
- * Opens the asker's conversation at the card: `messages:open` checks a message still waits, and scrolls to it or to
- * the delivery's submitting call.
- */
 export function openAsk(
   ask: Ask,
-  ultimate: { showSurface: (id: string) => void; switchConversation: (id: number) => void },
+  ultimate: Pick<UltimateContext, 'showSurface' | 'switchConversation'>,
 ) {
   const { conversation } = ask
   events.emit(
@@ -24,7 +21,6 @@ export function openAsk(
   ultimate.switchConversation(conversation)
 }
 
-/** Everything waiting on the user, oldest first, from the root's Messages and Workspaces documents. */
 const asksOf = (
   messages: MessagesData | null | undefined,
   workspaces: WorkspaceIndex | null | undefined,
@@ -33,27 +29,21 @@ const asksOf = (
     (messages ?? emptyMessages).messages,
     (workspaces?.queue ?? []).flatMap((entry) =>
       deliveryAsk(entry.delivery)
-        ? // `at` is the submitting entry; its first step is when it was queued.
-          [{ conversation: entry.conversationId, entry: entry.at, at: entry.steps[0]?.at ?? 0 }]
+        ? [{ conversation: entry.conversationId, entry: entry.at, at: entry.steps[0]?.at ?? 0 }]
         : [],
     ),
   )
 
-export const useAsks = () => asksOf(useDocOf(1, MessagesDoc), useDocOf(1, WorkspacesDoc))
+export const useAsks = () => asksOf(useDocOf(ROOT, MessagesDoc), useDocOf(ROOT, WorkspacesDoc))
 
-/** The same, read once, for a command. */
 export const currentAsks = () => {
-  const docs = getState().docsOf[1]
+  const docs = getState().docsOf[ROOT]
   return asksOf(
     docs?.[MessagesDoc.kind] as MessagesData | null | undefined,
     docs?.[WorkspacesDoc.kind] as WorkspaceIndex | null | undefined,
   )
 }
 
-/**
- * The title bar's purple pill while anything waits on the user (a message's reply, a delivery's approval), on every
- * surface: how many, and a click jumps to the one waiting longest. Gone when none waits.
- */
 export function WaitingPill() {
   const waiting = useAsks()
   const ultimate = useUltimate()
@@ -61,7 +51,6 @@ export function WaitingPill() {
   const label = `${count} waiting on you`
   return (
     <>
-      {/* Announced once per change of the count, not on every render. */}
       <span aria-live="polite" className="sr-only">
         {count ? label : ''}
       </span>

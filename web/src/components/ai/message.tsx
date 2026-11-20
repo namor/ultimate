@@ -1,6 +1,3 @@
-// Adapted from vercel/ai-elements packages/elements/src/message.tsx (Apache-2.0, see LICENSE).
-// Changes: `from` is a plain role, no branches or actions; only the code plugin; denser typography; links go through
-// the extensions' `link` renderers.
 import { cn } from 'cn'
 import type { ComponentProps, HTMLAttributes, ReactNode } from 'react'
 import { memo, useMemo } from 'react'
@@ -14,7 +11,12 @@ import {
 import type { CustomRendererProps, ExtraProps } from 'streamdown'
 import { ExtensionBoundary } from '../../app/boundary.tsx'
 import { useExtensions } from '../../sdk/hooks.ts'
-import { codeBlockLanguages, codeBlockRenderers, linkRenderers } from '../../sdk/registry.ts'
+import {
+  codeBlockLanguages,
+  codeBlockRenderers,
+  inlineCodeRenderers,
+  linkRenderers,
+} from '../../sdk/registry.ts'
 import { codePlugin } from './code-block.tsx'
 import {
   chatMarkdownBlocks,
@@ -49,19 +51,13 @@ export const MessageContent = ({ className, ...props }: HTMLAttributes<HTMLDivEl
 )
 
 const CoreLink = defaultComponents.a
-/** A link as the `link` renderers compose it, starting with Streamdown's, which asks before opening a new tab. */
 function Link(props: ComponentProps<'a'> & ExtraProps) {
   const renderers = linkRenderers(useExtensions())
   const { href, children } = props
-  // Internal actions stay text when no extension handles them.
-  const core =
-    href && (parseMention(href) || localMarkdownName(href)) ? (
-      <>{children}</>
-    ) : (
-      <CoreLink {...props} />
-    )
-  // Streamdown marks a link whose Markdown is still streaming.
-  if (!href || href === 'streamdown:incomplete-link') return core
+  const internalActionStaysText = href && (parseMention(href) || localMarkdownName(href))
+  const core = internalActionStaysText ? <>{children}</> : <CoreLink {...props} />
+  const incompleteStreamingLink = !href || href === 'streamdown:incomplete-link'
+  if (incompleteStreamingLink) return core
   return renderers.reduce<ReactNode>(
     (inner, { extension, version, component: Renderer }) => (
       <ExtensionBoundary
@@ -80,16 +76,11 @@ function Link(props: ComponentProps<'a'> & ExtraProps) {
   )
 }
 
-/**
- * Plain text with its `#id` mentions rendered as Markdown mentions are (conversation chips), for text shown verbatim
- * rather than as Markdown: prompts, abstracts, divergences.
- */
 export function MentionText({ text }: { text: string }) {
   return splitMentions(text).map((part, index) =>
     typeof part === 'string' ? (
       part
     ) : (
-      // oxlint-disable-next-line react/no-array-index-key -- Mention positions in split text; mentions may repeat.
       <Link href={mentionHref(part.conversation, part.entry)} key={index}>
         {part.text}
       </Link>
@@ -97,15 +88,35 @@ export function MentionText({ text }: { text: string }) {
   )
 }
 
-const components = { a: Link }
-// After GFM, so autolinked URLs are links already and keep their `#fragment`.
-const remarkPlugins = [
+const CoreCode = defaultComponents.code
+function InlineCode(props: ComponentProps<'code'> & ExtraProps) {
+  const renderers = inlineCodeRenderers(useExtensions())
+  const { children } = props
+  const core = <CoreCode {...props} />
+  if (typeof children !== 'string') return core
+  return renderers.reduce<ReactNode>(
+    (inner, { extension, version, component: Renderer }) => (
+      <ExtensionBoundary
+        extension={extension}
+        fallback={inner}
+        key={extension}
+        variant="inline"
+        version={version}
+      >
+        <Renderer code={children} core={inner} />
+      </ExtensionBoundary>
+    ),
+    core,
+  )
+}
+
+const components = { a: Link, inlineCode: InlineCode }
+const gfmBeforeInternalLinks = [
   ...Object.values(defaultRemarkPlugins),
   remarkMentions,
   remarkLocalMarkdownLinks,
 ]
 
-/** A fenced code block as the `codeBlocks` renderers of its language compose it, starting with the core block. */
 function ExtensionCodeBlock({ code, language, isIncomplete }: CustomRendererProps) {
   const renderers = codeBlockRenderers(useExtensions(), language)
   const core = (
@@ -124,7 +135,6 @@ function ExtensionCodeBlock({ code, language, isIncomplete }: CustomRendererProp
 }
 const controls = { code: { copy: true, download: false }, table: false, mermaid: false } as const
 
-/** Markdown that may still be streaming. */
 export const MessageResponse = memo(
   ({ className, ...props }: ComponentProps<typeof Streamdown>) => {
     const languages = codeBlockLanguages(useExtensions()).join(' ')
@@ -143,10 +153,11 @@ export const MessageResponse = memo(
         components={components}
         controls={controls}
         lineNumbers={false}
-        parseMarkdownIntoBlocksFn={chatMarkdownBlocks}
         plugins={plugins}
-        remarkPlugins={remarkPlugins}
+        parseMarkdownIntoBlocksFn={chatMarkdownBlocks}
+        remarkPlugins={gfmBeforeInternalLinks}
         shikiTheme={codePlugin.getThemes()}
+        tableMaxHeight="none"
         {...props}
       />
     )

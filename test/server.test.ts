@@ -16,12 +16,13 @@ import {
   held,
 } from './helpers.ts'
 import { context } from '../server/harness.ts'
-import { UiState } from '../server/ui-state.ts'
+import { UiState } from '../shared/ui-state.ts'
 import { Metadata } from '../server/metadata.ts'
 import type { ConversationSummary, ServerEvents } from '../shared/protocol.ts'
 import { Logins } from '../extensions/models/server.ts'
 import { fixture, orderedSource, servers } from './server-fixture.ts'
 import { eventHost } from './helpers.ts'
+import { writeSecret } from '../extensions/secrets/store.ts'
 import { UserInputEvent } from '../shared/events.ts'
 
 describe('server', () => {
@@ -248,11 +249,27 @@ export default host => {
     expect(() => previous('retired notice')).not.toThrow()
     const current = (await server.vite.ssrLoadModule(path)).raise as (message: string) => void
     current('current notice')
-    expect(server.extensions.info.diagnostics()).toContain('current notice')
-    expect(server.extensions.info.diagnostics()).not.toContain('retired notice')
+    expect(await server.extensions.info.diagnostics()).toContain('current notice')
+    expect(await server.extensions.info.diagnostics()).not.toContain('retired notice')
     servers.splice(servers.indexOf(server), 1)
     await server.close()
     expect(() => current('shutdown notice')).not.toThrow()
+  })
+
+  it('clears a missing-secret notice from the diagnostics once the secret is saved', async () => {
+    const { server, options } = await fixture(false, {
+      'needs-key': `import { defineExtension } from '@earendil-works/pi-durable'
+export default host => {
+  host.notice('Missing MY_KEY', { untilSecretSet: 'MY_KEY' })
+  return defineExtension({ name: 'needs-key' })
+}`,
+    })
+    await until(() => server.system.current().extensionDiagnostics.includes('Missing MY_KEY'))
+    expect(await server.extensions.info.diagnostics()).toContain('Missing MY_KEY')
+    await writeSecret(options.userHome, 'MY_KEY', 'value')
+    server.vite.watcher.emit('all', 'change', join(options.userHome, '.ultimate/secrets.json'))
+    await until(() => !server.system.current().extensionDiagnostics.includes('Missing MY_KEY'))
+    expect(await server.extensions.info.diagnostics()).not.toContain('Missing MY_KEY')
   })
 
   it('runs late facet openers immediately and continues after throwing cleanups', async () => {
@@ -279,6 +296,52 @@ export const actions={ late: async()=>{host.onOpen(async()=>{opened=true}); retu
       ),
     )
     await stream.close()
+  })
+
+  it('commits release work, then closes the harness before extensions, so a task running at shutdown resumes instead of faulting', async () => {
+    const { server, options } = await fixture(false, {
+      teardown: `import { defineDoc, defineExtension, defineTask, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
+import { awaitWithContext, BACKGROUND_CONTEXT } from '@earendil-works/chord/context'
+import { existsSync, writeFileSync } from 'node:fs'
+import { defineApi } from '../../shared/extension-api.ts'
+const Probe = defineApi()('probe')
+let host, started = false
+const gate = Promise.withResolvers()
+const Task = defineTask({ name: 'teardown.task', version: 1, initial: () => ({ phase: 'run' }), phases: {
+  run: async (_task, runtime, ctx) => {
+    started = true
+    if (!existsSync(host.userHome + '/closed')) await awaitWithContext(gate.promise, ctx)
+    host.need(Probe).ping()
+    await runtime.commit(() => ({ status: 'terminal', outcome: { status: 'completed', result: null } }), ctx)
+  } },
+  abort: (_task, runtime, ctx) => runtime.commit(() => ({ status: 'terminal', outcome: { status: 'aborted' } }), ctx) })
+const Released = defineDoc({ kind: 'teardown.released', checkpointWhen: () => false, version: 1, scope: 'conversation', history: 'latest', fork: 'initial', initial: () => ({ at: 0 }) })
+export const docs = [Released]
+export default h => { host = h; h.implement(Probe, { ping: () => true }); h.onRelease(() => h.harness().commit(async tx => { (await tx.doc(Released, ROOT_CONVERSATION_ID)).at = 1 }, BACKGROUND_CONTEXT)); h.onClose(async () => { writeFileSync(h.userHome + '/closed', ''); gate.resolve(); await new Promise(r => setImmediate(r)) }); return defineExtension({ name: 'teardown', tasks: [Task] }) }
+export const actions = {
+  start: async () => { await host.harness().commit(tx => tx.createTask(Task, null, { conversationId: ROOT_CONVERSATION_ID, ownership: { kind: 'conversation' }, background: true }), BACKGROUND_CONTEXT); return true },
+  started: async () => started,
+  released: async () => (await host.harness().snapshot(Released, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT))?.at }`,
+    })
+    await post(server, '/api/extensions/teardown/actions/start', { args: null })
+    await until(
+      async () =>
+        (await post(server, '/api/extensions/teardown/actions/started', { args: null })).data
+          .result === true,
+    )
+    servers.splice(servers.indexOf(server), 1)
+    await server.close()
+    const reopened = await createServer(options)
+    servers.push(reopened)
+    const task = async () =>
+      (await reopened.harness.commit((tx) => tx.scanTasks({ kind: 'teardown.task' }, 10), context))
+        .items[0]
+    await until(async () => (await task()).state.status === 'terminal')
+    expect((await task()).state).toMatchObject({ outcome: { status: 'completed' } })
+    expect(
+      (await post(reopened, '/api/extensions/teardown/actions/released', { args: null })).data
+        .result,
+    ).toBe(1)
   })
 
   it('settles failing process resource cleanups and still closes the server', async () => {
@@ -346,7 +409,9 @@ export default host => { host.resource('cleanup.process',()=>{
       const { server } = await fixture()
       expect(server.url).toBe(`http://127.0.0.1:${server.port}`)
       expect((await fetch(server.url)).status).toBe(200)
-      expect((await post(server, '/api/ui', { set: { 'test.isolated': true } })).status).toBe(200)
+      expect(
+        (await post(server, '/api/ui', { ops: [{ key: 'test.isolated', value: true }] })).status,
+      ).toBe(200)
       expect(await server.host.uiState(context)).toEqual({ 'test.isolated': true, 'ui.rev': 1 })
       await (
         await server.root.submit({ type: 'input', content: 'self URL' }, context)
@@ -500,11 +565,16 @@ export default host => { host.resource('cleanup.process',()=>{
     const first = await attach(server)
     const second = await attach(server, { conversation: created.data.id as number })
     expect(
-      await post(server, '/api/ui', { set: { 'shell.panel': 'tasks', 'app.count': 2 } }),
+      await post(server, '/api/ui', {
+        ops: [
+          { key: 'shell.panel', value: 'tasks' },
+          { key: 'app.count', value: 2 },
+        ],
+      }),
     ).toEqual({ status: 200, data: { ok: true, rev: 1 } })
     // The revision is the server's: a client cannot set or delete it.
-    expect((await post(server, '/api/ui', { set: { 'ui.rev': 9 } })).status).toBe(400)
-    expect((await post(server, '/api/ui', { delete: ['ui.rev'] })).status).toBe(400)
+    expect((await post(server, '/api/ui', { ops: [{ key: 'ui.rev', value: 9 }] })).status).toBe(400)
+    expect((await post(server, '/api/ui', { ops: [{ key: 'ui.rev' }] })).status).toBe(400)
     await until(() => second.events.some((event) => event.name === 'uiOps'))
     let value = (second.events.find((event) => event.name === 'ui')!.data as ServerEvents['ui'])
       .value
@@ -512,7 +582,7 @@ export default host => { host.resource('cleanup.process',()=>{
       value = applyImmutable(value, (event.data as ServerEvents['uiOps']).ops)
     expect(value).toEqual({ 'shell.panel': 'tasks', 'app.count': 2, 'ui.rev': 1 })
     const count = second.events.filter((event) => event.name === 'uiOps').length
-    await post(server, '/api/ui', { delete: ['app.count'] })
+    await post(server, '/api/ui', { ops: [{ key: 'app.count' }] })
     await until(() => second.events.filter((event) => event.name === 'uiOps').length > count)
     const deletion = second.events.filter((event) => event.name === 'uiOps').at(-1)!
     expect(applyImmutable(value, (deletion.data as ServerEvents['uiOps']).ops)).toEqual({
@@ -525,14 +595,14 @@ export default host => { host.resource('cleanup.process',()=>{
       async (tx) => tx.appendEntry(server.root.id, { kind: 'test.marker' }),
       context,
     )
-    await post(server, '/api/ui', { set: { 'shell.panel': 'settings' } })
+    await post(server, '/api/ui', { ops: [{ key: 'shell.panel', value: 'settings' }] })
     const fork = await server.root.fork(entry.id, { ownership: { kind: 'ownerless' } }, context)
     expect(await server.harness.snapshot(UiState, fork.id, context)).toEqual({
       'shell.panel': 'tasks',
       'ui.rev': 2,
     })
     expect(await server.host.uiState(context)).toEqual({ 'shell.panel': 'settings', 'ui.rev': 3 })
-    await post(server, '/api/ui', { set: { 'shell.panel': 'tasks' } })
+    await post(server, '/api/ui', { ops: [{ key: 'shell.panel', value: 'tasks' }] })
     await first.close()
     await second.close()
     await server.vite.watcher.close()
@@ -550,15 +620,16 @@ export default host => { host.resource('cleanup.process',()=>{
   it('validates UI keys and the merged document size atomically', async () => {
     const { server } = await fixture()
     for (const key of ['', 'bad key', 'x'.repeat(201)])
-      expect((await post(server, '/api/ui', { set: { [key]: true } })).status).toBe(400)
-    expect((await post(server, '/api/ui', { delete: [4] })).status).toBe(400)
-    expect((await post(server, '/api/ui', { set: [] })).status).toBe(400)
-    await post(server, '/api/ui', { set: { large: 'x'.repeat(200000) } })
-    expect((await post(server, '/api/ui', { set: { extra: 'é'.repeat(40000) } })).status).toBe(413)
+      expect((await post(server, '/api/ui', { ops: [{ key, value: true }] })).status).toBe(400)
+    expect((await post(server, '/api/ui', { ops: [{ key: 4 }] })).status).toBe(400)
+    expect((await post(server, '/api/ui', { ops: {} })).status).toBe(400)
+    await post(server, '/api/ui', { ops: [{ key: 'large', value: 'x'.repeat(200000) }] })
+    expect(
+      (await post(server, '/api/ui', { ops: [{ key: 'extra', value: 'é'.repeat(40000) }] })).status,
+    ).toBe(413)
     expect(await server.host.uiState(context)).toEqual({ large: 'x'.repeat(200000), 'ui.rev': 1 })
     await post(server, '/api/ui', {
-      set: JSON.parse('{"__proto__":{"safe":true}}'),
-      delete: ['large'],
+      ops: [JSON.parse('{"key":"__proto__","value":{"safe":true}}'), { key: 'large' }],
     })
     expect(await server.host.uiState(context)).toEqual(
       JSON.parse('{"__proto__":{"safe":true},"ui.rev":2}'),

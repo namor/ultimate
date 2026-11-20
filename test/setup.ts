@@ -15,6 +15,10 @@ process.env.PI_CLAUDE_CODE_COMMAND = join(testTmpdir, 'no-claude')
 // scripted one: tests see only the logins they create.
 for (const key of Object.keys(process.env))
   if (/_API_KEY$|_OAUTH_TOKEN$/.test(key)) delete process.env[key]
+// Tests run without the supervisor's ULTIMATE_* variables: removed once for every file, not stubbed per test, so
+// concurrent tests never see them come back. Inside a preview ULTIMATE_MODEL would otherwise override every model a test
+// expects (#537493: test/default-model.test.ts, which imports no helpers, failed a preview's suite).
+for (const key of Object.keys(process.env)) if (key.startsWith('ULTIMATE_')) delete process.env[key]
 // Test servers, and the previews they start, must never publish on this machine's tailnet: they find no Tailscale CLI.
 process.env.TAILSCALE_COMMAND = join(testTmpdir, 'no-tailscale')
 // #54086: Git reads only this global config, as on a fresh CI runner, plus a commit identity; without one, tests that
@@ -22,6 +26,13 @@ process.env.TAILSCALE_COMMAND = join(testTmpdir, 'no-tailscale')
 const gitConfig = join(testTmpdir, 'gitconfig')
 writeFileSync(gitConfig, '[user]\n\tname = Test User\n\temail = test@example.com\n')
 process.env.GIT_CONFIG_GLOBAL = gitConfig
+// No background `git maintenance run --auto --detach` after test commits: Git 2.54 runs it after a source
+// copy's first commit and repacks, deleting loose objects a local `git clone` of it is still copying ("failed to copy
+// file" in extensions/update/test/e2e/update-merge.test.ts).
+const gitConfigs = Number(process.env.GIT_CONFIG_COUNT ?? 0)
+process.env[`GIT_CONFIG_KEY_${gitConfigs}`] = 'maintenance.auto'
+process.env[`GIT_CONFIG_VALUE_${gitConfigs}`] = 'false'
+process.env.GIT_CONFIG_COUNT = String(gitConfigs + 1)
 // Instance startup sweeps must never inspect the machine's real preview homes during tests.
 const previousTmpdir = process.env.TMPDIR
 process.env.TMPDIR = testTmpdir

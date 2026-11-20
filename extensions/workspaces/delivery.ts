@@ -1,10 +1,10 @@
 import { exec } from '../../lib/exec.ts'
 import { git } from '../../lib/git.ts'
 import type { DeliverySettings } from './delivery-settings.ts'
+import type { ConversationId, EntryId } from '@earendil-works/pi-durable'
 import type { StandingGrant } from './types.ts'
 
 export type DeliveryRisk = 'low' | 'medium' | 'high'
-/** Kept on the queue across replacement lander tasks, including uncertain external writes. */
 export type Delivery = {
   settings: DeliverySettings
   risk: DeliveryRisk
@@ -25,32 +25,22 @@ export type Delivery = {
   merged?: string
   publishApproved?: boolean
   mergeApproved?: boolean
-  /** Who approved each stage, newest last: the user's own click, or @ultimate on the user's recorded instruction. */
   approvals?: Approval[]
   reason?: string
   resumeStage?: 'review' | 'publish' | 'pr' | 'ci' | 'merge' | 'merged'
+  blocks?: number
+  wake?: { block: number; to: 'branch' | 'user'; why?: string }
 }
-/**
- * An audit record of one delivery action: the user's own click, @ultimate acting on the user's instruction entry, or
- * @ultimate under the user's standing approval (`standing`: the grant's instruction entry) with its `reason`.
- */
 export type Approval = {
   action: 'publish' | 'merge' | 'recheck' | 'stop'
   at: number
-  by: 'user' | 'ultimate'
-  /** @ultimate's conversation and the user's instruction entry in it, when @ultimate acted. */
-  conversation?: number
-  instruction?: number
-  standing?: number
+  by: 'user' | 'ultimate' | 'agent'
+  conversation?: ConversationId
+  instruction?: EntryId
+  standing?: EntryId
   reason?: string
 }
 
-/**
- * Why @ultimate may not approve `action` on `delivery` under `grant` now, or undefined when it may. The delivery record
- * is the evidence: the lander records it only after the configured local checks passed on the candidate without a flaky
- * rerun, leaves the `review` stage only when the independent review covered its exact tree, and reaches `merge` only
- * after the exact head's required GitHub checks passed (re-read again right before merging).
- */
 export function standingRefusal(
   grant: StandingGrant | undefined,
   delivery: Delivery,
@@ -71,6 +61,47 @@ export function standingRefusal(
     return action === 'merge'
       ? 'Required GitHub checks have not passed on this exact head'
       : 'Delivery is not awaiting publication'
+  return undefined
+}
+export const AGENT_RECHECKS = 3
+export const BRANCH_WAKES = 3
+
+export function agentRefusal(
+  d: Delivery,
+  action: Approval['action'],
+  actor: number,
+  submitter: number,
+  ultimate: number | undefined,
+): string | undefined {
+  if (actor !== submitter && actor !== ultimate)
+    return "Only the user or @ultimate on the user's instruction can act on a delivery"
+  if (action !== 'recheck' && action !== 'stop')
+    return "Agents may only recheck or stop a blocked delivery; publish and merge are the user's"
+  if (d.stage !== 'blocked') return 'Delivery stage changed; reload its card'
+  if (action === 'stop') return undefined
+  const why = d.wake?.to === 'user' ? d.wake.why : needsUser(d)
+  if (why) return `This block needs the user: ${why}`
+  if (
+    (d.approvals ?? []).filter((a) => a.by === 'agent' && a.action === 'recheck').length >=
+    AGENT_RECHECKS
+  )
+    return `Agents already rechecked this candidate ${AGENT_RECHECKS} times; stop it, resubmit a repaired candidate, or ask the user`
+  return undefined
+}
+
+export function needsUser(d: Delivery): string | undefined {
+  if ((d.createIntent && !d.pr) || d.mergeIntent)
+    return 'an uncertain remote write must be reconciled'
+  if (
+    (d.resumeStage === 'merge' && d.risk !== 'low' && !d.mergeApproved) ||
+    (d.resumeStage === 'publish' && d.risk === 'high' && !d.publishApproved)
+  )
+    return 'it waits for your approval'
+  const reason = d.reason ?? ''
+  if (/outside this delivery|collision|authorized repository|human reconciliation/i.test(reason))
+    return 'a safety hold needs your decision'
+  if (/HTTP 40[13]|authenticat|credential|login|token/i.test(reason))
+    return 'GitHub access needs your login or credentials'
   return undefined
 }
 
@@ -126,7 +157,6 @@ export const github =
       output = result.stdout
     } catch (error) {
       signal.throwIfAborted()
-      // #45669: retain HTTP rejection identity without exposing gh diagnostics or request bodies.
       throw new GithubRequestError(responseStatus((error as { stdout?: string }).stdout ?? ''))
     }
     const boundary = /\r?\n\r?\n/.exec(output)
@@ -134,7 +164,6 @@ export const github =
       if (!boundary) throw new Error('Missing HTTP headers')
       return JSON.parse(output.slice(boundary.index + boundary[0].length)) as T
     } catch {
-      // A successful HTTP response with an unreadable receipt is still an uncertain external write.
       throw new GithubRequestError()
     }
   }
@@ -151,7 +180,6 @@ export function assertPull(delivery: Delivery, pull: Pull) {
     throw new Error('PR identity changed; delivery stopped')
 }
 
-/** Only genuine success from the expected GitHub Actions app qualifies, never an empty/neutral/skipped rollup. */
 export function checksPassed(delivery: Delivery, protection: Protection, checks: Check[]) {
   const required = protection.required_status_checks
   if (
@@ -170,7 +198,6 @@ export function checksPassed(delivery: Delivery, protection: Protection, checks:
     const matches = checks.filter(
       (check) => check.name === expected.context && check.head_sha === delivery.candidate,
     )
-    // Duplicate names or unknown producers are ambiguous, not green.
     return (
       matches.length === 1 &&
       matches[0].status === 'completed' &&
@@ -181,7 +208,6 @@ export function checksPassed(delivery: Delivery, protection: Protection, checks:
   })
 }
 
-/** One bounded transition. Persist intent before a write, reconcile before repeating after interruption. */
 export async function advanceDelivery(
   source: string,
   delivery: Delivery,
@@ -232,7 +258,6 @@ export async function advanceDelivery(
       return persist()
     }
     if (d.stage === 'pr') {
-      // Include closed/merged PRs: a missing response must not create a second delivery.
       const pulls = await api<Pull[]>(
         `${prefix}/pulls?state=all&head=${encodeURIComponent(repository.split('/')[0] + ':' + d.branch)}&per_page=100`,
       )
@@ -299,8 +324,6 @@ export async function advanceDelivery(
     if (d.risk !== 'low' && !d.mergeApproved) return d
     if (d.runtime !== deliveryRuntime())
       throw new Error('Verification runtime changed; verify a new delivery')
-    // #45669: user866 accepts no concurrent retarget during this immediate merge window.
-    // GitHub has a head CAS but no atomic base-ref comparison; do not replace this with deferred auto-merge.
     const fresh = await api<Pull>(`${prefix}/pulls/${d.pr}`)
     assertPull(d, fresh)
     await git(
@@ -317,7 +340,6 @@ export async function advanceDelivery(
     try {
       await persist()
     } catch (error) {
-      // Not recorded, so no write is uncertain: the approval was withdrawn before it.
       delete d.mergeIntent
       throw error
     }
@@ -334,7 +356,6 @@ export async function advanceDelivery(
       delete d.mergeIntent
       throw new Error('GitHub refused the merge')
     }
-    // Confirm on the next transition, including after a lost response.
     return persist()
   } catch (error) {
     signal.throwIfAborted()
@@ -344,7 +365,6 @@ export async function advanceDelivery(
     }
     d.resumeStage = d.stage as 'review' | 'publish' | 'pr' | 'ci' | 'merge'
     d.stage = 'blocked'
-    // gh/git errors may include remote diagnostics; keep the durable user-facing reason bounded.
     d.reason =
       error instanceof Error ? error.message.split('\n')[0].slice(0, 240) : 'Delivery failed'
     return persist()

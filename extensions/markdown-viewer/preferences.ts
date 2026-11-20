@@ -4,7 +4,6 @@ export function readPreference(key: string) {
   try {
     return localStorage.getItem(prefix + key)
   } catch {
-    // The reader also works in browsers that block local storage.
     return null
   }
 }
@@ -12,12 +11,12 @@ export function readPreference(key: string) {
 export function writePreference(key: string, value: string) {
   try {
     localStorage.setItem(prefix + key, value)
+    return true
   } catch {
-    // A storage error must not prevent reading the file.
+    return false
   }
 }
 
-/** Identify the chosen version of a file without storing its name, metadata, path or text. */
 export async function fileKey(file: File, text: string) {
   try {
     const salt = readPreference('salt') ?? crypto.randomUUID()
@@ -27,7 +26,6 @@ export async function fileKey(file: File, text: string) {
     )
     return new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)).toHex()
   } catch {
-    // Without secure browser crypto there is no persistent file identity.
     return undefined
   }
 }
@@ -41,7 +39,6 @@ function positions(): SavedPosition[] {
     const value: unknown = JSON.parse(readPreference('positions') ?? '[]')
     return Array.isArray(value) ? (value as SavedPosition[]) : []
   } catch {
-    // Ignore unavailable or invalid preferences.
     return []
   }
 }

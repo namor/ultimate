@@ -1,35 +1,29 @@
-/**
- * The way from a finished dream into a fresh chapter, in the sidebar and the status line on every surface: once the
- * dream branch is concluded, Fall asleep asks @ultimate to prepare the chapter; once it is prepared, the Fall asleep
- * card opens. The user may stay in this chapter instead.
- */
+import { ROOT } from '@/sdk'
 import { LoaderCircleIcon, MoonIcon, MoonStarIcon } from 'lucide-react'
 import { useState } from 'react'
 import { api, errorMessage, useDocOf, useUltimate } from '@/sdk'
+import { meansNone } from '../../lib/errors.ts'
 import { useConcludedSince } from '../conversations/ui.tsx'
 import { talkToUltimate } from '../subagents/ui.tsx'
 import { DismissAction, DreamDoc, ReadyAction } from './refs.ts'
+import { dreamStage } from './stage.ts'
 
-/** The dialog the pinned line opens: the Fall asleep card. */
 export const nextDialog = 'dream.next'
 
-/**
- * Where the way into a fresh chapter stands: `woke` once the dream branch is concluded, `preparing` after the user
- * pressed Fall asleep, `prepared` while a prepared chapter waits; undefined when there is nothing to do.
- */
-export function useAwake() {
-  const doc = useDocOf(1, DreamDoc)
+export function useDreamStage() {
+  const doc = useDocOf(ROOT, DreamDoc)
   const concluded = useConcludedSince()
-  if (!doc) return undefined
-  const { dream, prepared, sleep } = doc
-  if (prepared && sleep?.phase !== 'asleep' && (!dream || prepared.at > dream.at))
-    return { phase: 'prepared' as const, chapter: prepared.chapter }
-  if (!dream || dream.dismissed || concluded(dream.branch) !== Infinity) return undefined
-  if (sleep?.phase === 'asleep' && prepared && prepared.at > dream.at) return undefined
-  return { phase: dream.asked ? ('preparing' as const) : ('woke' as const), branch: dream.branch }
+  return doc && { doc, stage: dreamStage(doc, concluded) }
 }
 
-/** The sidebar's cue: what the dream left to do, and the button that does it; `onAct` after it did. */
+export function useAwake() {
+  const { doc, stage } = useDreamStage() ?? {}
+  if (stage === 'woke' || stage === 'preparing') return { phase: stage }
+  if (stage === 'prepared' || stage === 'sleeping' || stage === 'failed')
+    return { phase: 'prepared' as const, chapter: doc!.prepared!.chapter }
+  return undefined
+}
+
 export function AwakeSection({ onAct }: { onAct?: () => void }) {
   const awake = useAwake()
   const actions = useUltimate()
@@ -87,8 +81,7 @@ export function AwakeSection({ onAct }: { onAct?: () => void }) {
             className="flex cursor-pointer items-center gap-1.5 font-mono text-[11px] text-foreground/85 hover:text-foreground"
             onClick={() => {
               onAct?.()
-              // Opening a conversation fails only when @ultimate is unknown; the sidebar row stays as it is then.
-              talkToUltimate(actions).catch(() => undefined)
+              talkToUltimate(actions).catch(meansNone)
             }}
             type="button"
           >
