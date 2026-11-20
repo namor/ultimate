@@ -11,6 +11,7 @@ import { Goals } from '../extensions/goal/server.ts'
 import { Standing } from '../extensions/subagents/api.ts'
 import { actions, userActions } from '../extensions/workspaces/server.ts'
 import { deliveryRuntime } from '../extensions/workspaces/advance.ts'
+import { park, pick } from '../extensions/workspaces/delivery.ts'
 import type { Delivery } from '../extensions/workspaces/delivery.ts'
 import { reportBlocked } from '../extensions/workspaces/lander.ts'
 import { Workspaces } from '../extensions/workspaces/workspaces.ts'
@@ -439,6 +440,37 @@ describe('delivery approval', () => {
       expect(delivery.mergeApproved).toBeUndefined()
       // The audit record stays.
       expect(delivery.approvals?.[0]).toMatchObject({ standing: f.instruction })
+    })
+
+    it('a landing entry keeps its repository slot through a revoke until its lander parks it', async () => {
+      const f = await granted()
+      await approve(f)
+      await f.opened.harness.commit(async (tx) => {
+        const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+        const head = index.queue[0]
+        head.state = 'landing'
+        head.delivery!.slot = true
+        const { slot: _slot, mergeApproved: _approved, ...sibling } = head.delivery!
+        index.queue.push({
+          ...head,
+          id: 'sibling',
+          source: '/other',
+          state: 'queued',
+          delivery: { ...sibling, candidate: 'e'.repeat(40), stage: 'publish', risk: 'low' },
+        })
+      }, context)
+      await actions.standing({ revoke: true }, {
+        host: f.host,
+        conversationId: f.ultimate,
+        signal: new AbortController().signal,
+      } as unknown as ActionContext)
+      const index = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+      expect(index.queue[0]).toMatchObject({ state: 'landing', delivery: { slot: true } })
+      expect(index.queue[0].delivery!.mergeApproved).toBeUndefined()
+      const other = (item: { source: string }) => item.source === '/other'
+      expect(pick(index.queue, Date.now(), other)).toBeUndefined()
+      park(index.queue[0])
+      expect(pick(index.queue, Date.now(), other)).toEqual({ ready: 1 })
     })
 
     it('revoking releases the repository slot of the entry it parks', async () => {

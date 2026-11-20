@@ -113,7 +113,7 @@ export function waits(d: Delivery): Wait | undefined {
   return undefined
 }
 
-export const inFlight = (d: Delivery) => d.slot === true && !waits(d)
+export const inFlight = (d: Delivery) => d.slot === true
 
 export const standingAsk = (d: Delivery, action: 'publish' | 'merge', grant: StandingGrant) =>
   `${action}:${d.candidate}:${grant.instruction}`
