@@ -180,7 +180,9 @@ it('opens a local Markdown chat link only through the chooser and renders the se
   const expand = dialog.getByRole('button', { name: 'Expand Markdown viewer' })
   const restore = dialog.getByRole('button', { name: 'Restore Markdown viewer' })
   await expand.click()
-  expect((await dialog.boundingBox())?.width).toBe(page.viewportSize()?.width)
+  expect(await dialog.evaluate((element) => (element as HTMLElement).offsetWidth)).toBe(
+    page.viewportSize()?.width,
+  )
   expect(await visible('Report final line')).toBe(true)
   await restore.click()
   expect(await visible('Report final line')).toBe(true)
