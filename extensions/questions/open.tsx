@@ -1,4 +1,5 @@
-import type { ConversationId } from '@earendil-works/pi-durable'
+import type { ConversationId, EntryId } from '@earendil-works/pi-durable'
+import { parseConversationId } from '../../lib/ids.ts'
 import { openQuestion } from '../../lib/message-state.ts'
 import type { Question } from '../messages/refs.ts'
 import { cardKey } from '../../lib/question-cards.ts'
@@ -22,15 +23,18 @@ export function openQuestions(message: Message) {
 export const waiting = <M extends Message>(messages: readonly M[]) =>
   messages.filter(waitsOnUser).toReversed()
 
-export type Ask = { at: number; conversation: number } & ({ message: number } | { entry: number })
+export type Ask = { at: number; conversation: ConversationId } & (
+  | { message: number }
+  | { entry: EntryId }
+)
 
 export function asks(
   messages: readonly (Message & { at: number })[],
-  deliveries: readonly { conversation: number; entry: number; at: number }[],
+  deliveries: readonly { conversation: ConversationId; entry: EntryId; at: number }[],
 ): Ask[] {
   const asked = messages.flatMap((message) =>
     waitsOnUser(message) && typeof message.from === 'number'
-      ? [{ at: message.at, conversation: message.from, message: message.id }]
+      ? [{ at: message.at, conversation: parseConversationId(message.from), message: message.id }]
       : [],
   )
   return [...asked, ...deliveries].toSorted((a, b) => a.at - b.at)

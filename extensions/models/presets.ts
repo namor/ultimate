@@ -1,14 +1,8 @@
-/**
- * Model presets: named snapshots of the personal model families (models, thinking, colors, feature assignments) and
- * the user-settings pins of features (`summaryModel`, `instance.model`), kept in `~/.ultimate/model-presets.json` to
- * switch between, say, a Claude and a ChatGPT subscription. Applying one saves its families as `saveFamilies` does and
- * sets or clears the pins; conversations started after it use them, open ones keep their model. Applying is refused
- * while a model it names has no login here. Agent definitions are not part of a preset: they keep naming families.
- */
 import { join } from 'node:path'
 import type { JsonObject } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { discoverAgents } from '../../lib/agents.ts'
+import { meansNone } from '../../lib/errors.ts'
 import { DEFAULT_FAMILY, FEATURES, mergeFamilies, parseFamilies } from '../../lib/families.ts'
 import { readFamilyLayers } from '../../lib/families-settings.ts'
 import { readJson, updateJson } from '../../lib/json-file.ts'
@@ -28,28 +22,25 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 const levels = /:(off|minimal|low|medium|high|xhigh|max)$/
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
-/** A preset name: 1–40 characters, no control characters, no surrounding spaces. */
 export function checkName(name: unknown): string {
   if (typeof name !== 'string' || !name.trim()) throw new Error('A preset needs a name')
   if (name !== name.trim()) throw new Error('A preset name has no surrounding spaces')
   if (name.length > MAX_NAME) throw new Error(`A preset name has at most ${MAX_NAME} characters`)
-  // oxlint-disable-next-line no-control-regex -- control characters are what it rejects
-  if (/[\u0000-\u001f\u007f]/.test(name)) throw new Error('A preset name has no control characters')
-  // A plain object would take it as its prototype, and the preset would silently not be saved.
+  if (
+    Array.from({ length: name.length }, (_, i) => name.charCodeAt(i)).some(
+      (code) => code < 0x20 || code === 0x7f,
+    )
+  )
+    throw new Error('A preset name has no control characters')
   if (name === '__proto__') throw new Error('A preset cannot be named __proto__')
   return name
 }
 
-/** A pin as settings hold it: `provider/id` (summaries may add `:thinking`), or null for off. */
 function checkPin(value: unknown, where: string) {
   if (value === null || (typeof value === 'string' && /^[^/\s]+\/\S+$/.test(value))) return value
   throw new Error(`${where} must be "provider/id" or null`)
 }
 
-/**
- * One preset, checked and complete: every built-in family is in it, so a preset compares equal to what it was saved
- * from. Throws naming the first invalid field.
- */
 export function parsePreset(value: unknown, where = 'preset'): Preset {
   if (!isObject(value)) throw new Error(`${where} must be an object`)
   const { families, assign } = mergeFamilies(
@@ -63,7 +54,6 @@ export function parsePreset(value: unknown, where = 'preset'): Preset {
       throw new Error(`${where}.pins.${feature}: only summaries and preview are pinned`)
     pins[feature] = checkPin(pin, `${where}.pins.${feature}`)
   }
-  // Only features are assigned in families (`saveFamilies`); an older agent assignment means nothing now.
   for (const user of Object.keys(assign)) if (!Object.hasOwn(FEATURES, user)) delete assign[user]
   for (const [user, family] of Object.entries(assign))
     if (!Object.hasOwn(families, family))
@@ -71,7 +61,6 @@ export function parsePreset(value: unknown, where = 'preset'): Preset {
   return { families, assign, pins }
 }
 
-/** The presets file, checked whole: a corrupt or newer file throws and is never written over. */
 async function readStored(path: string): Promise<Stored> {
   const value = await readJson<unknown>(path, { version: VERSION, presets: {} }).catch(
     (error: unknown) => {
@@ -93,7 +82,6 @@ const pinOf = (settings: JsonObject, feature: 'summaries' | 'preview') => {
   return isObject(instance) && Object.hasOwn(instance, 'model') ? instance.model : undefined
 }
 
-/** What applies now: this project's personal families (own or recent, without the team layer) and the user's pins. */
 async function capture(host: ExtensionHost): Promise<Preset> {
   const { base, errors } = await readFamilyLayers(host.userHome, host.projectRoot, {})
   if (errors.length) throw new Error(errors.join('\n'))
@@ -106,7 +94,6 @@ async function capture(host: ExtensionHost): Promise<Preset> {
   return parsePreset({ ...base, pins })
 }
 
-/** The models a preset names: each family's, and the pins'. */
 const modelsOf = (preset: Preset) => [
   ...new Set(
     [
@@ -116,11 +103,9 @@ const modelsOf = (preset: Preset) => [
   ),
 ]
 
-/** The models with a login here, as `provider/id`. */
 const availableModels = async (host: ExtensionHost) =>
   new Set((await host.modelRuntime.getAvailable()).map((model) => `${model.provider}/${model.id}`))
 
-/** The providers without a login here that a preset needs, with the models it names on each. */
 function missingLogins(host: ExtensionHost, preset: Preset, available: Set<string>) {
   const missing = new Map<string, string[]>()
   for (const model of modelsOf(preset))
@@ -148,10 +133,7 @@ const same = (a: Preset, b: Preset) => {
 
 export async function presetsView(host: ExtensionHost): Promise<PresetsView> {
   const stored = await readStored(presetsPath(host.userHome))
-  const current = await capture(host).catch(() => {
-    // Unreadable families or settings: no preset is marked current; the Agents panel shows the families error.
-    return undefined
-  })
+  const current = await capture(host).catch(meansNone)
   const { definitions } = await discoverAgents(
     host.ultimateRoot,
     host.projectRoot,
@@ -166,7 +148,6 @@ export async function presetsView(host: ExtensionHost): Promise<PresetsView> {
       preset,
       current: !!current && same(preset, current),
       missing: missingLogins(host, preset, available),
-      // Agents naming a family the preset lacks fall back to the default family once it applies.
       orphans: definitions
         .filter(
           (definition) =>
@@ -180,7 +161,6 @@ export async function presetsView(host: ExtensionHost): Promise<PresetsView> {
   return { presets }
 }
 
-/** Save what applies now as `name`, replacing a preset of that name; `preset` saves that instead (checked, not applied). */
 export async function savePreset(host: ExtensionHost, name: unknown, preset?: unknown) {
   const checked = checkName(name)
   const value = preset === undefined ? await capture(host) : parsePreset(preset)
@@ -204,10 +184,6 @@ export async function deletePreset(host: ExtensionHost, name: unknown) {
   return null
 }
 
-/**
- * Make preset `name` the personal families and pins. Refused, writing nothing, while a model it names has no login.
- * Two files change: the families first, then the pins in one settings write; applying again completes a half-done one.
- */
 export async function applyPreset(host: ExtensionHost, name: unknown) {
   const checked = checkName(name)
   const stored = await readStored(presetsPath(host.userHome))

@@ -781,22 +781,10 @@ it('keeps history readable within the output budget without changing stored repl
   )
   expect(compact.data.isError).toBe(false)
   expect(compact.text).not.toContain('[Output truncated]')
+  expect(compact.text).not.toContain('opaque-replay-payload')
   expect(compact.data.details.value).toEqual([
-    {
-      ...entry,
-      model: [
-        {
-          ...message,
-          content: [
-            { type: 'thinking', thinking: 'Check the boundary.' },
-            message.content[1],
-            message.content[2],
-          ],
-        },
-      ],
-    },
+    expect.objectContaining({ id: entry.id, kind: 'pi.assistant', text: 'Verified.' }),
   ])
-  // The same action serves cross-project reads; full access and provider replay retain the original record.
   const full = await post(server, '/api/extensions/codemode/actions/read', {
     args: { op: 'entries', args: [server.root.id, { ...options, full: true }] },
   })

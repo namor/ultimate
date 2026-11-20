@@ -1,7 +1,9 @@
 import { execFileSync, spawn } from 'node:child_process'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
-import { setImmediate as yieldToLoop } from 'node:timers/promises'
+import { every } from '../../../lib/timers.ts'
 import type { ProcessEvidence, ProcessIdentity as Entry } from './types.d.ts'
+
+const yieldToLoop = () => new Promise<void>((resolve) => setImmediate(resolve))
 
 type Failure = NonNullable<ProcessEvidence['failure']>
 class InventoryError extends Error {
@@ -146,7 +148,7 @@ export function ownedProcess(
   child.on('exit', () => {
     reaped = true
   })
-  const timer = setInterval(sample, 50)
+  const stopSampling = every(50, sample)
   return {
     child,
     evidence(): ProcessEvidence {
@@ -162,7 +164,7 @@ export function ownedProcess(
     },
     stop() {
       return (cleanup ??= (async () => {
-        clearInterval(timer)
+        stopSampling()
         let verified = false
         try {
           let table = capture('cleanup') // Capture ancestry before killing parents, including separate PGIDs.

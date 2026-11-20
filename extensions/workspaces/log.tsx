@@ -138,7 +138,6 @@ export function LanderReport({ entry }: { entry: EntryRecord }) {
         <Steps
           ended={outcome.outcome === 'failed' ? 'failed' : 'landed'}
           lander={outcome.lander}
-          // Reports stored before outcomes kept their steps have none (#45669's 8de05dc report crashed here).
           steps={outcome.steps ?? []}
         />
       </LandingCard>

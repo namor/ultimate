@@ -94,7 +94,6 @@ function running(host: ExtensionHost, args: ActionInput<{ flowId: string }>) {
 }
 const withoutUndefined = <T>(value: T): MutableJson<T> => JSON.parse(JSON.stringify(value))
 
-// Switching or deleting a preset is the user's choice of subscription: agents may only save them.
 export const userActions = ['login', 'answer', 'cancel', 'logout', 'applyPreset', 'deletePreset']
 
 const invalidateLoginHealthBestEffort = async (host: ActionContext['host'], provider: string) =>

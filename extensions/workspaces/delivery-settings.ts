@@ -10,7 +10,6 @@ export type DeliverySettings = {
   requiredChecks: string[]
 }
 
-/** Personal opt-in only: declined project resources stay declined. */
 export async function deliverySettings(
   userHome: string,
   source: string,
@@ -19,7 +18,6 @@ export async function deliverySettings(
   try {
     personal = await readSettings(userSettingsPath(userHome))
   } catch {
-    // Settings errors can include contents; never expose them in a delivery report.
     throw new Error('Cannot read personal delivery settings')
   }
   const map = personal.delivery

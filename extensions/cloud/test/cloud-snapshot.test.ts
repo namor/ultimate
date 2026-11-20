@@ -11,8 +11,6 @@ import { cloudStub, hashKey as project } from './cloud-stub.ts'
 import { temp } from '../../../test/helpers.ts'
 
 const key = 'github.com/o/project'
-// Short fixture words can occur by chance in the 17 MiB ciphertext checked below.
-const machine = 'snapshot-machine-test'
 const stub = cloudStub()
 const stored = stub.objects
 const remote = { url: 'ws://127.0.0.1:8787', token: 'dev', secret: 'snapshot secret', key }

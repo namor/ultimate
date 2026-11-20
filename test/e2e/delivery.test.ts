@@ -6,10 +6,10 @@ import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/provid
 import type { ConversationDocToken, ConversationId } from '@earendil-works/pi-durable'
 import { ProjectTrustStore } from '@earendil-works/pi-coding-agent'
 import { context } from '../../server/harness.ts'
-import { projectDecision, projectSettings } from '../../server/project-setup.ts'
+import { projectDecision, projectSettings } from '../../lib/project-setup.ts'
 import { git } from '../../lib/git.ts'
 import { browserBinary } from '../../extensions/browser/server.ts'
-import { fastForwardTarget } from '../../extensions/workspaces/lander.ts'
+import { fastForwardOnlyTargetBranch } from '../../extensions/workspaces/lander.ts'
 import { setAutomaticSummaries } from '../../extensions/conversations/summary.ts'
 import type { WorkspaceIndex } from '../../extensions/workspaces/types.ts'
 import { fauxServer, post, removeTemp, sourceCopy, temp, until } from '../helpers.ts'
@@ -37,7 +37,7 @@ it('advances the target worktree without touching the source after its checked-o
   await git(source, 'switch', '-c', 'unrelated', base)
   const target = join(home, 'main')
   await git(source, 'worktree', 'add', target, 'main')
-  await fastForwardTarget(source, 'main', base, candidate)
+  await fastForwardOnlyTargetBranch(source, 'main', base, candidate)
   expect(await git(source, 'symbolic-ref', '--short', 'HEAD')).toBe('unrelated')
   expect(await git(source, 'rev-parse', 'HEAD')).toBe(base)
   expect(await git(target, 'rev-parse', 'HEAD')).toBe(candidate)

@@ -1,4 +1,4 @@
-import { parseConversationId } from '../../lib/ids.ts'
+import { offsetEntryId, parseConversationId, parseEntryId } from '../../lib/ids.ts'
 import type { JsonValue } from '@earendil-works/chord/json'
 import { onCommit } from '../../lib/commits.ts'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
@@ -73,18 +73,6 @@ async function setupGit(host: ExtensionHost) {
   await workspaces(host).standLander(context)
 }
 
-/**
- * Who acts on a delivery. A call from the browser (it carries a `device`) is the user's own click. Any other call is an
- * agent's: only @ultimate, the root standing agent, may make it, never while a hands-off goal is open, and only on the
- * user's recorded instruction: an entry in its conversation that a `user.input` event after the submission names,
- * carrying the browser `device` only the user's composer and answer card stamp. The entry's kind alone does not prove
- * the user wrote it: `messages/settle` writes a `board.message` from "user" in @ultimate's name, watchdog, update and
- * onboarding place plain `pi.user` inputs with text the server composed, and voice-live answers an open question with
- * text its model composed (an event without a device). Branches, subagents, side chats and automations run under their
- * own conversation ids, so they fail the first check. Docs are found by kind, not import: subagents and goal depend on
- * workspaces.
- */
-/** Whether a hands-off goal is open; `tx` reads inside a commit, where a snapshot would wait on that commit. */
 async function goalOpen(host: ExtensionHost, tx?: Tx) {
   const goals = host.doc('goal')
   if (!goals) return false
@@ -93,7 +81,6 @@ async function goalOpen(host: ExtensionHost, tx?: Tx) {
     : (await host.harness().snapshot(goals, ROOT_CONVERSATION_ID, context))?.goals
   return Array.isArray(open) && open.some((goal) => !(goal as { ended?: unknown }).ended)
 }
-/** @ultimate's conversation id when `ctx` is @ultimate itself, else a refusal: no branch, side chat or automation. */
 async function rootAgent(host: ExtensionHost, ctx: Pick<ActionContext, 'conversationId'>) {
   const standing = host.doc('ultimate.standing-agents')
   const ultimate =
@@ -102,22 +89,18 @@ async function rootAgent(host: ExtensionHost, ctx: Pick<ActionContext, 'conversa
     throw new Error("Only the user or @ultimate on the user's instruction can act on a delivery")
   return ultimate as ConversationId
 }
-/**
- * Whether entry `instruction` of @ultimate's conversation is an input the user typed or answered on a card, newer than
- * `since` when given; returns the entry id or throws.
- */
 async function typedInstruction(
   host: ExtensionHost,
   ultimate: ConversationId,
   instruction: unknown,
-  since?: number,
+  since?: EntryId,
 ) {
   const harness = host.harness()
   if (typeof instruction !== 'number' || !Number.isSafeInteger(instruction))
     throw new Error(
       "Pass instruction: the entry id of the user's input that told you to act on this delivery",
     )
-  const entry = await harness.commit((tx) => tx.entry(instruction as EntryId), context)
+  const entry = await harness.commit((tx) => tx.entry(parseEntryId(instruction)), context)
   if (!entry || entry.conversationId !== ultimate || (since !== undefined && entry.id <= since))
     throw new Error(
       since === undefined
@@ -125,12 +108,10 @@ async function typedInstruction(
         : 'instruction must be an entry of your conversation newer than this submission; the user decides on this candidate',
     )
   const message = entry.kind === 'board.message' ? (entry.data as { id?: unknown })?.id : undefined
-  // The input's event commits right after its placement (or admission, when queued), so it lies between the submission
-  // and the entries that followed the instruction; a bounded window keeps an old instruction findable.
   const events = await host.eventLog.recent({
     events: [UserInputEvent],
     ...(since !== undefined ? { since } : {}),
-    before: entry.id + 1000,
+    before: offsetEntryId(entry.id, 1000),
     limit: 1000,
   })
   let typed: (typeof events)[number] | undefined
@@ -158,7 +139,7 @@ async function approver(
   ctx: Pick<ActionContext, 'conversationId' | 'device'>,
   action: Approval['action'],
   args: { instruction?: unknown; standing?: unknown; reason?: unknown },
-  submittedAt: number,
+  submittedAt: EntryId,
 ): Promise<Approval> {
   if (ctx.device) return { action, at: Date.now(), by: 'user' }
   const ultimate = await rootAgent(host, ctx)
@@ -167,14 +148,12 @@ async function approver(
   if (args.standing === true) {
     if (typeof args.reason !== 'string' || !args.reason.trim())
       throw new Error('A standing approval needs reason: why this candidate is ready')
-    // The grant and the delivery's evidence are judged together inside the approval's commit, which sets `standing`
-    // to the grant's instruction entry.
     return {
       action,
       at: Date.now(),
       by: 'ultimate',
       conversation: ultimate,
-      standing: 0,
+      standing: parseEntryId(0),
       reason: args.reason.trim().slice(0, 240),
     }
   }
@@ -182,9 +161,7 @@ async function approver(
   return { action, at: Date.now(), by: 'ultimate', conversation: ultimate, instruction }
 }
 
-/** Most standing approval a grant may give: it is a temporary measure (#58492). */
 const standingMaxHours = 7 * 24
-/** How fresh the user's words must be to grant: the grant follows what they just said, not an old remark. */
 const grantWindow = 10 * 60_000
 
 export const actions = {
@@ -216,7 +193,6 @@ export const actions = {
       const delivery = entry?.delivery
       if (!entry || !delivery || !bound(entry))
         throw new Error('Delivery candidate changed; approval refused')
-      // The instruction was judged against the snapshot's submission point; a reassessment in between moved it.
       if (entry.at !== seen.at)
         throw new Error('Delivery was reassessed; the user must decide on the new assessment')
       if (approval.by === 'ultimate' && (await goalOpen(host, tx)))
@@ -226,7 +202,6 @@ export const actions = {
         if (refusal) throw new Error(`Standing approval refused: ${refusal}`)
         approval.standing = index.standing!.instruction
       }
-      // One instruction decides one delivery: the user's words about this candidate approve no other.
       if (
         approval.instruction !== undefined &&
         [...index.queue, ...Object.entries(index.results).map(([id, r]) => ({ id, ...r }))].some(
@@ -271,13 +246,6 @@ export const actions = {
     host.harness().resume()
     return { ok: true as const }
   }),
-  /**
-   * Grant or revoke the standing delivery approval. Only @ultimate grants, outside a hands-off goal, for `hours` (default
-   * 24, at most a week), on `instruction`: the user's latest typed input in its conversation, at most ten minutes old,
-   * newer than the last grant or revocation and not already deciding a delivery, so no old or reused words renew it.
-   * The user's click revokes, and so may @ultimate on the user's word; revoking also withdraws standing approvals that
-   * no write has used yet.
-   */
   standing: implementAction(StandingAction, async (args, { host, conversationId, device }) => {
     if (!args || typeof args !== 'object' || Array.isArray(args))
       throw new Error('Expected { grant } or { revoke }')
@@ -290,9 +258,8 @@ export const actions = {
         if (!grant || grant.revokedAt !== undefined) return
         grant.revokedAt = Date.now()
         grant.revokedBy = by
-        // Words up to now cannot grant again, the user's "revoke it" included.
         grant.boundary = (
-          await tx.scanEntries({ conversationId: grant.conversation as ConversationId }, 1)
+          await tx.scanEntries({ conversationId: grant.conversation }, 1)
         ).items[0]?.id
         const standingLast = (
           d: NonNullable<(typeof index.queue)[number]['delivery']>,
@@ -302,7 +269,6 @@ export const actions = {
           if (!d) continue
           if (d.stage === 'publish' && d.publishApproved && standingLast(d, 'publish'))
             delete d.publishApproved
-          // Once the merge intent is recorded the write may be under way; it is reconciled, never withdrawn.
           if (
             (d.stage === 'ci' || d.stage === 'merge') &&
             d.mergeApproved &&

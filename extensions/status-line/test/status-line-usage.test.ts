@@ -13,9 +13,9 @@ import {
 } from '@earendil-works/pi-durable'
 import type { ConversationId } from '@earendil-works/pi-durable'
 import { expect, it } from 'vitest'
-import { subtreeUsage } from '../extensions/status-line/usage.ts'
-import { actions } from '../extensions/status-line/server.ts'
-import { Metadata } from '../server/metadata.ts'
+import { subtreeUsage } from '../usage.ts'
+import { actions } from '../server.ts'
+import { Metadata } from '../../../server/metadata.ts'
 
 const anchor = defineTask<null, { phase: 'done' }, null>({
   name: 'usage.fixture',

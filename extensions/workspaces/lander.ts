@@ -287,8 +287,7 @@ export const contains = (cwd: string, ancestor: string, descendant: string) =>
     () => true,
     () => false,
   )
-/** Advance only the named target, never an unrelated branch now checked out in the source. Caller holds its source queue. */
-export async function fastForwardTarget(
+export async function fastForwardOnlyTargetBranch(
   source: string,
   target: string,
   base: string,
@@ -492,9 +491,7 @@ export function createLander(
             ?.standing
           const action = delivery.stage as 'publish' | 'merge'
           if (standingRefusal(grant, delivery, action, Date.now())) return
-          const ultimate = await host
-            .harness()
-            .conversation(grant!.conversation as ConversationId, context)
+          const ultimate = await host.harness().conversation(grant!.conversation, context)
           await ultimate
             ?.submit(
               {
@@ -734,11 +731,11 @@ export function createLander(
               const sha = delivery.merged!
               if ((await git(source, 'rev-parse', `${sha}^{tree}`)) !== delivery.tree)
                 throw new Error('GitHub merge tree differs from the verified candidate')
-              await serial(source, async () => {
+              await serializeSourceWrites(source, async () => {
                 const current = await git(source, 'rev-parse', `refs/heads/${target}`)
                 if (!(await contains(source, current, sha)))
                   throw new Error('Local target advanced outside the merged delivery')
-                await fastForwardTarget(source, target, current, sha)
+                await fastForwardOnlyTargetBranch(source, target, current, sha)
               })
               return commitLandingOutcome(`merged as ${sha.slice(0, 7)} through ${delivery.url}.`, {
                 outcome: 'landed',
@@ -757,7 +754,7 @@ export function createLander(
             if (delivery.stage === 'blocked') {
               host.notice(`Delivery ${id} blocked: ${delivery.reason}`)
               await (
-                await host.harness().conversation(entry.conversationId as ConversationId, context)
+                await host.harness().conversation(entry.conversationId, context)
               )?.submit(
                 {
                   type: 'input',
@@ -765,7 +762,7 @@ export function createLander(
                   requestId: `delivery-blocked:${id}:${delivery.reason}`,
                   content: `Delivery ${id} is blocked: ${delivery.reason}. Its record is retained; inspect the delivery card before rechecking.`,
                   entry: {
-                    kind: LanderReportEntry,
+                    kind: LanderReportEntry.kind,
                     data: {
                       id,
                       outcome: {
@@ -1041,7 +1038,7 @@ export function createLander(
             }, context)
             if (entry.assessment.reviewedTree !== tree) {
               await (
-                await host.harness().conversation(entry.conversationId as ConversationId, context)
+                await host.harness().conversation(entry.conversationId, context)
               )?.submit(
                 {
                   type: 'input',
@@ -1049,7 +1046,7 @@ export function createLander(
                   requestId: `delivery-review:${id}`,
                   content: `Integration changed the reviewed tree. Independently review ${remoteBase.commit.sha}..${integrated}, then resubmit this same tip with reviewedTree ${tree}, risk and review evidence. No publication occurred.`,
                   entry: {
-                    kind: LanderReportEntry,
+                    kind: LanderReportEntry.kind,
                     data: {
                       id,
                       outcome: {
@@ -1078,7 +1075,7 @@ export function createLander(
             if (replayAfterFastForward) return false
             if (current !== base) return true
             try {
-              await fastForwardTarget(source, target, base, integrated)
+              await fastForwardOnlyTargetBranch(source, target, base, integrated)
             } catch (error) {
               refused = failure(error)
             }

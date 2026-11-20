@@ -1,4 +1,4 @@
-import type { ConversationId } from '@earendil-works/pi-durable'
+import type { ConversationId, EntryId } from '@earendil-works/pi-durable'
 import { describe, expect, it } from 'vitest'
 import { deliveryAsk } from '../../../workspaces/ask.tsx'
 import type { Delivery } from '../../../workspaces/delivery.ts'
@@ -62,7 +62,7 @@ describe('the waiting pill', () => {
       { ...open, id: 6, at: 50, from: 3 },
       { ...open, id: 7, at: 5, from: 'remote' as const },
     ]
-    const delivery = { conversation: 9, entry: 120, at: 40 }
+    const delivery = { conversation: 9 as ConversationId, entry: 120 as EntryId, at: 40 }
     expect(asks(messages, [delivery])).toEqual([
       { at: 30, conversation: 2, message: 5 },
       delivery,

@@ -1,17 +1,11 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
-import type { ExtensionHost } from '../server/extensions.ts'
-import { readFamilies, writeFamilies } from '../lib/families-settings.ts'
-import { readSettings, userSettingsPath } from '../lib/settings.ts'
-import {
-  applyPreset,
-  deletePreset,
-  presetsPath,
-  presetsView,
-  savePreset,
-} from '../extensions/models/presets.ts'
-import { temp } from './helpers.ts'
+import type { ExtensionHost } from '../../../server/extensions.ts'
+import { readFamilies, writeFamilies } from '../../../lib/families-settings.ts'
+import { readSettings, userSettingsPath } from '../../../lib/settings.ts'
+import { applyPreset, deletePreset, presetsPath, presetsView, savePreset } from '../presets.ts'
+import { temp } from '../../../test/helpers.ts'
 
 /** A host whose logins cover `available` (`provider/id`), with a coordinator agent on its own family. */
 async function setup(available: string[]) {

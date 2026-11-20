@@ -19,6 +19,11 @@ vi.mock('@/sdk', async () => ({
 }))
 vi.mock('../../../messages/ui.tsx', () => ({ MessagesDoc: {}, MessageAnswers: {} }))
 vi.mock('../../card.tsx', () => ({ MessageQuestions: () => null }))
+vi.mock('../../waiting.tsx', () => ({
+  WaitingPill: () => null,
+  currentAsks: () => [],
+  openAsk: () => {},
+}))
 
 it('sweeps a settled question’s draft as the app, not as a person', async () => {
   const facet = (await import('../../web.tsx')).default as unknown as {

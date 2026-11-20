@@ -1,4 +1,4 @@
-import type { JsonValue } from '@earendil-works/chord'
+import type { JsonValue } from '@earendil-works/chord/json'
 import { fauxProvider } from '@earendil-works/pi-ai/providers/faux'
 import { ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import type { ConversationId } from '@earendil-works/pi-durable'
@@ -274,7 +274,7 @@ describe('delivery approval', () => {
         divergence: other.divergence,
         target: other.target,
         tip: other.tip,
-        lander: 1,
+        lander: 1 as ConversationId,
         steps: [],
         conversationId: other.conversationId,
       }

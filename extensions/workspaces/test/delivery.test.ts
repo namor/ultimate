@@ -1,13 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import {
-  advanceDelivery,
-  deliveryRuntime,
-  GithubRequestError,
-} from '../extensions/workspaces/delivery.ts'
-import type { Delivery, Github } from '../extensions/workspaces/delivery.ts'
-import { git } from '../lib/git.ts'
+import { advanceDelivery, deliveryRuntime, GithubRequestError } from '../delivery.ts'
+import type { Delivery, Github } from '../delivery.ts'
+import { git } from '../../../lib/git.ts'
 
-vi.mock('../lib/git.ts', () => ({ git: vi.fn<typeof git>() }))
+vi.mock('../../../lib/git.ts', () => ({ git: vi.fn<typeof git>() }))
 const candidate = 'a'.repeat(40)
 const baseline = 'b'.repeat(40)
 const merged = 'c'.repeat(40)

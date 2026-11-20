@@ -60,7 +60,6 @@ export type LanderStep = {
   check?: LanderCheck
 }
 export type LanderOutcome = {
-  /** Retained when a delivery merged or was stopped: its approvals' instructions decide no later delivery. */
   delivery?: Delivery
   outcome: 'landed' | 'failed'
   divergence?: string
@@ -96,7 +95,6 @@ export type WorkspaceIndex = {
   queue: QueueEntry[]
   landers: Record<SourceCheckout, TaskId>
   landerConversations: Record<SourceCheckout, ConversationId>
-  /** The latest standing delivery approval, kept after it expires or is revoked as its audit record. */
   standing?: StandingGrant
   results: Record<
     string,
@@ -143,10 +141,6 @@ export type LandResult = {
 }
 export type SubmitResult = { text: string; id: string; position: number; lander: ConversationId }
 
-/**
- * A time-boxed standing approval: the user's typed instruction `instruction` in @ultimate's conversation `conversation`
- * let @ultimate approve publish and merge of verified, reviewed deliveries until `until`, unless revoked earlier.
- */
 export type StandingGrant = {
   instruction: EntryId
   conversation: ConversationId
@@ -154,7 +148,6 @@ export type StandingGrant = {
   until: number
   revokedAt?: number
   revokedBy?: 'user' | 'ultimate'
-  /** The newest entry of `conversation` at revocation: a new grant needs words after it. */
   boundary?: EntryId
 }
 

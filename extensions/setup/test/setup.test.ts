@@ -12,7 +12,7 @@ import { ProjectTrustStore } from '@earendil-works/pi-coding-agent'
 import { projectKey } from '../../../lib/families-settings.ts'
 import { writeJson } from '../../../lib/json-file.ts'
 import { userSettingsPath } from '../../../lib/settings.ts'
-import { projectSettings } from '../../../server/project-setup.ts'
+import { projectSettings } from '../../../lib/project-setup.ts'
 
 afterEach(removeTemps)
 

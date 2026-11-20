@@ -1,5 +1,6 @@
 import { arr, int, num, obj, opt, str } from '@earendil-works/pi-schema'
 import { defineExtension, defineTool } from '@earendil-works/pi-durable'
+import { readOnly } from '../../../lib/replay.ts'
 import { McpClient, StreamableHttpTransport, toLlmContent } from '@earendil-works/pi-mcp'
 import { checkPublicUrls } from './public-url.ts'
 
@@ -94,8 +95,7 @@ export default function publicDocs() {
     tools: [
       defineTool({
         name: 'mcp__exa__web_search_exa',
-        // Repeating a public search changes no state.
-        replay: 'safe',
+        ...readOnly,
         description: `Search public web pages with Exa. ${publicOnly}`,
         parameters: obj({
           query: str({ minLength: 1, maxLength: 5000 }),
@@ -113,8 +113,7 @@ export default function publicDocs() {
       }),
       defineTool({
         name: 'mcp__exa__web_fetch_exa',
-        // Repeating a public page read changes no state.
-        replay: 'safe',
+        ...readOnly,
         description: `Read up to five public HTTP(S) URLs with Exa. Only public DNS names: no credentials, fragments, nonstandard ports, IP literals, or private/reserved destinations. ${publicOnly}`,
         parameters: obj({
           urls: arr(str({ minLength: 1, maxLength: 8192 }), {
@@ -135,8 +134,7 @@ export default function publicDocs() {
       }),
       defineTool({
         name: 'mcp__context7__resolve_library_id',
-        // Repeating a public library lookup changes no state.
-        replay: 'safe',
+        ...readOnly,
         description: `Find a Context7 library ID for a public library. ${publicOnly}`,
         parameters: obj({
           query: str({ minLength: 1, maxLength: 5000 }),
@@ -148,8 +146,7 @@ export default function publicDocs() {
       }),
       defineTool({
         name: 'mcp__context7__query_docs',
-        // Repeating a public documentation query changes no state.
-        replay: 'safe',
+        ...readOnly,
         description: `Query documentation for a public Context7 library ID in /org/project or /org/project/version form. ${publicOnly}`,
         parameters: obj({
           libraryId: str({ minLength: 4, maxLength: 300, pattern: libraryIdPattern }),

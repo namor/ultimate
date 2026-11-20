@@ -70,18 +70,7 @@ async function fixture(onRequest?: (text: string, home: string) => Promise<void>
     servers.push(server)
     const route: FauxResponseFactory = async (transcript) => {
       server.host.faux!.appendResponses([route])
-      // PR #20: replies can follow a scripted command in the same request. Read the pending command,
-      // but never replay one that already has an assistant response or tool result.
-      const boundary = transcript.messages.findLastIndex(
-        (message) => message.role === 'assistant' || message.role === 'toolResult',
-      )
-      const command = transcript.messages
-        .slice(boundary + 1)
-        .find(
-          (message) =>
-            message.role === 'user' && /^(BRANCH|CODE|SEND) /.test(textOf(message.content)),
-        )
-      const last = command ?? transcript.messages.findLast((message) => message.role !== 'system')!
+      const last = transcript.messages.findLast((message) => message.role !== 'system')!
       const text = textOf(last.content)
       requests.push(text)
       await onRequest?.(text, home)

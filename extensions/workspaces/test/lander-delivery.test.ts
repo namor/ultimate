@@ -1,14 +1,15 @@
+import type { ConversationId, EntryId } from '@earendil-works/pi-durable'
 import { expect, it, vi } from 'vitest'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
-import { createLander } from '../extensions/workspaces/lander.ts'
-import { advanceDelivery, deliveryRuntime } from '../extensions/workspaces/delivery.ts'
-import type { Delivery } from '../extensions/workspaces/delivery.ts'
-import type { WorkspaceIndex } from '../extensions/workspaces/types.ts'
-import { git } from '../lib/git.ts'
+import { createLander } from '../lander.ts'
+import { advanceDelivery, deliveryRuntime } from '../delivery.ts'
+import type { Delivery } from '../delivery.ts'
+import type { WorkspaceIndex } from '../types.ts'
+import { git } from '../../../lib/git.ts'
 
-vi.mock('../lib/git.ts', () => ({ git: vi.fn<typeof git>() }))
-vi.mock('../extensions/workspaces/delivery.ts', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../extensions/workspaces/delivery.ts')>()),
+vi.mock('../../../lib/git.ts', () => ({ git: vi.fn<typeof git>() }))
+vi.mock('../delivery.ts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../delivery.ts')>()),
   advanceDelivery: vi.fn<typeof advanceDelivery>(),
   deliveryRuntime: vi.fn<() => string>(() => 'runtime-B'),
 }))
@@ -29,11 +30,11 @@ function fixture(delivery?: Delivery) {
     queue: [
       {
         id: 'submission',
-        conversationId: 2,
+        conversationId: 2 as ConversationId,
         source: '/fixture',
         target: 'main',
         tip: 'a'.repeat(40),
-        at: 1,
+        at: 1 as EntryId,
         divergence: 'None',
         state: 'landing',
         steps: [],
@@ -55,8 +56,12 @@ function fixture(delivery?: Delivery) {
       return result
     },
   }
-  const phase = createLander({} as never, {} as never, (_source, work) => work(), {} as never)
-    .definition.phases.land
+  const phase = createLander(
+    { emit: async () => undefined } as never,
+    {} as never,
+    (_source, work) => work(),
+    {} as never,
+  ).definition.phases.land
   const run = () =>
     phase(
       {
