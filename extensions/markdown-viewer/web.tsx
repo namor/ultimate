@@ -122,18 +122,23 @@ function DocumentView({ text }: { text: string }) {
 
 const fromTop: Position = { block: 0, fraction: 0, end: false }
 
-function passage(scroller: HTMLElement, blocks: HTMLCollection): Position {
+function passage(scroller: HTMLElement, blocks: NodeListOf<HTMLElement> | undefined): Position {
   const { scrollTop, scrollHeight, clientHeight } = scroller
   if (scrollTop < 1) return fromTop
   if (scrollHeight - clientHeight - scrollTop < 2) return { ...fromTop, end: true }
+  if (!blocks?.length) return fromTop
   const top = scroller.getBoundingClientRect().top
-  for (let block = 0; block < blocks.length; block++) {
-    const rect = blocks[block].getBoundingClientRect()
-    if (rect.height && rect.bottom > top) {
-      return { block, fraction: Math.max(0, (top - rect.top) / rect.height), end: false }
-    }
+  let low = 0
+  let high = blocks.length
+  while (low < high) {
+    const middle = (low + high) >>> 1
+    if (blocks[middle].getBoundingClientRect().bottom > top) high = middle
+    else low = middle + 1
   }
-  return fromTop
+  const rect = blocks[low]?.getBoundingClientRect()
+  return rect?.height
+    ? { block: low, fraction: Math.max(0, (top - rect.top) / rect.height), end: false }
+    : fromTop
 }
 
 function ViewerBody({
@@ -149,16 +154,19 @@ function ViewerBody({
   const scroll = useRef<HTMLDivElement>(null)
   const documentBody = useRef<HTMLDivElement>(null)
   const position = useRef<Position>(fromTop)
+  const anchors = useRef<NodeListOf<HTMLElement>>(undefined)
   const [file, setFile] = useState<{ key?: string; name: string; text: string }>()
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string>()
 
   function remember() {
-    const blocks = documentBody.current?.firstElementChild?.children
-    if (scroll.current && blocks) position.current = passage(scroll.current, blocks)
+    if (scroll.current) position.current = passage(scroll.current, anchors.current)
   }
 
   useLayoutEffect(() => {
+    anchors.current = documentBody.current?.querySelectorAll(
+      'h1,h2,h3,h4,h5,h6,p,li:not(:has(li,p)),pre:not(figure pre),figure,tr,hr',
+    )
     position.current = (file?.key && readPosition(file.key)) || fromTop
     const key = file?.key
     if (!key) return undefined
@@ -174,7 +182,7 @@ function ViewerBody({
     const scroller = scroll.current
     if (!scroller) return
     const { block, fraction, end } = position.current
-    const target = documentBody.current?.firstElementChild?.children[block]?.getBoundingClientRect()
+    const target = anchors.current?.[block]?.getBoundingClientRect()
     scroller.scrollTop = end
       ? scroller.scrollHeight
       : target && (block > 0 || fraction > 0)
@@ -307,10 +315,11 @@ function Viewer() {
       <DialogContent
         className={
           expanded
-            ? 'top-0 left-0 h-dvh max-w-none translate-x-0 translate-y-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] gap-0 rounded-none border-0 p-0 sm:max-w-none'
+            ? 'top-0 left-0 h-dvh max-w-none translate-x-0 translate-y-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] gap-0 rounded-none border-0 p-[env(safe-area-inset-top)_env(safe-area-inset-right)_env(safe-area-inset-bottom)_env(safe-area-inset-left)] sm:max-w-none [&>[data-slot=dialog-close]]:top-[calc(1rem+env(safe-area-inset-top))] [&>[data-slot=dialog-close]]:right-[calc(1rem+env(safe-area-inset-right))]'
             : 'max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] gap-0 p-0 sm:max-w-3xl'
         }
         data-markdown-viewer
+        data-resume-exclude
       >
         {open && (
           <ViewerBody

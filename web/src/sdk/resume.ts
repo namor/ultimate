@@ -30,6 +30,8 @@ export const covered = () => covering
  */
 function copy(node: Node): Node {
   if (!(node instanceof HTMLElement)) return node.cloneNode(true)
+  // A private view must not appear in either session storage or the reload cover.
+  if (node.hasAttribute('data-resume-exclude')) return document.createTextNode('')
   const box = node.getBoundingClientRect()
   if (box.bottom < 0 || box.top > innerHeight || box.right < 0 || box.left > innerWidth) {
     const { margin, position } = getComputedStyle(node)

@@ -17,13 +17,18 @@ it('opens a local Markdown chat link only through the chooser and renders the se
   const home = await temp('ultimate-markdown-viewer-')
   cleanup.push(() => removeTemp(home))
   const file = join(home, 'report.md')
-  const otherFile = join(home, 'other.md')
+  const otherFile = join(home, 'private-second-fixture.md')
   const longText = (label: string) =>
     [
       ...Array.from(
         { length: 90 },
         (_, n) => `## ${label} passage ${n + 1}\n\nReading text for this synthetic section.`,
       ),
+      Array.from({ length: 90 }, (_, n) =>
+        n === 48
+          ? `- ${label} list marker`
+          : `- ${label} list entry ${n + 1}${n < 48 ? ' with uneven wrapping words' : ''}`,
+      ).join('\n'),
       `${label} final line`,
     ].join('\n\n')
   await writeFile(otherFile, longText('Other'))
@@ -183,21 +188,44 @@ it('opens a local Markdown chat link only through the chooser and renders the se
   await select(file)
   await dialog.getByRole('heading', { name: 'Synthetic report' }).waitFor()
   expect(await visible('Report passage 35')).toBe(true)
+  await page.setViewportSize({ width: 390, height: 820 })
+  await dialog
+    .getByText('Report list marker', { exact: true })
+    .evaluate((element) => element.scrollIntoView({ block: 'start' }))
   await expand.click()
-  await page.keyboard.press('Escape')
+  expect(await visible('Report list marker')).toBe(true)
+  await restore.click()
+  expect(await visible('Report list marker')).toBe(true)
+  await expand.click()
+  await select(otherFile)
+  await dialog.getByRole('heading', { name: 'Other passage 1', exact: true }).waitFor()
+  await page.addInitScript(() => {
+    const saved = sessionStorage.getItem('ultimate.resume') ?? ''
+    new MutationObserver(() => {
+      const cover = document.querySelector('#resume')
+      if (!cover) return
+      document.documentElement.dataset.snapshotProbe = JSON.stringify({
+        captured: saved.includes('Open report'),
+        leaked: /private-second-fixture|Other passage 1/.test(saved + cover.textContent),
+      })
+    }).observe(document, { subtree: true, childList: true })
+  })
+  await page.reload()
+  expect(await page.locator('html').getAttribute('data-snapshot-probe')).toBe(
+    '{"captured":true,"leaked":false}',
+  )
   await dialog.waitFor({ state: 'hidden' })
   const persisted = await page.evaluate(() =>
     Object.entries(localStorage).filter(([key]) => key.startsWith('ultimate.markdown-viewer.')),
   )
   expect(JSON.stringify(persisted)).not.toMatch(
-    /report\.md|other\.md|synthetic section|not-a-real-directory/,
+    /report\.md|private-second-fixture|synthetic section|not-a-real-directory/,
   )
   expect(persisted.find(([key]) => key.endsWith('.positions'))?.[1]).toMatch(/[a-f0-9]{64}/)
-  await page.reload()
   await chatLink.click()
   expect(await restore.isVisible()).toBe(true)
   await select(file)
   await dialog.getByRole('heading', { name: 'Synthetic report' }).waitFor()
-  expect(await visible('Report passage 35')).toBe(true)
+  expect(await visible('Report list marker')).toBe(true)
   expect(requests).toEqual([])
 })
