@@ -22,7 +22,7 @@ import { Toasts } from '../../toasts.solid.tsx'
 const agent = createAgent()
 const region = () => agent.snapshot().find((item) => item.component === 'toast')
 
-it('shows the newest four notices, each dismissable by name even when two say the same', async () => {
+it('shows the newest three notices, folds the rest, dismisses each by name and clears all', async () => {
   renderSolid(() => <Toasts />)
   for (const message of ['First', 'Second', 'Same', 'Same', 'Fifth'])
     store.notify({ level: 'info', message })
@@ -30,22 +30,32 @@ it('shows the newest four notices, each dismissable by name even when two say th
   await settle()
 
   const ids = store.getState().notices.map((notice) => notice.id)
+  const press = async (button: string) => {
+    expect(
+      await agent.act({ steps: [{ ref: region()!.ref, action: 'press', args: [button] }] }),
+    ).toMatchObject({ ok: true })
+    await settle()
+    flush()
+    await settle()
+  }
   expect(region()?.buttons).toEqual([
     `Dismiss notice ${ids[4]}: Fifth`,
     `Dismiss notice ${ids[3]}: Same`,
     `Dismiss notice ${ids[2]}: Same`,
-    `Dismiss notice ${ids[1]}: Second`,
+    '+2 more',
+    'Clear all',
   ])
-  expect(
-    await agent.act({
-      steps: [{ ref: region()!.ref, action: 'press', args: [`Dismiss notice ${ids[2]}: Same`] }],
-    }),
-  ).toMatchObject({ ok: true })
-  await settle()
-  flush()
+  await press(`Dismiss notice ${ids[2]}: Same`)
   expect(region()?.buttons).toEqual([
     `Dismiss notice ${ids[4]}: Fifth`,
     `Dismiss notice ${ids[3]}: Same`,
     `Dismiss notice ${ids[1]}: Second`,
+    '+1 more',
+    'Clear all',
   ])
+  await press('+1 more')
+  expect(region()?.buttons).toContain(`Dismiss notice ${ids[0]}: First`)
+  expect(region()?.buttons).toContain('Show less')
+  await press('Clear all')
+  expect(region()?.buttons ?? []).toEqual([])
 })
