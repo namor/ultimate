@@ -18,6 +18,11 @@ import {
   linkRenderers,
 } from '../../sdk/registry.ts'
 import { codePlugin } from './code-block.tsx'
+import {
+  chatMarkdownBlocks,
+  localMarkdownName,
+  remarkLocalMarkdownLinks,
+} from './local-markdown-link.ts'
 import { mentionHref, parseMention, remarkMentions, splitMentions } from './mentions.ts'
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & { from: 'user' | 'assistant' }
@@ -49,8 +54,8 @@ const CoreLink = defaultComponents.a
 function Link(props: ComponentProps<'a'> & ExtraProps) {
   const renderers = linkRenderers(useExtensions())
   const { href, children } = props
-  const mentionWithoutRendererStaysText = href && parseMention(href)
-  const core = mentionWithoutRendererStaysText ? <>{children}</> : <CoreLink {...props} />
+  const internalActionStaysText = href && (parseMention(href) || localMarkdownName(href))
+  const core = internalActionStaysText ? <>{children}</> : <CoreLink {...props} />
   const incompleteStreamingLink = !href || href === 'streamdown:incomplete-link'
   if (incompleteStreamingLink) return core
   return renderers.reduce<ReactNode>(
@@ -106,7 +111,11 @@ function InlineCode(props: ComponentProps<'code'> & ExtraProps) {
 }
 
 const components = { a: Link, inlineCode: InlineCode }
-const gfmBeforeMentionsKeepsUrlFragments = [...Object.values(defaultRemarkPlugins), remarkMentions]
+const gfmBeforeInternalLinks = [
+  ...Object.values(defaultRemarkPlugins),
+  remarkMentions,
+  remarkLocalMarkdownLinks,
+]
 
 function ExtensionCodeBlock({ code, language, isIncomplete }: CustomRendererProps) {
   const renderers = codeBlockRenderers(useExtensions(), language)
@@ -145,7 +154,8 @@ export const MessageResponse = memo(
         controls={controls}
         lineNumbers={false}
         plugins={plugins}
-        remarkPlugins={gfmBeforeMentionsKeepsUrlFragments}
+        parseMarkdownIntoBlocksFn={chatMarkdownBlocks}
+        remarkPlugins={gfmBeforeInternalLinks}
         shikiTheme={codePlugin.getThemes()}
         tableMaxHeight="none"
         {...props}
