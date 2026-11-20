@@ -205,7 +205,7 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
         throw new Error('PR head not pushed')
       return publishPR(d) as never
     }
-    if (p && path.endsWith('/comments') && method === 'POST') return {} as never
+    if (p && path.includes('/comments')) return (method === 'POST' ? {} : []) as never
     if (p && method === 'PATCH' && fields.state === 'closed') {
       p.state = 'closed'
       return p as never
@@ -231,8 +231,18 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
     if (path.includes('/actions/runs?')) {
       const id = pulls.find((pull) => pull.head.sha === sha)!.number
       return {
-        workflow_runs: mode === 'OLD' ? [] : [{ id, status: latest?.status ?? 'queued' }],
+        workflow_runs:
+          mode === 'OLD' ? [] : [{ id, status: latest?.status ?? 'queued', head_sha: sha }],
       } as never
+    }
+    const own = /\/actions\/runs\/(\d+)$/.exec(path)
+    if (own && method === 'GET') {
+      const candidate = pulls[Number(own[1]) - 1].head.sha
+      const status = runs
+        .get(candidate)
+        ?.at(-1)
+        ?.findLast((c) => c.atMinute <= minute)?.status
+      return { id: Number(own[1]), status: status ?? 'queued', head_sha: candidate } as never
     }
     const action = /\/actions\/runs\/(\d+)\/(rerun|cancel)$/.exec(path)
     if (action && method === 'POST' && mode === 'NEW') {
@@ -389,7 +399,7 @@ it('cancels then retries a run that never acquired a runner', async () => {
   const r = await replay(missing, 'NEW')
   expect(r.actions).toEqual([
     { kind: 'cancel', minute: 61, before: 0 },
-    { kind: 'rerun', minute: 62, before: 0 },
+    { kind: 'rerun', minute: 62, before: 1 },
   ])
   expect(r.entries[0].delivery?.reruns).toBe(1)
   expect(r.merged.get('A')).toBeGreaterThan(72)

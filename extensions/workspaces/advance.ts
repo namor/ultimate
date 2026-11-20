@@ -80,7 +80,11 @@ export const github =
 export async function closePull(api: Github, repository: string, pr: number, comment: string) {
   const pull = await api<Pull>(`repos/${repository}/pulls/${pr}`)
   if (pull.merged || pull.state !== 'open') return
-  await api(`repos/${repository}/issues/${pr}/comments`, 'POST', { body: comment })
+  const comments = await api<{ body: string }[]>(
+    `repos/${repository}/issues/${pr}/comments?per_page=100`,
+  )
+  if (!comments.some((existing) => existing.body === comment))
+    await api(`repos/${repository}/issues/${pr}/comments`, 'POST', { body: comment })
   await api(`repos/${repository}/pulls/${pr}`, 'PATCH', { state: 'closed' })
 }
 
@@ -158,7 +162,7 @@ export async function advanceDelivery(
     if (d.runtime !== deliveryRuntime())
       throw new Block('runtime', 'Verification runtime changed; verify a new delivery')
     if (d.stage === 'publish') {
-      if (d.risk === 'high' && !d.publishApproved) return d
+      if (d.risk === 'high' && !d.publishApproved && !d.publishIntent) return d
       const url = await git(source, 'remote', 'get-url', '--push', remote)
       if (
         ![
@@ -177,8 +181,10 @@ export async function advanceDelivery(
       if (existing && existing.split(/\s/)[0] !== d.candidate)
         throw new Block('safety', 'Delivery branch collision; refusing to overwrite it')
       if (!existing) {
-        d.publishIntent = true
-        await persist()
+        if (!d.publishIntent) {
+          d.publishIntent = true
+          await persist()
+        }
         await git(
           { cwd: source, signal, timeout: 300000 },
           'push',
@@ -248,14 +254,20 @@ export async function advanceDelivery(
       const runs = own
         ? {
             workflow_runs: [
-              await api<{ id: number; status: string }>(`${prefix}/actions/runs/${own}`),
+              await api<{ id: number; status: string; head_sha: string }>(
+                `${prefix}/actions/runs/${own}`,
+              ),
             ],
           }
-        : await api<{ workflow_runs: { id: number; status: string }[] }>(
-            `${prefix}/actions/runs?head_sha=${d.candidate}&per_page=1`,
+        : await api<{ workflow_runs: { id: number; status: string; head_sha: string }[] }>(
+            `${prefix}/actions/runs?head_sha=${d.candidate}&per_page=2`,
           )
+      if (runs.workflow_runs.length > 1)
+        throw new Block('infra', `${why}; several workflow runs share the candidate, none rerun`)
       const run = runs.workflow_runs[0]
       if (!run) throw new Block('infra', 'No workflow run exists for the candidate')
+      if (run.head_sha !== d.candidate)
+        throw new Block('safety', 'The workflow run is not for the candidate')
       const done = run.status === 'completed'
       if (done) d.reruns = (d.reruns ?? 0) + 1
       d.rerunAt = now

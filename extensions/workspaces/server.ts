@@ -38,7 +38,7 @@ import {
 import type { GithubRepo } from './refs.ts'
 import { githubRepo, readGithubRepo } from '../../lib/project-identity.ts'
 import { UserInputEvent } from '../../shared/events.ts'
-import { authorize } from './delivery.ts'
+import { authorize, spent } from './delivery.ts'
 import type { Actor, Approval } from './delivery.ts'
 import { deliveryRuntime } from './advance.ts'
 import { sweepChecks } from './lander.ts'
@@ -235,11 +235,7 @@ export const actions = {
         approval.instruction !== undefined &&
         [...index.queue, ...Object.entries(index.results).map(([id, r]) => ({ id, ...r }))].some(
           (item) =>
-            item.id !== entry.id &&
-            [
-              ...(item.delivery?.approvals ?? []),
-              ...('approvals' in item ? (item.approvals ?? []) : []),
-            ].some((a) => a.instruction === approval.instruction),
+            item.id !== entry.id && spent(item).some((a) => a.instruction === approval.instruction),
         )
       )
         throw new Error(
@@ -257,6 +253,7 @@ export const actions = {
           outcome: 'failed',
           reason: `Stopped by ${by}; the delivery branch stays, its PR is closed`,
           delivery,
+          ...(entry.approvals ? { approvals: entry.approvals } : {}),
           at: entry.at,
           divergence: entry.divergence,
           target: entry.target,
@@ -315,7 +312,12 @@ export const actions = {
         for (const { delivery: d } of index.queue) {
           if (!d) continue
           const stage = d.stage === 'blocked' ? d.resumeStage : d.stage
-          if (stage === 'publish' && d.publishApproved && standingLast(d, 'publish'))
+          if (
+            stage === 'publish' &&
+            d.publishApproved &&
+            !d.publishIntent &&
+            standingLast(d, 'publish')
+          )
             delete d.publishApproved
           if (
             (stage === 'ci' || stage === 'merge') &&
@@ -353,7 +355,7 @@ export const actions = {
         throw new Error('Renewing a standing approval needs a newer instruction from the user')
       if (
         [...index.queue, ...Object.values(index.results)].some((item) =>
-          item.delivery?.approvals?.some((a) => a.instruction === instruction),
+          spent(item).some((a) => a.instruction === instruction),
         )
       )
         throw new Error('instruction already decided a delivery; it cannot also grant')

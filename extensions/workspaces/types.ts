@@ -117,6 +117,7 @@ export type WorkspaceIndex = {
       subject?: SubmitTimeSubject
       at: SubmitTimeEntryId
       divergence: string
+      approvals?: Approval[]
     }
   >
 }

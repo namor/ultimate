@@ -184,8 +184,8 @@ all read it.
 
 **Mechanical decisions are the lander's code.** Every block carries a structured `cause` (`check-failed`, `infra`, `closed`,
 `runtime`, `github`, `uncertain-write`, `auth`, `safety`, `stale`); nothing matches reason text. A required check that
-concluded `failure` blocks to the branch. One that concluded `cancelled`, `timed_out`, `action_required` or never ran within an
-hour is an infrastructure failure: the lander cancels a stuck run and reruns the completed one through the Actions API, at
+concluded `failure` blocks to the branch. One that concluded otherwise (`cancelled`, `timed_out`, `startup_failure`) or never
+ran within an hour is an infrastructure failure: the lander cancels a stuck run and reruns the completed one through the Actions API, at
 most `MAX_RERUNS` (2) times per candidate, then blocks to the branch with cause `infra`. A base that moved before the merge
 (`target !== baseline` after the ancestry check) marks the delivery `stale`: the lander queues its own PR for closing with a
 comment, deletes the delivery record (keeping spent approvals on the entry so an instruction cannot decide a second delivery),

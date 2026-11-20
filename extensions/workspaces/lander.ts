@@ -524,13 +524,25 @@ export function createLander(
             const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
             const same = (item: { pr: number; repository: string }) =>
               item.pr === pull.pr && item.repository === pull.repository
+            const exhausted = !closed && (pull.tries ?? 0) + 1 >= maxCloseTries
             index.closing = index.closing?.flatMap((item) =>
               !same(item)
                 ? [item]
-                : closed || (item.tries ?? 0) + 1 >= maxCloseTries
+                : closed || exhausted
                   ? []
                   : [{ ...item, tries: (item.tries ?? 0) + 1 }],
             )
+            if (exhausted)
+              for (const result of Object.values(index.results))
+                if (
+                  result.delivery?.pr === pull.pr &&
+                  result.delivery.settings.repository === pull.repository
+                )
+                  result.reason =
+                    `${result.reason ?? ''}; its PR could not be closed, close it by hand`.replace(
+                      /^; /,
+                      '',
+                    )
           }, context)
         }
         await runtime.commit(async (tx) => {
@@ -561,7 +573,12 @@ export function createLander(
         const { id, attempt, pushRetried } = task.state.checkpoint
         const { signal } = runtime
         const index = (await runtime.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
-        const entry = index.queue.find((item) => item.id === id)!
+        const entry = index.queue.find((item) => item.id === id)
+        if (!entry)
+          return runtime.commit(
+            () => ({ status: 'running', checkpoint: { phase: 'next' } }),
+            context,
+          )
         const { source, target } = entry
         const round = `${entry.rebuilds ?? 0}.${attempt}`
         const recordedFirstFastForward = async () =>
@@ -585,7 +602,8 @@ export function createLander(
           runtime.commit(async (tx) => {
             const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
               (item) => item.id === id,
-            )!
+            )
+            if (!saved) return
             saved.step = text
             await log(tx, runtime.conversationId, saved, {
               step: text,
@@ -833,7 +851,8 @@ export function createLander(
               runtime.commit(async (tx) => {
                 const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
                   (item) => item.id === id,
-                )!
+                )
+                if (!saved) throw new Error('Delivery was withdrawn while the lander advanced it')
                 const current = saved.delivery
                 if (
                   delivery.mergeIntent &&
@@ -1253,13 +1272,14 @@ export function createLander(
             await runtime.commit(async (tx) => {
               const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
                 (item) => item.id === id,
-              )!
+              )
+              if (!saved?.delivery) return
+              const current = saved.delivery
               saved.delivery = {
-                ...saved.delivery!,
+                ...current,
                 stage: 'blocked',
                 cause: 'github',
-                resumeStage:
-                  saved.delivery!.stage === 'merged' ? 'merged' : saved.delivery!.resumeStage,
+                resumeStage: current.stage === 'blocked' ? current.resumeStage : current.stage,
                 reason: 'Delivery recovery failed; inspect the lander log',
               }
               saved.state = 'waiting'

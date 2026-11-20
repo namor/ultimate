@@ -72,7 +72,13 @@ export const MAX_REBUILDS = 3
 export const AGENT_RECHECKS = 3
 export const BRANCH_WAKES = 3
 
-export const uncertainWrite = (d: Delivery) => Boolean((d.createIntent && !d.pr) || d.mergeIntent)
+export const uncertainWrite = (d: Delivery) =>
+  Boolean((d.publishIntent && !d.published) || (d.createIntent && !d.pr) || d.mergeIntent)
+
+export const spent = (item: {
+  delivery?: Pick<Delivery, 'approvals'>
+  approvals?: Approval[]
+}): Approval[] => [...(item.delivery?.approvals ?? []), ...(item.approvals ?? [])]
 
 export function needsUser(d: Delivery): string | undefined {
   if (uncertainWrite(d)) return 'an uncertain remote write must be reconciled'
@@ -183,8 +189,8 @@ export function authorize(
     if (d.stage === 'merged') return 'Delivery is merged; nothing to stop'
     if (state === 'landing') return 'The lander is working on this delivery; stop it once it parks'
     if (uncertainWrite(d)) return 'Reconcile the uncertain write before stopping this delivery'
-    if (actor.by === 'agent' && !waits(d))
-      return 'Agents stop only a parked delivery; this one is moving on its own'
+    if (actor.by === 'agent' && d.stage !== 'blocked')
+      return 'Agents stop only a blocked delivery; resubmit to replace one that waits'
   }
   return undefined
 }

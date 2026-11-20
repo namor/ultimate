@@ -822,6 +822,7 @@ export function workspaces(host: Host) {
             outcome: 'failed',
             reason: `Superseded by ${newId}; ${old.delivery?.pr ? 'its PR is closed' : 'nothing was published'}`,
             ...(old.delivery ? { delivery: old.delivery } : {}),
+            ...(old.approvals ? { approvals: old.approvals } : {}),
             at: old.at,
             divergence: old.divergence,
             target: old.target,
