@@ -1239,22 +1239,6 @@ export function createLander(
             )
             await git(source, 'merge-base', '--is-ancestor', remoteBase.commit.sha, integrated)
             const tree = await git(source, 'rev-parse', `${integrated}^{tree}`)
-            const facts = {
-              ...(entry.subject ? { subject: entry.subject } : {}),
-              divergence: entry.divergence,
-              candidate: integrated,
-              tree,
-              baseline: remoteBase.commit.sha,
-              commits: lines(await git(source, 'log', '--oneline', `${base}..${integrated}`)),
-              paths: lines(await git(source, 'diff', '--name-only', base, integrated)),
-              checks: entry.steps.flatMap((s) =>
-                s.check?.result === 'passed' ? [{ command: s.check.command }] : [],
-              ),
-              runtime: checkedIntegration.runtime,
-              conversationId: entry.conversationId,
-              lander: runtime.conversationId,
-              ...(entry.rebuilds ? { rebuild: entry.rebuilds } : {}),
-            }
             const record: NonNullable<QueueEntry['delivery']> = {
               settings: settings.delivery,
               ...entry.assessment,
@@ -1262,7 +1246,6 @@ export function createLander(
               candidate: integrated,
               tree,
               branch,
-              facts,
               checkedAt: checkedIntegration.checkedAt,
               runtime: checkedIntegration.runtime,
               stage: entry.assessment.reviewedTree === tree ? 'publish' : 'review',

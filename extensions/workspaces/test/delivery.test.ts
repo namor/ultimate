@@ -165,7 +165,11 @@ describe('PR delivery', () => {
 
   it('checks the exact candidate and merges through its PR without pushing the target', async () => {
     vi.mocked(git).mockClear()
-    let saved = makeDelivery()
+    const copy = {
+      title: 'Keep the original run on retry',
+      body: 'Retry now returns the original run.',
+    }
+    let saved: Delivery = { ...makeDelivery(), pullRequest: copy }
     let created = false
     let done = false
     const writes: { intent: boolean | undefined; fields?: Record<string, string> }[] = []
@@ -179,7 +183,7 @@ describe('PR delivery', () => {
       if (path === deliveryRef) return [] as never
       if (path.includes('/pulls?')) return (created ? [pull()] : []) as never
       if (path.endsWith('/pulls') && method === 'POST') {
-        writes.push({ intent: saved.createIntent })
+        writes.push({ intent: saved.createIntent, fields })
         created = true
         return pull() as never
       }
@@ -212,9 +216,17 @@ describe('PR delivery', () => {
       await advanceDelivery('/project', saved, save, signal, api)
     expect(saved).toMatchObject({ stage: 'merged', candidate, merged, pr: 3 })
     expect(writes).toEqual([
-      { intent: true },
+      {
+        intent: true,
+        fields: expect.objectContaining({
+          title: copy.title,
+          body: expect.stringContaining(copy.body),
+        }),
+      },
       { intent: true, fields: { sha: candidate, merge_method: 'merge' } },
     ])
+    expect(writes[0].fields?.body).toContain(tree)
+    expect(writes[0].fields?.body).not.toContain(saved.review)
     const pushes = vi.mocked(git).mock.calls.filter((args) => args.includes('push'))
     expect(pushes).toHaveLength(1)
     expect(pushes[0].slice(-2)).toEqual([

@@ -1,6 +1,6 @@
 import type { ConversationId, EntryId } from '@earendil-works/pi-durable'
 import type { DeliverySettings } from './delivery-settings.ts'
-import type { PullRequestFacts } from './pull-request.ts'
+import type { PullRequestCopy } from './pull-request.ts'
 import type { QueueEntry, StandingGrant } from './types.ts'
 
 export type DeliveryRisk = 'low' | 'medium' | 'high'
@@ -31,7 +31,7 @@ export type Delivery = {
   asked?: string
   since?: number
   pollAt?: number
-  facts?: Omit<PullRequestFacts, 'risk' | 'review'>
+  pullRequest?: PullRequestCopy
   published?: boolean
   publishIntent?: boolean
   createIntent?: boolean

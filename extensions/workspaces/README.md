@@ -279,44 +279,16 @@ feedback automations; adding a delivery setting does not activate unrelated stan
 
 ### Pull request text
 
-Delivery titles use `<most-changed area>: <subject title or first commit subject>` and stop at 72 characters. The body lists
-Summary, Changes, Blast radius, Risk, Verification, Divergence, and Links. Supply public-safe facts: redaction covers common
-private forms but cannot identify arbitrary names or secrets in free text.
+The coordinator supplies `pullRequest: { title, body }` with `workspace submit`. Name the behavior change in the title
+(up to 72 characters). In the Markdown body, explain why it matters. Give concrete evidence, material gaps, the blast radius
+and the limits of a rollback or restart. Keep it as short as the change allows. A small fix need not have sections.
 
-```markdown
-## Summary
-
-- Cover delivery retries for my-app.
-
-## Changes
-
-- **test** (1 file): delivery.test.ts
-
-## Blast radius
-
-- No host restart needed; Tests only
-
-## Risk
-
-**low** — Only test paths changed.\
-Could break: test\
-Mitigation: local verification, exact-head CI, and independent review.\
-Rollback: revert the merge commit.
-
-## Verification
-
-Local: 0 checks passed on v26.1.0/darwin/arm64\
-CI: required checks must pass on the exact head before merge\
-Review: Independent reviewer #125 approved.
-
-## Divergence
-
-None
-
-## Links
-
-Branch conversation #123 · Lander log #124 · Candidate aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa · Tree bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb · Base cccccccccccccccccccccccccccccccccccccccc
-```
+The lander appends a receipt for the verified candidate: local check count and runtime, review status, submitted risk,
+CI requirement, and candidate, tree and base SHAs. It makes no model call. Without explicit public copy it uses only a
+short candidate title and the receipt. It never builds public prose from the conversation summary, private review,
+configured commands or divergence. The submitter must remove private data from public copy: redaction can catch
+common forms, not arbitrary secrets. After an integration changes the reviewed tree, supply fresh copy on review
+resubmission. The lander never rewrites an existing PR description.
 
 ## Lander
 

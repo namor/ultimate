@@ -2,6 +2,7 @@ import type { ConversationId, EntryId, TaskId } from '@earendil-works/pi-durable
 import type { ConversationSubject } from '../conversations/types.ts'
 import type { Approval, Delivery, DeliveryRisk } from './delivery.ts'
 import type { DeliverySettings } from './delivery-settings.ts'
+import type { PullRequestCopy } from './pull-request.ts'
 
 export type Workspace = {
   path: string
@@ -32,7 +33,12 @@ export type QueueEntry = {
   at: SubmitTimeEntryId
   divergence: string
   state: 'queued' | 'landing' | 'waiting'
-  assessment?: { risk: DeliveryRisk; review: string; reviewedTree: string }
+  assessment?: {
+    risk: DeliveryRisk
+    review: string
+    reviewedTree: string
+    pullRequest?: PullRequestCopy
+  }
   delivery?: Delivery
   deliveryConfig?: DeliverySettings | false
   subject?: SubmitTimeSubject

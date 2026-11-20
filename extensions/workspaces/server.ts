@@ -532,6 +532,23 @@ export default function workspaceExtension(host: ExtensionHost) {
         parameters: obj({
           action: strEnum(['status', 'submit']),
           risk: opt(strEnum(['low', 'medium', 'high'])),
+          pullRequest: opt(
+            obj({
+              title: str({
+                minLength: 1,
+                maxLength: 72,
+                pattern: '^[^\\r\\n]*\\S[^\\r\\n]*$',
+                description: 'Public PR title. Name the behavior change.',
+              }),
+              body: str({
+                minLength: 1,
+                maxLength: 16000,
+                pattern: '\\S',
+                description:
+                  'Public PR Markdown. Explain why, evidence and limits, blast radius and rollback. Never include private chat or raw review notes. The lander appends the exact verification receipt.',
+              }),
+            }),
+          ),
           reviewedTree: opt(
             str({
               description:
@@ -551,7 +568,11 @@ export default function workspaceExtension(host: ExtensionHost) {
             }),
           ),
         }),
-        async execute({ action, divergence, risk, review, reviewedTree }, api, caller) {
+        async execute(
+          { action, divergence, risk, review, reviewedTree, pullRequest },
+          api,
+          caller,
+        ) {
           if (action === 'status')
             return finish({
               conversationId: api.conversationId,
@@ -574,7 +595,12 @@ export default function workspaceExtension(host: ExtensionHost) {
               divergence ?? '',
               caller,
               risk && review
-                ? { risk, review, ...(reviewedTree ? { reviewedTree } : {}) }
+                ? {
+                    risk,
+                    review,
+                    ...(reviewedTree ? { reviewedTree } : {}),
+                    ...(pullRequest ? { pullRequest } : {}),
+                  }
                 : undefined,
             ),
           )

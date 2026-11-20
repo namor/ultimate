@@ -42,6 +42,7 @@ import {
 import { deliverySettings } from './delivery-settings.ts'
 import { supersedes } from './delivery.ts'
 import type { DeliveryRisk } from './delivery.ts'
+import type { PullRequestCopy } from './pull-request.ts'
 import type {
   LandResult,
   SubmitResult,
@@ -764,7 +765,12 @@ export function workspaces(host: Host) {
     id: ConversationId,
     divergence: string,
     context: Context,
-    assessment?: { risk: DeliveryRisk; review: string; reviewedTree?: string },
+    assessment?: {
+      risk: DeliveryRisk
+      review: string
+      reviewedTree?: string
+      pullRequest?: PullRequestCopy
+    },
   ): Promise<SubmitResult> {
     if (!divergence?.trim())
       throw new Error(
@@ -806,6 +812,8 @@ export function workspaces(host: Host) {
       if (queued?.delivery?.stage === 'review' && assessment) {
         if (reviewedTree !== queued.delivery.tree)
           throw new Error('Review does not cover the integration candidate tree')
+        if (assessment.pullRequest) queued.delivery.pullRequest = assessment.pullRequest
+        else delete queued.delivery.pullRequest
         queued.delivery.review = assessment.review
         queued.delivery.risk = assessment.risk
         queued.delivery.stage = 'publish'

@@ -242,13 +242,11 @@ export async function advanceDelivery(
         d.createIntent = true
         await persist()
         write = 'create'
-        const text = d.facts
-          ? pullRequestText({ ...d.facts, risk: d.risk, review: d.review })
-          : {
-              title: `Delivery ${d.candidate.slice(0, 7)}`,
-              body: `Risk: ${d.risk}\n\nCandidate: ${d.candidate}\nTested tree: ${d.tree}\n\nIndependent review: ${d.review}`,
-            }
-        pull = await api<Pull>(`${prefix}/pulls`, 'POST', { head: d.branch, base, ...text })
+        pull = await api<Pull>(`${prefix}/pulls`, 'POST', {
+          head: d.branch,
+          base,
+          ...pullRequestText(d),
+        })
       }
       assertPull(d, pull)
       d.pr = pull.number
