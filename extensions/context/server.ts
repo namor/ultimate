@@ -18,7 +18,15 @@ export const actions = {
     const prompt = promptOf(fullPromptContext.messages)
     const at = fullPromptContext.entries.findLast((entry) => entry.kind === 'pi.system')?.id
     if (since === undefined || since === at) return { prompt, ...(at && { at }) }
-    const before = await conversation.context(context, { at: parseEntryId(Number(since)) })
+    const sinceEntry = parseEntryId(Number(since))
+    const visible = await conversation.entries(
+      { minEntryId: sinceEntry, maxEntryId: sinceEntry },
+      1,
+      undefined,
+      context,
+    )
+    if (visible.items.length === 0) return { prompt, ...(at && { at }) }
+    const before = await conversation.context(context, { at: sinceEntry })
     return {
       prompt,
       ...(at && { at }),

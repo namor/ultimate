@@ -1,5 +1,5 @@
 diff --git a/src/claude-cli.ts b/src/claude-cli.ts
-index 6c0595e212349b18f3d980cd2de5ea07e8b5ab65..301d537cda81fc2337b90bf142ae26f4f8379f70 100644
+index 6c0595e212349b18f3d980cd2de5ea07e8b5ab65..127672eb7233eb2af3c06045a1d0a5122ba2e232 100644
 --- a/src/claude-cli.ts
 +++ b/src/claude-cli.ts
 @@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
@@ -206,7 +206,34 @@ index 6c0595e212349b18f3d980cd2de5ea07e8b5ab65..301d537cda81fc2337b90bf142ae26f4
      CLAUDE_CODE_MAX_RETRIES: "0",
      DISABLE_AUTO_COMPACT: "1",
      DISABLE_COMPACT: "1",
-@@ -488,9 +543,23 @@ function requestMessages(body: Buffer | undefined): NativeRequestMessage[] | und
+@@ -444,12 +499,23 @@ function processEnvironment(
+   return env;
+ }
+ 
+-async function writeFrame(child: ChildProcess, frame: NativeFrame): Promise<void> {
++export async function writeFrame(child: ChildProcess, frame: NativeFrame): Promise<void> {
+   if (!child.stdin?.writable) throw new Error("Claude Code stdin closed during history replay");
+   if (!child.stdin.write(`${JSON.stringify(frame)}\n`)) {
++    // The warm process outlives this write: whichever event settles it removes the other, or every backpressured
++    // replay frame leaves a listener on stdin (Ultimate #64835: MaxListenersExceededWarning on [Writable]).
++    const stdin = child.stdin;
+     await new Promise<void>((resolve, reject) => {
+-      child.stdin!.once("drain", resolve);
+-      child.stdin!.once("error", reject);
++      const drained = () => {
++        stdin.off("error", failed);
++        resolve();
++      };
++      const failed = (error: Error) => {
++        stdin.off("drain", drained);
++        reject(error);
++      };
++      stdin.once("drain", drained);
++      stdin.once("error", failed);
+     });
+   }
+ }
+@@ -488,9 +554,23 @@ function requestMessages(body: Buffer | undefined): NativeRequestMessage[] | und
    }
  }
  
@@ -231,7 +258,7 @@ index 6c0595e212349b18f3d980cd2de5ea07e8b5ab65..301d537cda81fc2337b90bf142ae26f4
    if (actual?.role !== "user" || !Array.isArray(actual.content) || actual.content.length < canonicalContent.length) {
      return undefined;
    }
-@@ -501,10 +570,11 @@ function deriveInitialUserPrefix(body: Buffer | undefined, canonicalContent: unk
+@@ -501,10 +581,11 @@ function deriveInitialUserPrefix(body: Buffer | undefined, canonicalContent: unk
  
  function deriveInitialSystemMessages(body: Buffer | undefined): unknown[] | undefined {
    const messages = requestMessages(body);
@@ -246,7 +273,7 @@ index 6c0595e212349b18f3d980cd2de5ea07e8b5ab65..301d537cda81fc2337b90bf142ae26f4
  
    // A replayed history from an older carrier has the date reminder at the
    // moving tail rather than in the initial environment reminder. Snapshot it
-@@ -544,15 +614,23 @@ function setReplayCacheBreakpoints(messages: NativeRequestMessage[]): void {
+@@ -544,15 +625,23 @@ function setReplayCacheBreakpoints(messages: NativeRequestMessage[]): void {
    const userIndexes = messages
      .map((message, index) => (message.role === "user" ? index : -1))
      .filter((index) => index >= 0);
@@ -277,7 +304,7 @@ index 6c0595e212349b18f3d980cd2de5ea07e8b5ab65..301d537cda81fc2337b90bf142ae26f4
    }
    const final = messages.at(-1);
    if (final) setCacheBreakpoint(final);
-@@ -563,7 +641,7 @@ function removeRepeatedUserReminders(messages: NativeRequestMessage[], prefix: u
+@@ -563,7 +652,7 @@ function removeRepeatedUserReminders(messages: NativeRequestMessage[], prefix: u
    if (!reminder || !prefix) return;
    const normalizedPrefix = JSON.stringify(prefix.map(withoutCacheControl));
  
@@ -286,7 +313,7 @@ index 6c0595e212349b18f3d980cd2de5ea07e8b5ab65..301d537cda81fc2337b90bf142ae26f4
      const message = messages[index];
      if (message?.role !== "user" || !Array.isArray(message.content)) continue;
      const leading = message.content.slice(0, prefix.length).map(withoutCacheControl);
-@@ -641,16 +719,28 @@ export function rewriteInitialRequest(
+@@ -641,16 +730,28 @@ export function rewriteInitialRequest(
      system?: unknown;
    };
    let messages = payload.messages;
@@ -318,7 +345,7 @@ index 6c0595e212349b18f3d980cd2de5ea07e8b5ab65..301d537cda81fc2337b90bf142ae26f4
  
      const initialText = initialSystemMessages
        .map((message) => contentText((message as NativeRequestMessage).content))
-@@ -666,9 +756,11 @@ export function rewriteInitialRequest(
+@@ -666,9 +767,11 @@ export function rewriteInitialRequest(
    if (nativeSystemInjections) {
      messages = injectNativeSystemMessages(messages!, nativeSystemInjections);
      payload.messages = messages;
@@ -331,7 +358,7 @@ index 6c0595e212349b18f3d980cd2de5ea07e8b5ab65..301d537cda81fc2337b90bf142ae26f4
  
    return Buffer.from(JSON.stringify(payload));
  }
-@@ -726,6 +818,20 @@ function launchPlan(input: RunClaudeInput): ClaudeLaunchPlan {
+@@ -726,6 +829,20 @@ function launchPlan(input: RunClaudeInput): ClaudeLaunchPlan {
    };
  }
  
@@ -352,7 +379,29 @@ index 6c0595e212349b18f3d980cd2de5ea07e8b5ab65..301d537cda81fc2337b90bf142ae26f4
  class ClaudeProcess {
    busy = false;
    readonly createdAt = Date.now();
-@@ -912,6 +1018,8 @@ class ClaudeProcess {
+@@ -735,6 +852,7 @@ class ClaudeProcess {
+   private expiryTimer?: NodeJS.Timeout;
+   private closed = false;
+   private stderr = "";
++  private stdinError?: Error;
+ 
+   private constructor(
+     readonly fingerprint: string,
+@@ -748,6 +866,13 @@ class ClaudeProcess {
+   ) {
+     child.stderr?.setEncoding("utf8");
+     child.stderr?.on("data", (chunk: string) => (this.stderr = (this.stderr + chunk).slice(-65_536)));
++    // A failed write to the warm process's input (it exited, or the spawn helper was lost) emits 'error' on stdin
++    // outside any writeFrame wait; unheard, it would crash the host. The process is then unusable: close it and name
++    // the cause to the turn that waits on its output (Ultimate #64835).
++    child.stdin?.on("error", (error) => {
++      this.stdinError ??= error;
++      this.closeNow();
++    });
+   }
+ 
+   static async create(input: RunClaudeInput, plan: ClaudeLaunchPlan): Promise<ClaudeProcess> {
+@@ -912,6 +1037,8 @@ class ClaudeProcess {
          : undefined,
        input.betas,
      );
@@ -361,7 +410,7 @@ index 6c0595e212349b18f3d980cd2de5ea07e8b5ab65..301d537cda81fc2337b90bf142ae26f4
  
      const abort = () => {
        this.relay.abort();
-@@ -976,11 +1084,14 @@ class ClaudeProcess {
+@@ -976,11 +1103,14 @@ class ClaudeProcess {
          message = assistants.at(-1);
        }
  
@@ -380,7 +429,7 @@ index 6c0595e212349b18f3d980cd2de5ea07e8b5ab65..301d537cda81fc2337b90bf142ae26f4
  
        const nativeFailureHandled = this.relay.denied > 0 || message.stop_reason === "refusal";
        if (nativeError && !nativeFailureHandled) throw new Error(`Claude Code API error: ${nativeError}`);
-@@ -990,13 +1101,6 @@ class ClaudeProcess {
+@@ -990,13 +1120,6 @@ class ClaudeProcess {
          throw new Error(`Claude Code request failed: ${result.subtype ?? "unknown result"}`);
        }
  
@@ -394,6 +443,14 @@ index 6c0595e212349b18f3d980cd2de5ea07e8b5ab65..301d537cda81fc2337b90bf142ae26f4
        const usage = message.usage ?? result.usage;
        if (!usage || typeof usage.input_tokens !== "number" || typeof usage.output_tokens !== "number") {
          throw new Error("Claude Code response did not include complete token usage");
+@@ -1047,6 +1170,7 @@ class ClaudeProcess {
+   private async exitError(fallback: string): Promise<Error> {
+     const outcome = await this.exitOutcome;
+     if (outcome.error) return outcome.error;
++    if (this.stdinError) return new Error(`${fallback}: ${this.stdinError.message}`, { cause: this.stdinError });
+     const detail = this.stderr.trim().slice(-500);
+     return new Error(`${fallback} (exit ${outcome.code ?? "unknown"}${detail ? `: ${detail}` : ""})`);
+   }
 diff --git a/src/model-catalog.ts b/src/model-catalog.ts
 index a174cad1161ac6eb1ca859a60b70646144b028cc..6b1a7a6e109cd27d35f267efdc2c26f3d58dfacc 100644
 --- a/src/model-catalog.ts
@@ -578,7 +635,7 @@ index b516241c794b5dd7054822921d445a2169c6b70e..00ccb6aa5ddec60e64ccc4d339942be8
          timeoutMs: options?.timeoutMs,
          env: options?.env,
 diff --git a/src/transcript.ts b/src/transcript.ts
-index e0a824be43db62a92a0329ff7c63fc0f14f3af65..c87a148f71260f353bca9b0aa56a69978ecf60d9 100644
+index e0a824be43db62a92a0329ff7c63fc0f14f3af65..b0555a1b3ede84e1f79d2386857abb9c50612db3 100644
 --- a/src/transcript.ts
 +++ b/src/transcript.ts
 @@ -1,7 +1,5 @@
