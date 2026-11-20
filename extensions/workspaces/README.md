@@ -155,8 +155,53 @@ The queue record holds the candidate, tree, destination, check time, write inten
 An interrupted push reconciles the exact remote ref. An uncertain PR creation/merge is reconciled before further writes;
 missing or conflicting evidence stops delivery rather than blindly repeating a create. Blocked records stay visible for
 **Recheck outcome**. Rechecking does not fabricate a new local-check timestamp or clear an uncertain-write intent.
-A known blocked delivery can be stopped while retaining its record and leaving its remote branch/PR unchanged; uncertain writes
-must be reconciled first.
+A delivery can be stopped at any stage short of `merged` while retaining its record; the lander then closes its own PR with a
+comment, and the delivery branch stays. Uncertain writes must be reconciled first.
+
+### The queue: one state table
+
+One `workspaces.lander` task per source checkout runs the queue. Its `next` phase takes the first entry the lander can move
+now (`pick` in `delivery.ts`); an entry that waits on a person never holds the slot and never expires. One PR is in flight per
+repository: a second verified candidate parks at `publish` until the first merges, so a merge never stales a sibling PR. When
+nothing is ready but something waits on GitHub, the task sleeps until the earliest poll (30 s); when everything waits on a
+person, it ends, and the action that clears the wait (an approval, a recheck, a resubmission) starts it again. `waits(d)`
+(`delivery.ts`) is the single source of truth for "who clears it"; the card, the sidebar, the questions pill and `authorize`
+all read it.
+
+| stage                         | waits on                                   | holds the slot | who moves it                                                                | bounded by                                               |
+| ----------------------------- | ------------------------------------------ | -------------- | --------------------------------------------------------------------------- | -------------------------------------------------------- |
+| queued, verifying             | the lander                                 | yes            | lander                                                                      | check watchdog                                           |
+| `review`                      | independent review of the integration tree | no             | the branch resubmits with `reviewedTree`                                    | none                                                     |
+| `publish` (high risk)         | publish approval                           | no             | user, @ultimate on instruction or standing approval                         | none                                                     |
+| `publish` (sibling in flight) | the repository's in-flight PR              | no             | lander, once that PR merges or parks                                        | none                                                     |
+| `pr`, `ci`                    | GitHub                                     | no             | lander, every 30 s                                                          | a required check idle for 60 min is rerun, at most twice |
+| `merge` (medium/high)         | merge approval                             | no             | user, @ultimate on instruction or standing approval                         | none                                                     |
+| `merge` (low or approved)     | GitHub                                     | no             | lander: head-sha merge after a fresh base check                             | none                                                     |
+| `merged`                      | the lander                                 | yes            | lander: fast-forwards the local target                                      | none                                                     |
+| `blocked`, branch             | the submitting branch                      | no             | branch or @ultimate: recheck (3 per candidate), stop, resubmit (supersedes) | 3 wakes per branch chain, then the user                  |
+| `blocked`, user               | the user                                   | no             | user, or @ultimate on instruction: recheck or stop                          | none                                                     |
+| `blocked`, `stale`            | the lander                                 | yes (briefly)  | lander: closes its PR, rebuilds the same submission on the current base     | 3 rebuilds, then the user                                |
+
+**Mechanical decisions are the lander's code.** Every block carries a structured `cause` (`check-failed`, `infra`, `closed`,
+`runtime`, `github`, `uncertain-write`, `auth`, `safety`, `stale`); nothing matches reason text. A required check that
+concluded `failure` blocks to the branch. One that concluded `cancelled`, `timed_out`, `action_required` or never ran within an
+hour is an infrastructure failure: the lander cancels a stuck run and reruns the completed one through the Actions API, at
+most `MAX_RERUNS` (2) times per candidate, then blocks to the branch with cause `infra`. A base that moved before the merge
+(`target !== baseline` after the ancestry check) marks the delivery `stale`: the lander queues its own PR for closing with a
+comment, deletes the delivery record (keeping spent approvals on the entry so an instruction cannot decide a second delivery),
+bumps `rebuilds` and verifies the same tip again on the current base with fresh memos and a `-r<n>` delivery branch; after
+`MAX_REBUILDS` (3) it asks the user. A resubmission of the same branch to the same target supersedes its parked predecessor in
+the submit transaction (`supersedes`: parked, not landing, no uncertain write): the old entry becomes a `failed` result
+"Superseded by <id>", its PR goes on `closing`, and no Stop click is needed (PR #33, 2026-11-20). A stop or supersede closes
+the PR on the lander's next turn: `closePull` reads the PR first and leaves a merged or already closed one alone; a failed close
+is retried three times then dropped with a notice. Each autonomous decision is appended to `delivery.decisions` (at most 20)
+and the card lists them.
+
+**Who decides what needs judgment.** No new agent: a real failure wakes the owning branch (its coordinator knows the change),
+which rechecks, stops or resubmits; @ultimate approves publish and merge under the user's standing approval; the user decides
+only medium/high approvals without a grant, credentials, safety holds and uncertain remote writes, each with one card carrying
+the PR link. `watcher`, `scout` and `worker` were considered and rejected: a watcher adds a model-written script to poll what
+the lander already polls durably, a scout cannot act, and a worker lacks the branch's context.
 
 **Blocked deliveries are the branch's to repair.** Each block is reported once (`delivery.wake`, numbered by `blocks`, with a
 per-block request id). A block the branch can repair (a failed check, a timeout, a closed PR) wakes the submitting branch with
@@ -204,10 +249,12 @@ which calls `{ revoke: true }`); revoking also withdraws standing approvals no w
 reconciled, never withdrawn). An expired or revoked grant is kept as its record and refuses like none. The server checks that a
 review covering the exact tree was submitted, not how independent it was: @ultimate judges that before approving. While it is on, the
 delivery card shows "Standing approval until <time>", and @ultimate may call `delivery` with `standing: true` and a `reason`
-instead of `instruction`, for `publish` and `merge` only. `standingRefusal` (`delivery.ts`) decides it inside the approval's
-commit, from the delivery record: on the verified runtime, past the `review` stage (the independent review covers the exact
-tree), at the requested stage (`merge` is reached only when the exact head's required GitHub checks passed, and they are re-read
-right before merging), and with no uncertain write. The approval records `standing` (the grant's instruction entry) and
+instead of `instruction`, for `publish` and `merge` only. `authorize` (`delivery.ts`) decides every delivery action inside the
+approval's commit, for every actor (the user's click, @ultimate on an instruction or under the grant, the branch or @ultimate on
+their own): the grant must be on and unexpired, the delivery verified on this runtime, past the `review` stage (the independent
+review covers the exact tree), at the requested stage (`merge` is reached only when the exact head's required GitHub checks
+passed, and they are re-read right before merging), and free of uncertain writes; agents may only recheck or stop a parked
+delivery. The approval records `standing` (the grant's instruction entry) and
 `reason`, and the card shows it. When a delivery pauses for an approval that qualifies, the lander wakes @ultimate with a
 follow-up input naming it. Branches, subagents, side chats, automations, browser calls and hands-off goals cannot grant or use it.
 
@@ -216,8 +263,8 @@ the user must explicitly accept that nobody retargets a delivery PR during its i
 reads and strict checks remain, but this operational assumption is not an atomic enforced guarantee. No deferred native auto-merge
 or administrator bypass is used. See [GitHub's merge API](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request).
 
-Delivery uses the lander's durable 30-second sleeps, not model polling. After one hour it stops for an explicit recheck; stage changes
-and blocked outcomes are reported, without waking a model for each poll. Existing check/landing events remain available for bounded
+Delivery uses the lander's durable sleeps, not model polling; a wait on a person has no deadline. Stage changes and blocked
+outcomes are reported, without waking a model for each poll. Existing check/landing events remain available for bounded
 feedback automations; adding a delivery setting does not activate unrelated standing automations.
 
 ### Pull request text
