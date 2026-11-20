@@ -132,9 +132,15 @@ async function repo(home: string) {
   await cp(resolve('lib'), join(root, 'lib'), { recursive: true })
   await copyApis(root)
   await linkDependencies(root)
+  // Only settings change after setup. Do not replay delayed events from the fixture's source files.
   await writeFile(
     join(root, 'vite.config.ts'),
-    "export default { root: 'web', optimizeDeps: { noDiscovery: true } }",
+    `import { fileURLToPath } from 'node:url';
+const root = fileURLToPath(new URL('.', import.meta.url));
+export default {
+  root: 'web', optimizeDeps: { noDiscovery: true },
+  server: { watch: { ignored: [(file) => file.startsWith(root) && file.endsWith('.ts')] } },
+};`,
   )
   await writeFile(join(root, 'web/index.html'), '<html>Preview</html>')
   await writeFile(
