@@ -12,6 +12,8 @@ export type Workspace = {
   state: 'preparing' | 'ready' | 'failed' | 'removed'
   error?: string
   landed?: string
+  /** Blocked deliveries that woke this branch to repair them, across its resubmissions; capped by `BRANCH_WAKES`. */
+  deliveryWakes?: number
 }
 type SubmitTimeEntryId = EntryId
 type SubmitTimeSubject = ConversationSubject

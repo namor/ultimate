@@ -25,7 +25,14 @@ import type { ExtensionHost } from '../../server/extensions.ts'
 import { CheckRan, SubmissionFailed, SubmissionLanded } from './api.ts'
 import { setup } from './setup.ts'
 import type { DeliverySettings } from './delivery-settings.ts'
-import { advanceDelivery, deliveryRuntime, github, standingRefusal } from './delivery.ts'
+import {
+  advanceDelivery,
+  BRANCH_WAKES,
+  deliveryRuntime,
+  github,
+  needsUser,
+  standingRefusal,
+} from './delivery.ts'
 import { addCheckout, treePath } from './tree.ts'
 import type { Landed, LanderEntry, LanderOutcome, QueueEntry, WorkspaceIndex } from './types.ts'
 import { LanderLog } from './entries.ts'
@@ -378,6 +385,101 @@ export async function activeLandingCards(tx: Tx, index: WorkspaceIndex) {
   return results
 }
 
+/**
+ * Report blocked delivery `id` once per block. One its branch can repair wakes that branch with the reason, the candidate
+ * and where the failing check logs are, up to `BRANCH_WAKES` blocks across the branch's resubmissions. One that needs the
+ * user (`needsUser`), or one past that cap, wakes no model: it is a card in @ultimate's conversation, to ask the user,
+ * and a note in the branch. The decision is recorded on the delivery before anything is sent, and each send has a
+ * per-block request id, so a replay or a second lander pass sends nothing twice.
+ */
+export async function reportBlocked(
+  host: Pick<Host, 'harness' | 'doc' | 'notice'>,
+  Workspaces: ConversationDocToken<WorkspaceIndex>,
+  id: string,
+  context: Context,
+) {
+  const decided = await host.harness().commit(async (tx) => {
+    const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+    const entry = index.queue.find((item) => item.id === id)
+    const delivery = entry?.delivery
+    if (!entry || !delivery || delivery.stage !== 'blocked') return undefined
+    const fresh = !delivery.wake
+    if (!delivery.wake) {
+      const block = (delivery.blocks ?? 0) + 1
+      const item = index.items[String(entry.conversationId)]
+      const why =
+        needsUser(delivery) ??
+        ((item?.deliveryWakes ?? 0) >= BRANCH_WAKES
+          ? `its branch already had ${BRANCH_WAKES} repair attempts`
+          : undefined)
+      delivery.blocks = block
+      delivery.wake = why ? { block, to: 'user', why } : { block, to: 'branch' }
+      if (!why && item) item.deliveryWakes = (item.deliveryWakes ?? 0) + 1
+    }
+    const standing = host.doc('ultimate.standing-agents')
+    return {
+      fresh,
+      entry: copyJson(entry) as QueueEntry,
+      lander: index.landerConversations[entry.source],
+      wake: { ...delivery.wake },
+      ultimate: standing
+        ? ((await tx.doc(standing, ROOT_CONVERSATION_ID)).ultimate as ConversationId | undefined)
+        : undefined,
+    }
+  }, context)
+  if (!decided) return
+  const { fresh, entry, wake, ultimate, lander } = decided
+  const delivery = entry.delivery!
+  const reason = delivery.reason ?? 'Delivery blocked'
+  if (fresh) host.notice(`Delivery ${id} blocked: ${reason}`)
+  const logs = delivery.url
+    ? ` Failing check logs: ${delivery.url}/checks.`
+    : ' Details are in the lander log.'
+  const hint =
+    wake.to === 'user'
+      ? `Needs the user: ${wake.why}.`
+      : 'Diagnose and repair it: recheck or stop it, or resubmit a repaired candidate.'
+  const card = {
+    kind: LanderReportEntry,
+    data: {
+      id,
+      outcome: {
+        outcome: 'failed',
+        reason,
+        hint,
+        divergence: entry.divergence,
+        conversationId: entry.conversationId,
+        at: entry.at,
+        target: entry.target,
+        tip: entry.tip,
+        lander,
+        steps: entry.steps,
+      },
+    },
+  }
+  const text = `Delivery ${id} of candidate ${delivery.candidate} is blocked: ${reason}.${logs} ${hint}`
+  const requestId = `delivery-blocked:${id}:${wake.block}`
+  const branch = await host.harness().conversation(entry.conversationId as ConversationId, context)
+  if (wake.to === 'branch') {
+    // An input brings a concluded branch back (conversations' beforeInput hook): its owner is always found.
+    await branch?.submit(
+      { type: 'input', whenBusy: 'followUp', requestId, content: text, entry: card },
+      context,
+    )
+    return
+  }
+  const note = (content: string) => ({
+    type: 'write' as const,
+    requestId,
+    entry: { ...card, model: [{ role: 'user' as const, content, timestamp: Date.now() }] },
+  })
+  await branch?.submit(note(`${text} The user decides; do not recheck it.`), context)
+  if (ultimate !== undefined)
+    await (
+      await host.harness().conversation(ultimate, context)
+    )?.submit(note(`#${entry.conversationId}'s ${text} Ask the user with a card.`), context)
+}
+
 export function createLander(
   host: Host,
   Workspaces: ConversationDocToken<WorkspaceIndex>,
@@ -511,7 +613,11 @@ export function createLander(
             const draft = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
             const steps = draft.queue.find((item) => item.id === id)!.steps
             draft.queue = draft.queue.filter((item) => item.id !== id)
-            if (outcome.sha) draft.items[String(entry.conversationId)].landed = outcome.sha
+            if (outcome.sha) {
+              draft.items[String(entry.conversationId)].landed = outcome.sha
+              // A landing ends the chain of repairs: a later delivery of this branch starts its own.
+              delete draft.items[String(entry.conversationId)].deliveryWakes
+            }
             draft.results[id] = {
               ...outcome,
               at: entry.at,
@@ -752,29 +858,7 @@ export function createLander(
               })
             }
             if (delivery.stage === 'blocked') {
-              host.notice(`Delivery ${id} blocked: ${delivery.reason}`)
-              await (
-                await host.harness().conversation(entry.conversationId, context)
-              )?.submit(
-                {
-                  type: 'input',
-                  whenBusy: 'followUp',
-                  requestId: `delivery-blocked:${id}:${delivery.reason}`,
-                  content: `Delivery ${id} is blocked: ${delivery.reason}. Its record is retained; inspect the delivery card before rechecking.`,
-                  entry: {
-                    kind: LanderReportEntry.kind,
-                    data: {
-                      id,
-                      outcome: {
-                        outcome: 'failed',
-                        reason: delivery.reason ?? 'Delivery blocked',
-                        divergence: entry.divergence,
-                      },
-                    },
-                  },
-                },
-                context,
-              )
+              await reportBlocked(host, Workspaces, id, context)
               return pauseDelivery()
             }
             if (
@@ -1124,6 +1208,7 @@ export function createLander(
               }
             }, context)
             host.notice(`Delivery ${id} recovery failed: ${failure(error)}`)
+            await reportBlocked(host, Workspaces, id, context)
             return pauseDelivery()
           }
           return fail('it failed', failure(error))

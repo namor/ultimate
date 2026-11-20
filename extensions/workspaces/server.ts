@@ -38,7 +38,7 @@ import {
 import type { GithubRepo } from './refs.ts'
 import { githubRepo, readGithubRepo } from '../../lib/project-identity.ts'
 import { UserInputEvent } from '../../shared/events.ts'
-import { standingRefusal } from './delivery.ts'
+import { agentRefusal, standingRefusal } from './delivery.ts'
 import type { Approval } from './delivery.ts'
 import { sweepChecks } from './lander.ts'
 import { landingPending, pendingLandingCards, Workspaces, workspaces } from './workspaces.ts'
@@ -186,7 +186,20 @@ export const actions = {
       await host.harness().snapshot(Workspaces, ROOT_CONVERSATION_ID, context)
     )?.queue.find((item) => item.id === args.id)
     if (!seen || !bound(seen)) throw new Error('Delivery candidate changed; approval refused')
-    const approval = await approver(host, { conversationId, device }, action, args, seen.at)
+    // The submitting branch, or @ultimate, rechecks or stops a blocked delivery on its own: neither publishes nor merges.
+    const standing = host.doc('ultimate.standing-agents')
+    const ultimate =
+      standing && (await host.harness().snapshot(standing, ROOT_CONVERSATION_ID, context))?.ultimate
+    // Recheck or stop without the user's instruction is an agent's own call, judged by `agentRefusal` in the commit.
+    const agent =
+      !device &&
+      args.instruction === undefined &&
+      args.standing === undefined &&
+      (action === 'recheck' || action === 'stop') &&
+      conversationId !== undefined
+    const approval: Approval = agent
+      ? { action, at: Date.now(), by: 'agent', conversation: conversationId }
+      : await approver(host, { conversationId, device }, action, args, seen.at)
     await host.harness().commit(async (tx) => {
       const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
       const entry = index.queue.find((item) => item.id === args.id)
@@ -213,13 +226,29 @@ export const actions = {
         throw new Error(
           'instruction already decided another delivery; the user must decide this one',
         )
+      if (approval.by === 'agent') {
+        const refusal = agentRefusal(
+          delivery,
+          action,
+          approval.conversation!,
+          entry.conversationId,
+          ultimate as number | undefined,
+        )
+        if (refusal) throw new Error(refusal)
+      }
       delivery.approvals = [...(delivery.approvals ?? []), approval]
       if (action === 'stop' && delivery.stage === 'blocked') {
         if ((delivery.createIntent && !delivery.pr) || delivery.mergeIntent)
           throw new Error('Reconcile the uncertain write before stopping this delivery')
+        const by =
+          approval.by === 'user'
+            ? 'user'
+            : approval.by === 'agent'
+              ? `conversation #${approval.conversation}`
+              : "@ultimate on the user's instruction"
         index.results[entry.id] = {
           outcome: 'failed',
-          reason: `Stopped by ${approval.by === 'user' ? 'user' : "@ultimate on the user's instruction"}; remote branch and PR were not changed`,
+          reason: `Stopped by ${by}; remote branch and PR were not changed`,
           delivery,
           at: entry.at,
           divergence: entry.divergence,
@@ -237,6 +266,8 @@ export const actions = {
       else if (action === 'recheck' && delivery.stage === 'blocked' && delivery.resumeStage) {
         delivery.stage = delivery.resumeStage
         delete delivery.reason
+        // Its next block is a new one, reported once again.
+        delete delivery.wake
         delivery.deadline = Date.now() + 60 * 60 * 1000
       } else throw new Error('Delivery stage changed; reload its card')
       if (action === 'publish' || action === 'merge')
@@ -267,10 +298,13 @@ export const actions = {
         ) => d.approvals?.findLast((approval) => approval.action === a)?.standing !== undefined
         for (const { delivery: d } of index.queue) {
           if (!d) continue
-          if (d.stage === 'publish' && d.publishApproved && standingLast(d, 'publish'))
+          // A blocked delivery keeps its approvals for the stage a recheck resumes: withdraw those too, or a recheck
+          // (the user's, or since #53902 its branch's) would publish or merge under a revoked grant.
+          const stage = d.stage === 'blocked' ? d.resumeStage : d.stage
+          if (stage === 'publish' && d.publishApproved && standingLast(d, 'publish'))
             delete d.publishApproved
           if (
-            (d.stage === 'ci' || d.stage === 'merge') &&
+            (stage === 'ci' || stage === 'merge') &&
             d.mergeApproved &&
             !d.mergeIntent &&
             standingLast(d, 'merge')

@@ -28,11 +28,21 @@ export type Delivery = {
   approvals?: Approval[]
   reason?: string
   resumeStage?: 'review' | 'publish' | 'pr' | 'ci' | 'merge' | 'merged'
+  /** How many blocks this delivery reported; numbers each block's one report. */
+  blocks?: number
+  /** Who the current block went to: the submitting branch to repair it, or the user (with why). Cleared on recheck. */
+  wake?: { block: number; to: 'branch' | 'user'; why?: string }
 }
+/**
+ * An audit record of one delivery action: the user's own click, @ultimate acting on the user's instruction entry,
+ * @ultimate under the user's standing approval (`standing`: the grant's instruction entry) with its `reason`, or an
+ * agent (the submitting branch or @ultimate) rechecking or stopping a blocked delivery on its own.
+ */
 export type Approval = {
   action: 'publish' | 'merge' | 'recheck' | 'stop'
   at: number
-  by: 'user' | 'ultimate'
+  by: 'user' | 'ultimate' | 'agent'
+  /** The acting conversation: @ultimate with the user's instruction entry in it, or the agent. */
   conversation?: ConversationId
   instruction?: EntryId
   standing?: EntryId
@@ -59,6 +69,59 @@ export function standingRefusal(
     return action === 'merge'
       ? 'Required GitHub checks have not passed on this exact head'
       : 'Delivery is not awaiting publication'
+  return undefined
+}
+/** Rechecks agents may request on their own per candidate; after that only the user (or their instruction) can. */
+export const AGENT_RECHECKS = 3
+/** Blocks of one branch's delivery chain that wake it to repair; later ones go to the user. */
+export const BRANCH_WAKES = 3
+
+/**
+ * Why an agent (`actor`) may not take `action` on delivery `d` submitted by conversation `submitter`, or undefined when it
+ * may: only the submitting branch or @ultimate, only `recheck` or `stop` of a blocked delivery, no recheck of a block that
+ * is the user's (the same rule that decides the lander's wake), and at most `AGENT_RECHECKS` rechecks per candidate.
+ * Publish and merge are never an agent's own decision.
+ */
+export function agentRefusal(
+  d: Delivery,
+  action: Approval['action'],
+  actor: number,
+  submitter: number,
+  ultimate: number | undefined,
+): string | undefined {
+  if (actor !== submitter && actor !== ultimate)
+    return "Only the user or @ultimate on the user's instruction can act on a delivery"
+  if (action !== 'recheck' && action !== 'stop')
+    return "Agents may only recheck or stop a blocked delivery; publish and merge are the user's"
+  if (d.stage !== 'blocked') return 'Delivery stage changed; reload its card'
+  if (action === 'stop') return undefined
+  const why = d.wake?.to === 'user' ? d.wake.why : needsUser(d)
+  if (why) return `This block needs the user: ${why}`
+  if (
+    (d.approvals ?? []).filter((a) => a.by === 'agent' && a.action === 'recheck').length >=
+    AGENT_RECHECKS
+  )
+    return `Agents already rechecked this candidate ${AGENT_RECHECKS} times; stop it, resubmit a repaired candidate, or ask the user`
+  return undefined
+}
+
+/**
+ * Why a blocked delivery needs the user rather than a repair by its branch: an uncertain remote write, credentials, an
+ * approval only they give, or a safety hold. Undefined when the branch can diagnose and repair it.
+ */
+export function needsUser(d: Delivery): string | undefined {
+  if ((d.createIntent && !d.pr) || d.mergeIntent)
+    return 'an uncertain remote write must be reconciled'
+  if (
+    (d.resumeStage === 'merge' && d.risk !== 'low' && !d.mergeApproved) ||
+    (d.resumeStage === 'publish' && d.risk === 'high' && !d.publishApproved)
+  )
+    return 'it waits for your approval'
+  const reason = d.reason ?? ''
+  if (/outside this delivery|collision|authorized repository|human reconciliation/i.test(reason))
+    return 'a safety hold needs your decision'
+  if (/HTTP 40[13]|authenticat|credential|login|token/i.test(reason))
+    return 'GitHub access needs your login or credentials'
   return undefined
 }
 

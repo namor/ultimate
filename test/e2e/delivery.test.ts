@@ -180,6 +180,7 @@ it('keeps main unchanged and exposes a candidate-bound publication gate with dec
   await page.goto(`${server.url}/?conversation=${id}`)
   const card = page.getByRole('region', { name: 'PR delivery' })
   await card.getByRole('button', { name: 'Approve publication' }).waitFor()
+  await card.getByText('or tell @ultimate in its chat').waitFor()
   await page.screenshot({ path: '/tmp/ultimate-delivery-desktop.png' })
   await page.setViewportSize({ width: 390, height: 844 })
   await page.screenshot({ path: '/tmp/ultimate-delivery-mobile.png' })
@@ -193,6 +194,9 @@ it('keeps main unchanged and exposes a candidate-bound publication gate with dec
     return value.queue[0]?.delivery?.stage === 'blocked'
   })
   await card.getByText('Publication approved by you').waitFor()
+  // The fixture remote is not the authorized repository: a safety hold, so the user decides, not the branch.
+  await card.getByText('Needs you: a safety hold needs your decision.').waitFor()
+  await page.screenshot({ path: '/tmp/ultimate-delivery-blocked.png' })
   expect(await git(remote, 'rev-parse', 'main')).toBe(baseline)
   await card.getByRole('button', { name: /Stop delivery/ }).click()
   await until(
