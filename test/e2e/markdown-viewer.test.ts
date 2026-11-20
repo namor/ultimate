@@ -52,6 +52,12 @@ it('opens a local Markdown chat link only through the chooser and renders the se
       '  A[Missing bracket --> B',
       '```',
       '',
+      '```mermaid',
+      'timeline',
+      '  title Example timeline',
+      '  2026 : Review',
+      '```',
+      '',
       '[Inert link](https://viewer-probe.invalid/link)',
       '',
       '![Image](https://viewer-probe.invalid/image.png)',
@@ -129,8 +135,11 @@ it('opens a local Markdown chat link only through the chooser and renders the se
   expect(await dialog.locator('figure').first().innerText()).toMatch(
     /Mermaid diagram.*Start.*▶.*Done/s,
   )
-  expect(await dialog.locator('figure').last().innerText()).toMatch(
+  expect(await dialog.locator('figure').nth(1).innerText()).toMatch(
     /Diagram unavailable.*Missing bracket/s,
+  )
+  expect(await dialog.locator('figure').last().innerText()).toMatch(
+    /Diagram unavailable.*timeline.*Example timeline/s,
   )
   await dialog.locator('summary').click()
   expect(await dialog.locator('details').innerText()).toContain('A[Start] --> B[Done]')

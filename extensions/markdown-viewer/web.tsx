@@ -1,4 +1,4 @@
-import { render } from 'lovely-mermaid'
+import { diagramKind, render } from 'lovely-mermaid'
 import { FileTextIcon, FolderOpenIcon, Maximize2Icon, Minimize2Icon } from 'lucide-react'
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
@@ -39,9 +39,11 @@ const MarkdownLink: LinkRenderer = ({ href, children, core }) => {
   )
 }
 
+const boundedDiagramKinds = new Set(['flowchart', 'state', 'class', 'er', 'sequence'])
+
 function Diagram({ code }: CustomRendererProps) {
   const art = useMemo(() => {
-    if (code.length > 16_384) return undefined
+    if (code.length > 16_384 || !boundedDiagramKinds.has(diagramKind(code) ?? '')) return undefined
     try {
       const result = render(code)
       return result && !result.warnings.length ? result.plain.join('\n') : undefined
