@@ -1,5 +1,5 @@
 import { removeTemp } from './helpers.ts'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { fauxServer, sourceCopy, temp, until, attach } from './helpers.ts'
@@ -11,9 +11,25 @@ import { createRegistry, toolRenderers } from '../web/src/sdk/registry.ts'
 
 const homes: string[] = []
 const servers: Awaited<ReturnType<typeof fauxServer>>[] = []
-afterEach(async () => {
-  for (const server of servers.splice(0)) await server.close()
-  for (const home of homes.splice(0)) await removeTemp(home)
+async function closeFixtures(active: { close(): Promise<void> }[], directories: string[]) {
+  const closing = active.splice(0)
+  const taken = directories.splice(0)
+  for (const server of closing) await server.close()
+  for (const home of taken) await removeTemp(home)
+}
+afterEach(() => closeFixtures(servers, homes))
+
+it('does not delete the next fixture when the prior server is still closing', async () => {
+  const first = await temp()
+  const next = await temp()
+  const gate = Promise.withResolvers<void>()
+  const closingHomes = [first]
+  const closing = closeFixtures([{ close: () => gate.promise }], closingHomes)
+  closingHomes.push(next)
+  gate.resolve()
+  await closing
+  await expect(stat(first)).rejects.toMatchObject({ code: 'ENOENT' })
+  expect((await stat(next)).isDirectory()).toBe(true)
 })
 async function fixture(settings?: string) {
   const home = await temp()
