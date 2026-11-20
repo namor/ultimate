@@ -16,6 +16,7 @@ import { ExtensionBoundary } from '../../app/boundary.tsx'
 import { useExtensions } from '../../sdk/hooks.ts'
 import { codeBlockLanguages, codeBlockRenderers, linkRenderers } from '../../sdk/registry.ts'
 import { codePlugin } from './code-block.tsx'
+import { localMarkdownName, remarkLocalMarkdownLinks } from './local-markdown-link.ts'
 import { mentionHref, parseMention, remarkMentions, splitMentions } from './mentions.ts'
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & { from: 'user' | 'assistant' }
@@ -48,8 +49,13 @@ const CoreLink = defaultComponents.a
 function Link(props: ComponentProps<'a'> & ExtraProps) {
   const renderers = linkRenderers(useExtensions())
   const { href, children } = props
-  // A `#id` mention stays its text unless a renderer knows the conversation.
-  const core = href && parseMention(href) ? <>{children}</> : <CoreLink {...props} />
+  // Internal actions stay text when no extension handles them.
+  const core =
+    href && (parseMention(href) || localMarkdownName(href)) ? (
+      <>{children}</>
+    ) : (
+      <CoreLink {...props} />
+    )
   // Streamdown marks a link whose Markdown is still streaming.
   if (!href || href === 'streamdown:incomplete-link') return core
   return renderers.reduce<ReactNode>(
@@ -89,7 +95,11 @@ export function MentionText({ text }: { text: string }) {
 
 const components = { a: Link }
 // After GFM, so autolinked URLs are links already and keep their `#fragment`.
-const remarkPlugins = [...Object.values(defaultRemarkPlugins), remarkMentions]
+const remarkPlugins = [
+  ...Object.values(defaultRemarkPlugins),
+  remarkMentions,
+  remarkLocalMarkdownLinks,
+]
 
 /** A fenced code block as the `codeBlocks` renderers of its language compose it, starting with the core block. */
 function ExtensionCodeBlock({ code, language, isIncomplete }: CustomRendererProps) {

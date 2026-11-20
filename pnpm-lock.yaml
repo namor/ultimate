@@ -73,6 +73,9 @@ importers:
       diff:
         specifier: 9.0.0
         version: 9.0.0
+      grok-mermaid:
+        specifier: 0.2.3
+        version: 0.2.3
       log-update:
         specifier: 8.0.0
         version: 8.0.0
