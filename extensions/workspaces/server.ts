@@ -38,7 +38,7 @@ import {
 import type { GithubRepo } from './refs.ts'
 import { githubRepo, readGithubRepo } from '../../lib/project-identity.ts'
 import { UserInputEvent } from '../../shared/events.ts'
-import { authorize, spent } from './delivery.ts'
+import { authorize, park, spent } from './delivery.ts'
 import type { Actor, Approval } from './delivery.ts'
 import { deliveryRuntime } from './advance.ts'
 import { sweepChecks } from './lander.ts'
@@ -312,7 +312,8 @@ export const actions = {
           d: NonNullable<(typeof index.queue)[number]['delivery']>,
           a: string,
         ) => d.approvals?.findLast((approval) => approval.action === a)?.standing !== undefined
-        for (const { delivery: d } of index.queue) {
+        for (const item of index.queue) {
+          const d = item.delivery
           if (!d) continue
           delete d.asked
           const stage = d.stage === 'blocked' ? d.resumeStage : d.stage
@@ -330,6 +331,7 @@ export const actions = {
             standingLast(d, 'merge')
           )
             delete d.mergeApproved
+          if (item.state !== 'landing') park(item)
         }
       }, context)
       return { ok: true as const }

@@ -26,6 +26,7 @@ import { CheckRan, SubmissionFailed, SubmissionLanded } from './api.ts'
 import { setup } from './setup.ts'
 import type { DeliverySettings } from './delivery-settings.ts'
 import {
+  askedUnderStanding,
   authorize,
   BRANCH_WAKES,
   MAX_REBUILDS,
@@ -34,6 +35,7 @@ import {
   park,
   pick,
   POLL_MS,
+  standingAsk,
   waits,
 } from './delivery.ts'
 import { advanceDelivery, closePull, deliveryRuntime, github } from './advance.ts'
@@ -400,7 +402,7 @@ export const standingAskOwed = (
   const grant = index.standing
   if (authorize({ by: 'ultimate', standing: grant }, wait.on, delivery, 'waiting', env))
     return undefined
-  return delivery.asked === grant!.instruction ? undefined : wait.on
+  return askedUnderStanding(delivery, wait.on, grant, env.now) ? undefined : wait.on
 }
 
 export async function askStanding(
@@ -441,7 +443,7 @@ export async function askStanding(
         (item) => item.id === entry.id,
       )
       if (saved?.delivery?.candidate === delivery.candidate)
-        saved.delivery.asked = grant.instruction
+        saved.delivery.asked = standingAsk(delivery, action, grant)
     }, context)
   return sent === true
 }
@@ -644,7 +646,7 @@ export function createLander(
           const pending =
             !asked ||
             index.closing?.some((item) => item.source === source) ||
-            mine.some((item) => needsSlot(index.queue, item))
+            mine.some((item) => needsSlot(index.queue, item) || standingAskOwed(index, item, env))
           if (!choice && pending)
             return {
               status: 'sleeping',
@@ -941,10 +943,19 @@ export function createLander(
                   !current?.publishApproved
                 )
                   throw new Error('Publish approval was withdrawn; approve again to publish')
-                const { publishApproved: _p, mergeApproved: _m, approvals: _a, ...rest } = delivery
+                const {
+                  publishApproved: _p,
+                  mergeApproved: _m,
+                  approvals: _a,
+                  slot: _s,
+                  asked: _k,
+                  ...rest
+                } = delivery
                 saved.delivery = {
                   ...rest,
                   pollAt: runtime.now() + POLL_MS,
+                  ...(current?.slot ? { slot: true } : {}),
+                  ...(current?.asked ? { asked: current.asked } : {}),
                   ...(current?.publishApproved ? { publishApproved: true } : {}),
                   ...(current?.mergeApproved ? { mergeApproved: true } : {}),
                   ...(current?.approvals ? { approvals: current.approvals } : {}),

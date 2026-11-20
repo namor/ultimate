@@ -441,6 +441,26 @@ describe('delivery approval', () => {
       expect(delivery.approvals?.[0]).toMatchObject({ standing: f.instruction })
     })
 
+    it('revoking releases the repository slot of the entry it parks', async () => {
+      const f = await granted()
+      await approve(f)
+      await f.opened.harness.commit(async (tx) => {
+        const queued = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue[0]
+        queued.state = 'queued'
+        queued.delivery!.slot = true
+        queued.delivery!.asked = `merge:${candidate}:${f.instruction}`
+      }, context)
+      await actions.standing({ revoke: true }, {
+        host: f.host,
+        conversationId: f.ultimate,
+        signal: new AbortController().signal,
+      } as unknown as ActionContext)
+      const index = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+      expect(index.queue[0]).toMatchObject({ state: 'waiting' })
+      expect(index.queue[0].delivery).not.toHaveProperty('slot')
+      expect(index.queue[0].delivery).not.toHaveProperty('asked')
+    })
+
     // #53902 review: a branch's own recheck must not resume a merge under a grant revoked while the delivery was blocked.
     it('revoking withdraws a standing approval held by a blocked delivery', async () => {
       const f = await granted()

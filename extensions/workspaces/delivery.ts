@@ -28,7 +28,7 @@ export type Delivery = {
   runtime: string
   stage: Stage
   slot?: boolean
-  asked?: number
+  asked?: string
   since?: number
   pollAt?: number
   facts?: Omit<PullRequestFacts, 'risk' | 'review'>
@@ -114,6 +114,20 @@ export function waits(d: Delivery): Wait | undefined {
 }
 
 export const inFlight = (d: Delivery) => d.slot === true && !waits(d)
+
+export const standingAsk = (d: Delivery, action: 'publish' | 'merge', grant: StandingGrant) =>
+  `${action}:${d.candidate}:${grant.instruction}`
+
+export const askedUnderStanding = (
+  d: Delivery,
+  action: 'publish' | 'merge',
+  grant: StandingGrant | undefined,
+  now: number,
+) =>
+  grant !== undefined &&
+  grant.revokedAt === undefined &&
+  now < grant.until &&
+  d.asked === standingAsk(d, action, grant)
 
 export function park(entry: Pick<QueueEntry, 'state' | 'delivery'>) {
   const d = entry.delivery
