@@ -13,6 +13,7 @@ export {
 } from './data.tsx'
 export type { WorkspaceConversation } from './data.tsx'
 export { deliveryAsk } from './ask.tsx'
+export { DeliveryCard } from './log.tsx'
 export { LanderReportEntry } from './refs.ts'
 export {
   CommitCount,

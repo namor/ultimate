@@ -25,4 +25,4 @@ export { Address, Body, Bubble, MessageImages, useAccentOf } from './cards.tsx'
  * Enabled timers with resolved conversation subscribers, provided by automations; `MessageExtras` adds to a message's
  * card and the Inbox above its answer (reel's chip), from every provider.
  */
-export { MessageAnswers, MessageExtras, WaitTimers } from './points.tsx'
+export { MessageAnswers, MessageExtras } from './points.tsx'

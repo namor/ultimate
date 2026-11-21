@@ -49,12 +49,11 @@ report.**
 
 Routing cannot loop: an answer to a routed answer is an `echo`, placed as a note that wakes no one and routes no
 further. Conversation waits are derived from existing records: work, an open user question, an open agent or remote
-request, a subscribed timer, then an unconcluded branch's starter. Rows name the wait (`waits on @ultimate`,
-`waits on #N`, `waits on ultimate-eval`, or `waits on <timer> · <time>`); a branch waiting on @ultimate also shows
-its remote dependency, one hop only. Remote waits poll the target's optional Status progress every 15 seconds and
-append ` · run 2/4` (using its label and counts), or ` · not running` when it cannot be reached. The Open messages
-popover counts branches the conversation started that currently wait on it, rather than inferring a debt from past
-reports. The browser reads `board.started` read-only.
+request, and a subscribed timer. Rows name the wait (`waits on @ultimate`, `waits on #N`, `waits on ultimate-eval`,
+or `waits on <timer> · <time>`); a branch waiting on @ultimate also shows its remote dependency, one hop only.
+Remote waits poll the target's optional Status progress every 15 seconds and append ` · run 2/4` (using its label
+and counts), or ` · not running` when it cannot be reached. A branch's recorded starter is not a request. The
+Open messages popover lists delivered requests that still need this agent's reply and opens their sender.
 
 ### Messages to the user
 

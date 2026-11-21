@@ -21,7 +21,7 @@ const log = [
   ask(2, 200, { state: 'answered' }),
   ask(3, 300),
   ask(4, 400, { reply: false }),
-  ask(5, 500, { to: 7 as ConversationId }),
+  ask(5, 500, { to: 7 as ConversationId, report: true }),
   ask(6, 600, { state: 'dismissed' }),
   ask(7, 700),
 ]
@@ -36,9 +36,9 @@ const item = (key: string, at: number): InboxItem => ({
 
 it('lists the open questions to the user and the provided items, oldest first', () => {
   expect(inboxItems(log).map((entry) => entry.key)).toEqual(['message:1', 'message:3', 'message:7'])
-  const merged = inboxItems(log, [[item('shell:a', 350)], [item('mail:b', 50)]])
+  const merged = inboxItems(log, [[item('shell:a', 350)], [item('delivery:b', 50)]])
   expect(merged.map((entry) => entry.key)).toEqual([
-    'mail:b',
+    'delivery:b',
     'message:1',
     'message:3',
     'shell:a',

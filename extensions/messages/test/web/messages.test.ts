@@ -578,7 +578,7 @@ describe('conversation state', () => {
     ).toBe('done')
   })
 
-  it('waits on its starter until concluded, but a resumed branch waits again', () => {
+  it('does not show an open branch as waiting just because it has a starter', () => {
     const branch = { id: 5, kind: 'other' as const, starter: 3 }
     const log = messagesLog({
       from: 5 as ConversationId,
@@ -586,27 +586,19 @@ describe('conversation state', () => {
       reply: false,
       report: true,
     })
-    expect(conversationState(branch, log)).toBe('awaiting')
+    expect(conversationState(branch, log)).toBe('idle')
     expect(conversationState({ ...branch, concludedSince: Infinity }, log)).toBe('idle')
-    expect(conversationState({ ...branch, concludedSince: 200 }, log)).toBe('awaiting')
+    expect(conversationState({ ...branch, concludedSince: 200 }, log)).toBe('idle')
     expect(conversationState({ id: 5, kind: 'other' }, log)).toBe('idle')
     expect(conversationState({ ...branch, runState: 'error' }, log)).toBe('failed')
   })
 
-  it('owes branches it started only when they wait on it, without duplicating their messages', () => {
-    const messages = messagesLog({ from: 5 as ConversationId, to: 3 as ConversationId }).messages
-    const branch = { id: 5, starter: 3 }
-    const open = (facts = branch, log = messages) => openMessages(log, 3, [facts])
-    expect(open().owed.map((b) => b.id)).toEqual([5])
-    expect(open().requests).toEqual([])
-    expect(open(branch, []).owed.map((b) => b.id)).toEqual([5])
-    expect(openMessages(messages, 3, [{ ...branch, concluded: true }]).owed).toEqual([])
-    expect(openMessages(messages, 3, [{ ...branch, working: true }]).owed).toEqual([])
-    expect(openMessages(messages, 3, [{ ...branch, working: true }]).requests).toHaveLength(1)
-    expect(
-      openMessages(messagesLog({ from: 5 as ConversationId, to: 'user' }).messages, 3, [branch])
-        .owed,
-    ).toEqual([])
+  it('shows a delivered branch report to its recipient, not a queued report or human question', () => {
+    const report = { from: 5 as ConversationId, to: 3 as ConversationId, report: true as const }
+    const requests = (log: ReturnType<typeof messagesLog>) => openMessages(log.messages, 3).requests
+    expect(requests(messagesLog(report))).toHaveLength(1)
+    expect(requests(messagesLog({ ...report, state: 'sent' }))).toHaveLength(0)
+    expect(requests(messagesLog({ ...report, to: 'user' }))).toHaveLength(0)
   })
 
   it('awaits remote replies and timers, not just the primary', () => {
@@ -625,7 +617,7 @@ describe('conversation state', () => {
 
   it('adds remote progress or reachability to direct and inherited remote wait labels', () => {
     const remote = { on: 'remote', project: 'ultimate-eval' } as const
-    const branch = { on: 'starter', to: 3 } as const
+    const branch = { on: 'agent', to: 3 } as const
     const progress = { reachable: true, progress: { label: 'run', index: 2, total: 4 } }
     expect(waitLabel(remote, 3, remote, progress)).toBe('waits on ultimate-eval · run 2/4')
     expect(waitLabel(branch, 3, remote, progress)).toBe(

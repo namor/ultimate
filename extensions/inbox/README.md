@@ -8,6 +8,9 @@ actions of its own.
 
 ## Provided items (`ui.tsx`)
 
+Delivery approvals and blocks that need the user appear here with their existing delivery card. Independent review and
+blocks assigned to agents do not appear. @ultimate’s composer bar reads the same list as this surface.
+
 Another extension puts its own things to do in the Inbox (a command to run in a terminal, say) by providing the
 `InboxItems` point from its `web.tsx`: `provide(InboxItems, () => items)`, a hook returning
 `{ key, at, conversation?, tag, title, gist?, pane }[]`. `key` is unique across providers (`shell:12`), `at` when it
