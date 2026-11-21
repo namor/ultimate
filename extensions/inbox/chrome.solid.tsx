@@ -35,7 +35,9 @@ export function Zero(props: { today: readonly Answered[] }) {
           <Check class="size-5 text-muted-foreground" />
         </span>
         <h2 class="mt-4 text-[17px] font-semibold tracking-[-0.01em]">Nothing waits on you</h2>
-        <p class="mt-1 text-[14px] text-muted-foreground">Every branch has what it needs.</p>
+        <p class="mt-1 text-[14px] text-muted-foreground">
+          You have no questions or approvals to act on.
+        </p>
         <Button class="mt-6" onClick={(_, { source }) => backToUltimate(source)}>
           Back to @ultimate
         </Button>
