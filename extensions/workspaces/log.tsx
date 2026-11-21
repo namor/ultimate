@@ -522,7 +522,7 @@ function Waits({ delivery }: { delivery: Delivery }) {
   )
 }
 
-function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
+export function DeliveryCard({ id, delivery }: { id: string; delivery: Delivery }) {
   const { standing } = useWorkspaceIndex()
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string>()

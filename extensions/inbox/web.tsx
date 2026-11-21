@@ -12,13 +12,14 @@ import {
 } from '@/sdk'
 import type { Message } from '../messages/refs.ts'
 import { UnderUltimate } from '../sidebar/ui.tsx'
+import { DeliveryCard, deliveryAsk, useWorkspaceIndex } from '../workspaces/ui.tsx'
 import { Badge, LinkOverlay, SidebarRow, Zero } from './chrome.solid.tsx'
 import { SURFACE, answeredToday, toRow } from './items.ts'
 import type { Entry } from './items.ts'
 import { List } from './list.solid.tsx'
 import { Reading } from './reading.tsx'
 import { useSelection } from './selection.tsx'
-import { QuestionPane, Waiting } from './ui.tsx'
+import { InboxItems, QuestionPane, Waiting } from './ui.tsx'
 
 const ListIsland = island(List)
 const ZeroIsland = island(Zero)
@@ -106,6 +107,32 @@ function WaitingLink() {
   )
 }
 
+function useDeliveryItems() {
+  const { queue, standing } = useWorkspaceIndex()
+  const now = useNow(60_000)
+  return queue.flatMap(({ id, conversationId, delivery, steps }) => {
+    if (!delivery) return []
+    const ask = deliveryAsk(delivery, standing, now)
+    if (!ask) return []
+    return [
+      {
+        key: `delivery:${id}`,
+        at: steps[0]?.at ?? 0,
+        conversation: conversationId,
+        tag: 'delivery',
+        title:
+          ask === 'recheck'
+            ? 'Review blocked delivery'
+            : ask === 'publish'
+              ? 'Approve publication'
+              : 'Approve merge',
+        gist: `${delivery.settings.repository} → ${delivery.settings.base}`,
+        pane: <DeliveryCard id={id} delivery={delivery} />,
+      },
+    ]
+  })
+}
+
 export default defineWebExtension({
   slots: { overlay: [WaitingLink] },
   surfaces: [
@@ -126,5 +153,5 @@ export default defineWebExtension({
       run: (context) => context.showSurface(SURFACE),
     },
   ],
-  provides: [provide(UnderUltimate, useInboxSidebar)],
+  provides: [provide(UnderUltimate, useInboxSidebar), provide(InboxItems, useDeliveryItems)],
 })

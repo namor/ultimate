@@ -74,7 +74,7 @@ export function conversationState(
   const wait = conversationWait(conversation, log, automations)
   if (wait?.on === 'work') return 'working'
   if (runState === 'error') return 'failed'
-  if (kind !== 'subagent' && wait && wait.on !== 'user') return 'awaiting'
+  if (kind !== 'subagent' && wait && wait.on !== 'user' && wait.on !== 'starter') return 'awaiting'
   if (kind === 'subagent' && runState === 'answered') return 'done'
   return 'idle'
 }
@@ -97,8 +97,9 @@ export function waitLabel(
       return 'working'
     case 'user':
       return 'waits on you'
-    case 'agent':
     case 'starter':
+      return undefined
+    case 'agent':
       return wait.to === primary
         ? `waits on @ultimate${primaryWait?.on === 'remote' ? ` → ${primaryWait.project}${suffix}` : ''}`
         : `waits on #${wait.to}`
@@ -289,32 +290,10 @@ export function counterparts(
 export const answerTo = (messages: readonly Message[], question: Message) =>
   messages.find((m) => m.from === 'user' && m.re === question.id)
 
-export function openMessages(
-  messages: readonly Message[],
-  id: number,
-  branches: readonly {
-    id: number
-    starter?: number
-    working?: boolean
-    concluded?: boolean
-  }[] = [],
-  automations?: WaitFacts['automations'],
-) {
-  const owedBranches = branches.filter((branch) => {
-    const wait = waitsOn(branch.id, { ...branch, messages, automations })
-    return (
-      !branch.concluded &&
-      branch.starter === id &&
-      (wait?.on === 'starter' || wait?.on === 'agent') &&
-      wait.to === id
-    )
-  })
+export function openMessages(messages: readonly Message[], id: number) {
   return {
     waiting: messages.filter((m) => m.from === id && isOwed(m)),
-    requests: messages.filter(
-      (m) => m.to === id && isOwed(m) && !owedBranches.some((b) => b.id === m.from),
-    ),
-    owed: owedBranches,
+    requests: messages.filter((m) => m.to === id && isOwed(m)),
     delivering: messages.filter((m) => m.from === id && m.state === 'sent'),
   }
 }

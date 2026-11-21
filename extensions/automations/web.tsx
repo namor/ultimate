@@ -18,9 +18,6 @@ import {
   Fold,
   useToolDuration,
   useUltimate,
-  ROOT,
-  useDocOf,
-  provide,
 } from '@/sdk'
 import type { TypedEntry } from '@earendil-works/pi-durable'
 import type { AutomationInput } from './refs.ts'
@@ -33,13 +30,6 @@ import { looks, type Look } from './looks.ts'
 import { openAutomationsPanel } from './navigation.ts'
 import { Dot, useOpenAutomation } from './parts.tsx'
 import { AutomationsSection } from './sidebar.solid.tsx'
-import { StandingDoc } from '../subagents/ui.tsx'
-import { WaitTimers } from '../messages/ui.tsx'
-import { useAutomations, timerWaits } from './ui.tsx'
-
-function useWaitTimers() {
-  return timerWaits(useAutomations(5000).data, useDocOf(ROOT, StandingDoc))
-}
 
 type Kind = 'fired' | 'failed' | 'escalated' | 'writing'
 const kinds: Record<Kind, { look: Look; word: string; border: string }> = {
@@ -208,7 +198,6 @@ export function AutomationCall({ call }: { call: ToolCallView }) {
 }
 
 export default defineWebExtension({
-  provides: [provide(WaitTimers, useWaitTimers)],
   tools: { automation: AutomationCall },
   slots: {
     'statusline.right': [{ component: Chip, order: -2 }],
