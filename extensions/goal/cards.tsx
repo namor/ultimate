@@ -201,7 +201,6 @@ export const StartedCard = renderEntry(GoalStartedEntry, function StartedCard({ 
 })
 
 function Reminder({ goal }: { goal: Goal }) {
-  if (!goal.reminder && !goal.waiting) return null
   return (
     <p
       className="flex items-start gap-2 border-t border-border/60 px-4 py-2 text-[12px] leading-snug"
@@ -213,7 +212,7 @@ function Reminder({ goal }: { goal: Goal }) {
           <span className="min-w-0">
             <span className="text-warning">Waiting on you:</span> {goal.waiting.reason}
             <span className="ml-2 font-mono text-[11px] text-muted-foreground">
-              reminder paused since {formatTime(goal.waiting.at)}
+              wakeups paused since {formatTime(goal.waiting.at)}
             </span>
           </span>
         </>
@@ -221,7 +220,7 @@ function Reminder({ goal }: { goal: Goal }) {
         <>
           <BellIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
           <span className="text-muted-foreground">
-            A reminder wakes me every 30 minutes to check nothing is stuck.
+            Work events wake me. If work stalls without an event, I won’t wake automatically.
           </span>
         </>
       )}
