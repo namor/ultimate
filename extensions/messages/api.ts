@@ -101,6 +101,20 @@ export type MessagesService = {
     requestId: string,
     ctx: Context,
   ): Promise<number>
+  /** Ask the user through Inbox, once per sender and request ID. Does not wake an agent. */
+  ask(
+    from: ConversationId,
+    text: string,
+    question: Question,
+    requestId: string,
+    ctx: Context,
+  ): Promise<number>
+  /** Metadata for a question recorded for this sender and request ID. Never reads out its text. */
+  questionReceipt(
+    tx: Tx,
+    from: ConversationId,
+    requestId: string,
+  ): Promise<{ id: number; dismissed: boolean } | undefined>
   /**
    * From the primary agent's conversation `from`, message another project's primary agent (on `machine`, else where it
    * runs): only that Ultimate receives it. With `reply`, its answer returns here as a reply. Returns this log's id of the

@@ -35,6 +35,7 @@ import { MessagesApi } from '../messages/api.ts'
 import { WorkspacesApi } from '../workspaces/api.ts'
 import { LineageApi } from '../lineage/api.ts'
 import { AutomationsApi } from './api.ts'
+import type { AutomationsService } from './api.ts'
 import {
   CreateAction,
   DeleteAction,
@@ -736,7 +737,46 @@ function backend(host: ExtensionHost) {
       0
     )
   }
-  return { ...schedule, ...scripts, prepare, change, apply, operate, trigger }
+  const ensureEventSchedule: AutomationsService['ensureEventSchedule'] = (key, name, recurrence) =>
+    host.harness().commit(async (tx) => {
+      const state = await tx.doc(Automations)
+      const existing = Object.values(state.automations).find((a) => a.key === key)
+      if (existing) {
+        if (
+          existing.prompt ||
+          existing.subscribers.length ||
+          !isDeepStrictEqual(existing.schedule, recurrence)
+        )
+          throw new Error(`Automation key already has a different target: ${key}`)
+        return existing.id
+      }
+      const id = `A${state.next++}`
+      const now = Date.now()
+      state.automations[id] = {
+        id,
+        key,
+        name,
+        schedule: recurrence,
+        enabled: true,
+        createdAt: now,
+        updatedAt: now,
+        fires: 0,
+        runs: [],
+        subscribers: [],
+        nextAt: nextAt(recurrence, now),
+        scheduler: await tx.createTask(
+          schedule.Scheduler,
+          { id },
+          {
+            ownership: { kind: 'conversation' },
+            conversationId: ROOT_CONVERSATION_ID,
+            background: true,
+          },
+        ),
+      }
+      return id
+    }, BACKGROUND_CONTEXT)
+  return { ...schedule, ...scripts, prepare, change, apply, operate, trigger, ensureEventSchedule }
 }
 function input(args: unknown, action: string): Args {
   return { ...(args as Omit<Args, 'action'>), action }
@@ -827,6 +867,7 @@ export default function automations(host: ExtensionHost) {
   const api = backend(host)
   host.implement(AutomationsApi, {
     create: async (args) => (await api.operate({ ...args, action: 'create' })) as Automation,
+    ensureEventSchedule: api.ensureEventSchedule,
     delete: async (id) => void (await api.operate({ action: 'delete', id })),
     resume: async (id) => (await api.operate({ action: 'resume', id }), api.status(id)),
     pause: async (id) => (await api.operate({ action: 'pause', id }), api.status(id)),

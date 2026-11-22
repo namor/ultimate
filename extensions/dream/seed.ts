@@ -13,6 +13,7 @@ import { Messages } from '../messages/api.ts'
 import type { Automation } from '../automations/types.ts'
 import { BuiltInDoc, PauseDoc } from './built-ins.ts'
 import { deliver } from './delivery.ts'
+import { ReviewState, reviewId, reviewQuestion } from './review.ts'
 import type { Prepared } from './refs.ts'
 import type { Seed } from './types.ts'
 
@@ -80,9 +81,14 @@ export async function buildSeed(host: ExtensionHost, prepared: Prepared): Promis
         if (!memories[slug] || memory.updated > memories[slug].updated) memories[slug] = memory
       }
     }
+    const ultimate = (await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate
+    if (ultimate === undefined) throw new Error('@ultimate has no conversation yet')
+    const pilotQuestion = await reviewQuestion(host, tx, ultimate)
+    const review = await tx.doc(ReviewState, ROOT_CONVERSATION_ID)
+    const carriedDismissal = review.dismissed
     const questions: Seed['questions'] = []
     for (const message of (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages) {
-      if (!openQuestion(message)) continue
+      if (message.id === pilotQuestion?.id || !openQuestion(message)) continue
       const ref = `#${message.id}`
       if (message.questions?.length)
         for (const { text } of message.questions) questions.push({ text, ref })
@@ -97,11 +103,10 @@ export async function buildSeed(host: ExtensionHost, prepared: Prepared): Promis
     const builtIn = automations.find((item) => item.id === own)
     const ownPause = (await tx.doc(PauseDoc, ROOT_CONVERSATION_ID)).id
     const builtInPause = automations.find((item) => item.id === ownPause)
-    const ultimate = (await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate
-    if (ultimate === undefined) throw new Error('@ultimate has no conversation yet')
     const triggers = automations
       .filter(
         (item) =>
+          item.id !== review.schedule &&
           item.id !== own &&
           item.id !== ownPause &&
           item.enabled &&
@@ -165,6 +170,9 @@ export async function buildSeed(host: ExtensionHost, prepared: Prepared): Promis
       },
       builtIn: builtInOf(builtIn),
       builtInPause: builtInOf(builtInPause),
+      ...(pilotQuestion?.dismissed || carriedDismissal === reviewId
+        ? { dailyReviewDismissal: reviewId }
+        : {}),
       continues: { conversation: ultimate, handoff: prepared.handoff },
     })
   }, context)
@@ -207,6 +215,8 @@ export async function applySeed(host: ExtensionHost) {
     await harness.commit(async function seedDocumentsAndEntry(tx) {
       const receipt = await tx.doc(SeedState, ROOT_CONVERSATION_ID)
       if (receipt.applied !== undefined) return
+      if (seed.dailyReviewDismissal === reviewId)
+        (await tx.doc(ReviewState, ROOT_CONVERSATION_ID)).dismissed = reviewId
       const memory = await exportedDocument<{
         memories: Record<string, MemoryItem>
       }>(host, tx, 'lineage.memory')

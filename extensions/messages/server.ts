@@ -36,7 +36,7 @@ import { Concluded } from '../conversations/api.ts'
 import { dropped } from './outcomes.ts'
 import { delivery, reconcileOutputs, retireOutput, settle, submitOutput } from './delivery.ts'
 import { notice } from './notice.ts'
-import { receiptOf, send } from './send.ts'
+import { questionReceipt, receiptOf, send } from './send.ts'
 import type { Device } from '../../shared/events.ts'
 import type { Context } from '@earendil-works/chord/context'
 import { branchesConcluded, reported, route, working } from './route.ts'
@@ -269,6 +269,11 @@ export default function messages(host: ExtensionHost) {
       ),
     dismiss: (messageId, ctx, device, call) => dismiss(host, messageId, ctx, { device, call }),
     send: (from, input, requestId, ctx) => send(host, from, input, ctx, { requestId }),
+    ask: (from, text, question, requestId, ctx) =>
+      send(host, from, { to: 'user', text, reply: true, questions: [question] }, ctx, {
+        requestId,
+      }),
+    questionReceipt,
     tell: (from, input, ctx) => tell(host, from, input, ctx),
     owed: (tx, to, automation) => owed(host, tx, to, automation),
     submitFire: (tx, to, input, { id, name }) =>

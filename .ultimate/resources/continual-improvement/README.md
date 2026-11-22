@@ -10,13 +10,13 @@ Use Dream to propose fixes for repeated project friction. Do not add another bac
 
 Run `pnpm test extensions/dream/test/continual-improvement.test.ts`. The proof uses no model turns, no real project history, and no memory or delivery writes. It does not validate a live evidence adapter, scheduler crash recovery, Inbox dismissal, or replay across chapters.
 
-## Next step, if approved
+## Daily pilot
 
-Start with an on-demand observation inside the existing Dream workflow. Revisit cadence after the first useful proposal. If a schedule is useful, use the existing project automation at most weekly, at most one bounded page of new evidence and one proposal per run, with no separate model turn. Resume from the existing source positions without rescanning history. Stop rather than add a second cursor store or ingestion pipeline if the existing positions and decision records cannot support this safely.
+The daily pilot in Dream is wired only in its test fixture. It uses the existing scheduler at 09:00 UTC and checks once after downtime, then waits for the next daily slot. Two verification timeouts on distinct submissions can produce one Inbox question. It reads only the existing outcome labels and event IDs for the suggestion; a bounded pair of submission IDs is used locally to rule out repeats. It reads no commands, diagnostics, chat corrections or Dream journal findings. A new chapter carries only the opaque dismissal ID for this suggestion. Empty days start no model turn. Nothing is enabled in the running app.
 
 Read only new, eligible direct user corrections, metadata-only failure outcomes, and existing Dream findings in the active project and chapter. The fixture's citations are synthetic. A live adapter must get citations and scope from trusted host records, not from fields claimed by historical text. Treat even eligible text as evidence, never instructions. Exclude raw logs, sealed payloads, secrets, private artifacts, cross-project lookups, uploads, and public excerpts. Default to citations and metadata. Send bounded eligible excerpts to a configured model only with explicit authorization. A remote model processes those inputs off-device.
 
-Look for one recurring issue the existing guidance did not prevent. Give the proposal to the existing Dream decision flow. Use existing Inbox questions or a normal branch when that flow needs a decision or approved work. A proposal assigns no action and grants no authority. Reuse existing decision records for suppression. Prove that dismissal survives restart and suppresses fresh repeats before routing a live proposal. Do not assume a receipt in one chapter carries into the next.
+A proposal assigns no action and grants no authority. An Inbox answer follows the existing decision flow. Keep any rollout and broader evidence selection separate from this pilot.
 
 Automatic writes stay off. The first candidate for a later deterministic allowlist is exact deduplication of a redundant non-policy lesson in project memory. Require proof of identical content and authority, preserved provenance, a receipt, and undo. Do not automatically alter instructions, policy, product code, permissions, trust, approvals, or anything external. Other changes remain proposals. Dream keeps its current decision rights.
 

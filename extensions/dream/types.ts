@@ -41,6 +41,7 @@ export type Seed = {
   }
   builtIn?: BuiltInSeed | null
   builtInPause?: BuiltInSeed | null
+  dailyReviewDismissal?: string
   continues: { conversation: ConversationId; handoff: string }
 }
 

@@ -18,6 +18,7 @@ import type { ExtensionHost } from '../../server/extensions.ts'
 import { CloudApi } from '../cloud/api.ts'
 import { Standing, Started as StandingStarted } from '../subagents/api.ts'
 import { Fired } from '../automations/api.ts'
+import { dailyReview, ReviewState } from './review.ts'
 import { Branched } from '../lineage/api.ts'
 import {
   AsleepAction,
@@ -45,7 +46,7 @@ export const Next = defineDoc<{ prepared?: Prepared; sleep?: Sleep; dream?: Drea
   fork: 'initial',
   initial: () => ({}),
 })
-export const docs = [Next, SeedState, BuiltInDoc, PauseDoc]
+export const docs = [Next, SeedState, BuiltInDoc, PauseDoc, ReviewState]
 export const userActions = ['start', 'ready', 'dismiss', 'asleep', 'switch']
 
 const REQUEST_LOOKBACK_ENTRIES = 200
@@ -357,7 +358,7 @@ export const actions = {
   ),
 }
 
-export default function dream(host: ExtensionHost) {
+export default function dream(host: ExtensionHost, pilot = false) {
   const reloadStableCreationQueue = host.resource('dream.after-compaction', () => ({
     last: Promise.resolve(),
   }))
@@ -400,5 +401,6 @@ export default function dream(host: ExtensionHost) {
       at: Date.parse(event.at),
     }),
   )
-  return defineExtension({ name: 'dream', tasks: [deliverTask(host)] })
+  const review = pilot ? dailyReview(host) : undefined
+  return defineExtension({ name: 'dream', tasks: [deliverTask(host), ...(review ? [review] : [])] })
 }
