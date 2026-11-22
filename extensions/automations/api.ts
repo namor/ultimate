@@ -1,10 +1,12 @@
 /** Automations: resume, pause, run and inspect scheduled, event, context or supervised script triggers. */
 import type { Tx } from '@earendil-works/pi-durable'
 import { defineApi } from '../../shared/extension-api.ts'
-import type { Automation, AutomationListItem, CreateArgs } from './types.ts'
+import type { Automation, AutomationListItem, CreateArgs, Schedule } from './types.ts'
 export type AutomationsService = {
   /** Create an automation as the tool's create does; `subscribers` stand in for a caller. Commits. */
   create(args: CreateArgs): Promise<Automation>
+  /** Ensure a private schedule that only emits `automations.fired`. No model, subscriber or script. Commits. */
+  ensureEventSchedule(key: string, name: string, schedule: Schedule): Promise<string>
   /** Delete a record, retiring its scheduler; files and conversations remain. Commits. */
   delete(id: string): Promise<void>
   /** Resume a trigger from its current settings/executable. Commits; call outside transactions. */

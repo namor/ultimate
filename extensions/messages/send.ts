@@ -1,4 +1,4 @@
-import type { ConversationId, EntryId, TaskId } from '@earendil-works/pi-durable'
+import type { ConversationId, EntryId, TaskId, Tx } from '@earendil-works/pi-durable'
 import type { Context } from '@earendil-works/chord/context'
 import { defineDoc, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import type { ExtensionHost } from '../../server/extensions.ts'
@@ -25,7 +25,10 @@ const AtomicallyCommittedCallReceipts = defineDoc<{ ids: Record<string, number> 
   initial: () => ({ ids: {} }),
 })
 
-const ConversationRequestReceipts = defineDoc<{ ids: Record<string, number> }>({
+const ConversationRequestReceipts = defineDoc<{
+  ids: Record<string, number>
+  questions?: Record<number, boolean>
+}>({
   kind: 'board.requests',
   checkpointWhen: () => false,
   version: 1,
@@ -34,6 +37,13 @@ const ConversationRequestReceipts = defineDoc<{ ids: Record<string, number> }>({
   fork: 'initial',
   initial: () => ({ ids: {} }),
 })
+
+export async function questionReceipt(tx: Tx, from: ConversationId, requestId: string) {
+  const receipt = await tx.doc(ConversationRequestReceipts, from)
+  const id = receipt.ids[requestId]
+  const dismissed = id === undefined ? undefined : receipt.questions?.[id]
+  return id === undefined || dismissed === undefined ? undefined : { id, dismissed }
+}
 
 export async function receiptOf(
   host: ExtensionHost,
@@ -77,6 +87,7 @@ export async function send(
     report?: boolean
     routed?: EntryId
     echo?: boolean
+    standaloneQuestion?: true
     serveBranch?: true
   } = {},
 ) {
@@ -137,6 +148,10 @@ export async function send(
       )
       if (!original || !openQuestion(original))
         throw new Error('These questions are no longer open')
+      if (input.dismiss && typeof original.from === 'number') {
+        const tracked = (await tx.doc(ConversationRequestReceipts, original.from)).questions
+        if (tracked?.[answerId] === false) tracked[answerId] = true
+      }
     }
     let images: Message['images']
     if (input.images !== undefined) {
@@ -149,7 +164,7 @@ export async function send(
       for (const m of (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages)
         if (openQuestion(m) && m.id === input.re) m.state = input.dismiss ? 'dismissed' : 'answered'
     let re = input.re
-    if (from !== 'user' && input.reply !== false) {
+    if (from !== 'user' && input.reply !== false && !options.standaloneQuestion) {
       const log = await tx.doc(Messages, ROOT_CONVERSATION_ID)
 
       const readMessageOwedToRecipient = log.messages.find(
@@ -292,7 +307,10 @@ export async function send(
         },
       )
     if (receipt && callId !== undefined) receipt.ids[callId] = message.id
-    if (requests && requestId !== undefined) requests.ids[requestId] = message.id
+    if (requests && requestId !== undefined) {
+      requests.ids[requestId] = message.id
+      if (questions?.length) requests.questions = { ...requests.questions, [message.id]: false }
+    }
     return message.id
   }, ctx)
 }

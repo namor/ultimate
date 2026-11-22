@@ -1,9 +1,10 @@
 import type { ConversationId, EntryId } from '@earendil-works/pi-durable'
 import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
+import { requestChapter } from '../../../lib/chapters.ts'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import type { JsonValue } from '@earendil-works/chord/json'
-import { fauxProvider } from '@earendil-works/pi-ai/providers/faux'
+import { fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai/providers/faux'
 import { configure, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import { afterEach, expect, it, vi } from 'vitest'
 import { writeJson } from '../../../lib/json-file.ts'
@@ -13,13 +14,19 @@ import type { ExtensionHost } from '../../../server/extensions.ts'
 import type { ActionContext } from '../../../server/actions.ts'
 import { Metadata } from '../../../server/metadata.ts'
 import { docs as lineageDocs } from '../../lineage/server.ts'
-import { Messages } from '../../messages/api.ts'
+import { Messages, MessagesApi } from '../../messages/api.ts'
+import messages from '../../messages/server.ts'
+import { send } from '../../messages/send.ts'
+import { Workspaces, landingPending, pendingLandingCards } from '../../workspaces/workspaces.ts'
+import { CheckRan } from '../../workspaces/api.ts'
+import { ReviewState, reviewId } from '../review.ts'
 import { Todos } from '../../todos/server.ts'
 import { Standing } from '../../subagents/api.ts'
 import { ContextUsageDoc } from '../../conversations/api.ts'
+import { AutomationsApi } from '../../automations/api.ts'
 import automations, { actions as automationActions, Automations } from '../../automations/server.ts'
 import dream, { actions, branched, Next, toolStats, userActions } from '../server.ts'
-import { buildSeed } from '../seed.ts'
+import { buildSeed, writeSeed } from '../seed.ts'
 import {
   AUTOMATION_NAME,
   BuiltInDoc,
@@ -41,8 +48,121 @@ afterEach(async () => {
   vi.useRealTimers()
 })
 
+it('catches up a daily proposal once, stays quiet without evidence and respects dismissal', async () => {
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  const day = 24 * 60 * 60 * 1000
+  const start = Date.UTC(2026, 2, 1, 8)
+  vi.setSystemTime(start)
+  const f = await fixture(true)
+  f.faux.setResponses([fauxAssistantMessage('Unexpected model call')])
+  let schedule = (await f.harness.snapshot(ReviewState, ROOT_CONVERSATION_ID, context))!.schedule!
+  expect(await f.ids()).not.toContain(schedule)
+  await expect(f.action('run', { id: schedule })).rejects.toThrow(/Unknown automation/)
+  await expect(f.action('subscribe', { id: schedule, to: `#${f.ultimate}` })).rejects.toThrow(
+    /Unknown automation/,
+  )
+  await expect(f.action('update', { id: schedule, prompt: 'Must not run' })).rejects.toThrow(
+    /Unknown automation/,
+  )
+  await expect(
+    f.host.need(AutomationsApi).ensureEventSchedule('invalid', 'Invalid', { kind: 'every', ms: 0 }),
+  ).rejects.toThrow('Intervals must be at least 1s')
+  const owed = await send(
+    f.host,
+    'user',
+    { to: `#${f.ultimate}`, text: 'Separate request', reply: true },
+    context,
+    { note: true },
+  )
+  const status = () =>
+    f.host.harness().commit(
+      async (tx) => ({
+        record: await f.host.need(AutomationsApi).read(tx, schedule),
+        messages: (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages
+          .filter((m) => m.to === 'user')
+          .map(({ id, text, state, re, questions }) => ({
+            id,
+            text,
+            state,
+            re,
+            questions: questions?.map(({ text: questionText, ref }) => ({
+              text: questionText,
+              ref,
+            })),
+          })),
+      }),
+      context,
+    )
+  const wait = (fires: number) =>
+    until(
+      async () => (await status()).record?.fires === fires,
+      7000,
+      () => vi.advanceTimersByTimeAsync(50),
+    )
+  await f.emitTimeout('duplicate')
+  await f.emitTimeout('duplicate')
+  await f.settle()
+  await vi.advanceTimersByTimeAsync(60 * 60 * 1000)
+  await wait(1)
+  await f.settle()
+  expect((await status()).messages).toEqual([])
+  await f.emitTimeout('one')
+  await f.emitTimeout('one')
+  await f.emitTimeout('two')
+  await f.settle()
+  await f.reopen(start + 3 * day + 2 * 60 * 60 * 1000)
+  await wait(2)
+  await f.settle()
+  await until(async () => (await status()).messages.length === 1)
+  const [proposal] = (await status()).messages
+  expect(proposal.text).toMatch(
+    /^Verification timed out on two separate submissions\. Event references: \d+, \d+\.$/,
+  )
+  expect(proposal.re).toBeUndefined()
+  expect(proposal.questions).toEqual([
+    { text: 'Review recurring verification timeouts?', ref: undefined },
+  ])
+  const unrelated = await f.host.harness().snapshot(Messages, ROOT_CONVERSATION_ID, context)
+  expect(unrelated?.messages.find(({ id }) => id === owed)?.state).toBe('delivered')
+  await f.host.need(MessagesApi).dismiss(proposal.id, context)
+  await f.reopen(start + 4 * day)
+  await f.emitTimeout('three')
+  await f.emitTimeout('four')
+  await f.settle()
+  await vi.advanceTimersByTimeAsync(60 * 60 * 1000)
+  await wait(3)
+  await f.settle()
+  expect((await status()).messages).toMatchObject([{ id: proposal.id, state: 'dismissed' }])
+  expect(f.faux.getPendingResponseCount()).toBe(1)
+
+  const handoff = {
+    chapter: 'review-carry',
+    at: Date.now(),
+    learned: ['First', 'Second', 'Third'],
+    handoff: 'Fixture',
+  }
+  const seed = await buildSeed(f.host, handoff)
+  expect(seed.dailyReviewDismissal).toBe(reviewId)
+  expect(seed.questions).toEqual([])
+  expect(seed.automations.some(({ name }) => name === 'Dream daily review')).toBe(false)
+  expect(JSON.stringify(seed)).not.toContain('Verification timed out')
+  await writeSeed(join(f.host.home, 'chapters', handoff.chapter), seed)
+  await f.reopen(start + 5 * day, handoff.chapter)
+  const carried = await f.host.harness().snapshot(ReviewState, ROOT_CONVERSATION_ID, context)
+  expect(carried?.dismissed).toBe(reviewId)
+  schedule = carried!.schedule!
+  await f.emitTimeout('new-chapter-one')
+  await f.emitTimeout('new-chapter-two')
+  await f.settle()
+  await vi.advanceTimersByTimeAsync(60 * 60 * 1000)
+  await wait(1)
+  await f.settle()
+  expect((await status()).messages).toEqual([])
+  expect((await buildSeed(f.host, handoff)).dailyReviewDismissal).toBe(reviewId)
+})
+
 /** A real harness with automations and dream installed, and @ultimate. */
-async function fixture() {
+async function fixture(pilot = false) {
   const home = await temp('ultimate-dream-')
   const prepared = await prepareHarness({
     ultimateRoot: home,
@@ -52,6 +172,7 @@ async function fixture() {
   })
   let opened: OpenHost
   const openers: (() => Promise<void>)[] = []
+  const localClosers: (() => Promise<void>)[] = []
   const tokens = [...lineageDocs, Messages, Todos]
   const resources = new Map<string, unknown>()
   const events = eventHost(() => opened.harness, 'test')
@@ -59,9 +180,12 @@ async function fixture() {
     new Map<string, unknown>([
       ['messages', { send: async () => ({}), dropped: async () => {} }],
       ['lineage', { rootOf: async () => undefined }],
+      ['workspaces', { doc: Workspaces, landingPending, pendingLandingCards }],
+      ['conversations', { concludedIn: async () => new Set() }],
       [
         'subagents',
         {
+          residents: async () => [],
           standing: async () =>
             (await opened.harness.snapshot(Standing, ROOT_CONVERSATION_ID, context))!.ultimate,
         },
@@ -86,7 +210,7 @@ async function fixture() {
     },
     metadata: Metadata,
     onRelease: () => {},
-    onClose: (callback: () => Promise<void>) => void closers.push(callback),
+    onClose: (callback: () => Promise<void>) => void localClosers.push(callback),
     onOpen: (callback: () => Promise<void>) => void openers.push(callback),
     projectSetup: async () => ({ decision: false }),
     projectSettings: async () => ({}),
@@ -101,17 +225,25 @@ async function fixture() {
     invoke,
   } as unknown as ExtensionHost
   prepared.registry.install(automations(host))
-  prepared.registry.install(dream(host))
+  if (pilot) prepared.registry.install(messages(host))
+  prepared.registry.install(dream(host, pilot))
+  closers.push(async () => {
+    await events.stop()
+    for (const close of localClosers) await close()
+  })
   opened = await prepared.open(false)
   openedHosts.push(opened)
-  const ultimate = await opened.harness.commit(async (tx) => {
-    const created = await tx.createConversation({ ownership: { kind: 'ownerless' } })
-    await configure(tx, created.id, {})
-    ;(await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate = created.id
-    return created.id
-  }, context)
+  const startUltimate = () =>
+    opened.harness.commit(async (tx) => {
+      const created = await tx.createConversation({ ownership: { kind: 'ownerless' } })
+      await configure(tx, created.id, {})
+      ;(await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate = created.id
+      return created.id
+    }, context)
+  const ultimate = await startUltimate()
   for (const open of openers) await open()
   await events.start()
+  if (pilot) opened.harness.resume()
   const harness = opened.harness
   const own = async () => (await harness.snapshot(BuiltInDoc, ROOT_CONVERSATION_ID, context))?.id
   const ownPause = async () => (await harness.snapshot(PauseDoc, ROOT_CONVERSATION_ID, context))?.id
@@ -143,6 +275,32 @@ async function fixture() {
   return {
     host,
     harness,
+    faux: prepared.faux!,
+    emitTimeout: (submission: string) =>
+      opened.harness.commit(
+        (tx) =>
+          host.emit(tx, CheckRan, {
+            submission,
+            command: 'ignored-secret-fixture-marker',
+            result: 'timeout',
+            ms: 1000,
+          }),
+        context,
+      ),
+    async reopen(when: number, chapter?: string) {
+      await events.stop()
+      for (const close of localClosers) await close()
+      await opened.close()
+      openedHosts.splice(openedHosts.indexOf(opened), 1)
+      vi.setSystemTime(when)
+      if (chapter) await requestChapter(home, chapter)
+      opened = await prepared.open(false)
+      openedHosts.push(opened)
+      if (chapter) await startUltimate()
+      for (const open of openers) await open()
+      await events.start()
+      opened.harness.resume()
+    },
     ultimate,
     own,
     ownPause,
