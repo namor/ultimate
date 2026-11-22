@@ -35,6 +35,11 @@ export const BUILTIN_FAMILIES: Record<string, FamilySpec & { color: FamilyColor 
 }
 
 export const FEATURES = {
+  coordinatorModes: {
+    family: 'review',
+    label: 'Plan and Review',
+    description: 'Advisory checkpoints before implementation and delivery',
+  },
   summaries: {
     family: 'tiny',
     label: 'Summaries',

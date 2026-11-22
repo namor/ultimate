@@ -19,9 +19,8 @@ import { mergeLayers, readFamilyLayers, writeFamilies } from '../../lib/families
 import { readSettings, updateSettings, userSettingsPath } from '../../lib/settings.ts'
 import type { FamiliesView, FamilyUser, SaveFamilies } from './refs.ts'
 
-const featurePinsInSettings: Record<
-  Feature,
-  { key: string; read: (settings: JsonObject) => unknown }
+const featurePinsInSettings: Partial<
+  Record<Feature, { key: string; read: (settings: JsonObject) => unknown }>
 > = {
   summaries: { key: 'summaryModel', read: (settings) => settings.summaryModel },
   preview: {
@@ -108,8 +107,9 @@ export async function familiesView(host: ExtensionHost): Promise<FamiliesView> {
   })
   const features: FamilyUser[] = (Object.keys(FEATURES) as Feature[]).map((id) => {
     const { label, description, family } = FEATURES[id]
-    const projectPin = pinned(featurePinsInSettings[id].read(project))
-    const pin = projectPin ?? pinned(featurePinsInSettings[id].read(user))
+    const setting = featurePinsInSettings[id]
+    const projectPin = pinned(setting?.read(project))
+    const pin = projectPin ?? pinned(setting?.read(user))
     const assigned = config.assign[id] ?? family
     return {
       id,
@@ -120,10 +120,10 @@ export async function familiesView(host: ExtensionHost): Promise<FamiliesView> {
         ? {}
         : { family: Object.hasOwn(config.families, assigned) ? assigned : DEFAULT_FAMILY }),
       natural: family,
-      ...(pin
+      ...(pin && setting
         ? {
             pinned: pin,
-            pinnedIn: `${projectPin ? 'project' : 'user'} settings: ${featurePinsInSettings[id].key}`,
+            pinnedIn: `${projectPin ? 'project' : 'user'} settings: ${setting.key}`,
           }
         : {}),
       ...(projectPin || Object.hasOwn(layers.project.assign, id) ? { project: true as const } : {}),
