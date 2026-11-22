@@ -14,6 +14,7 @@ import { Branch } from '../../../lineage/api.ts'
 import { Messages } from '../../../messages/api.ts'
 import { Workspaces } from '../../../workspaces/workspaces.ts'
 import { Result } from '../../refs.ts'
+import { Runs } from '../../server.ts'
 import type { ModeResult } from '../../refs.ts'
 import { fauxServer, held, post, sourceCopy, temp, until } from '../../../../test/helpers.ts'
 
@@ -336,6 +337,7 @@ test('one result for each automatic checkpoint on the exact candidate; repeat st
         args: { mode },
         conversationId: coordinator,
       })
+    runGit(checkout, 'config', 'status.showUntrackedFiles', 'no')
     await writeFile(join(checkout, 'not-committed.txt'), 'unsaved')
     expect((await requestMode('review', rejected)).data).toMatchObject({
       error: expect.stringContaining('clean worktree'),
@@ -372,6 +374,155 @@ test('one result for each automatic checkpoint on the exact candidate; repeat st
     })
     expect(reopenedModels).toContain('sol')
     expect(reopenedModels).not.toContain('astra')
+
+    const racing = await newCoordinator()
+    const manualGate = Promise.withResolvers<void>()
+    let manualEntered = false
+    const raceRoute = ((request, _options, _state, model) => {
+      faux.appendResponses([raceRoute])
+      if (model.id === 'astra') {
+        manualEntered = true
+        return manualGate.promise.then(() => fauxAssistantMessage('Manual advisory advice'))
+      }
+      const last = request.messages.at(-1)
+      if (
+        last?.role === 'user' &&
+        JSON.stringify(last.content).includes('Plan before implementation')
+      )
+        return ask('plan')
+      return fauxAssistantMessage('Continued with the advice')
+    }) satisfies Parameters<typeof faux.setResponses>[0][number]
+    faux.setResponses([raceRoute])
+    expect((await requestMode('plan', racing)).status).toBe(200)
+    try {
+      await until(() => manualEntered)
+      const actor = (await server.harness.conversation(racing, ctx))!
+      const beforeCall = faux.state.callCount
+      const input = await actor.submit(
+        { type: 'input', content: 'Plan before implementation' },
+        ctx,
+      )
+      await until(() => faux.state.callCount > beforeCall)
+      await until(
+        async () =>
+          (await server.harness.snapshot(Runs, racing, ctx))?.tasks.plan?.caller !== undefined,
+      )
+      expect(await input.status(ctx)).toMatchObject({ status: 'placed' })
+      manualGate.resolve()
+      await input.wait(ctx)
+      await actor.waitForIdle(ctx)
+      expect((await entries(racing))[0]?.data).toMatchObject({
+        status: 'ready',
+        text: 'Manual advisory advice',
+      })
+      const toolRows = await server.harness.commit(
+        async (tx) =>
+          (await tx.scanEntries({ conversationId: racing }, 40)).items
+            .filter((entry) => entry.kind === 'pi.tool-result')
+            .map((entry) => entry.model?.[0]?.content),
+        ctx,
+      )
+      expect(JSON.stringify(toolRows)).toContain('Manual advisory advice')
+      expect(
+        await server.harness.commit(
+          (tx) => tx.submissionByRequest(racing, 'coordinator-modes:plan'),
+          ctx,
+        ),
+      ).toMatchObject({ type: 'write' })
+      expect(await entries(racing)).toHaveLength(1)
+    } finally {
+      manualGate.resolve()
+    }
+
+    expect((await set('review', true)).status).toBe(200)
+    const replayPrompt = 'Prove automatic Review survives restart'
+    const priorHead = runGit(checkout, 'rev-parse', 'HEAD')
+    let reviewAttempts = 0
+    let reviewPacket = ''
+    let staleReachedTool = false
+    const replayRoute = (async (request, options, state, model) => {
+      faux.appendResponses([replayRoute])
+      const last = request.messages.at(-1)
+      const body = JSON.stringify(last?.content)
+      if (model.id === 'astra') {
+        reviewAttempts++
+        if (reviewAttempts === 1) {
+          reviewPacket = JSON.stringify(
+            request.messages.filter((message) => message.role !== 'system'),
+          )
+          return held(request, options, state, model)
+        }
+        return fauxAssistantMessage('Unexpected repeated provider request')
+      }
+      if (last?.role === 'user' && body.includes('start-replay-branch'))
+        return fauxAssistantMessage(
+          fauxToolCall('branch', { prompt: replayPrompt, isolated: false }),
+          { stopReason: 'toolUse' },
+        )
+      if (last?.role === 'user' && body.includes(replayPrompt)) {
+        const requestToBranch = (await requests()).messages.find(
+          (msg) => msg.text === replayPrompt && msg.from === starter,
+        )!
+        if (typeof requestToBranch.to !== 'number') throw new Error('Expected a branch target')
+        const targetId = requestToBranch.to
+        await server.harness.commit(async (tx) => {
+          ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).items[targetId] = {
+            path: checkout,
+            source: projectRoot,
+            branch: 'fixture',
+            base,
+            target: 'main',
+            state: 'ready',
+          }
+        }, ctx)
+        return fauxAssistantMessage(
+          fauxToolCall('advisory_checkpoint', {
+            mode: 'review',
+            revision: priorHead,
+            brief: 'x'.repeat(12050),
+          }),
+          { stopReason: 'toolUse' },
+        )
+      }
+      const sent = JSON.stringify(request.messages)
+      if (sent.includes('Review advisory result (stale') && sent.includes(priorHead)) {
+        staleReachedTool = true
+        return fauxAssistantMessage('The original Review was stale after restart.')
+      }
+      return fauxAssistantMessage('Noted')
+    }) satisfies Parameters<typeof faux.setResponses>[0][number]
+    faux.setResponses([replayRoute])
+    await (await server.harness.conversation(starter, ctx))!.submit(
+      { type: 'input', content: 'start-replay-branch' },
+      ctx,
+    )
+    await until(() => reviewAttempts === 1, 8000)
+    expect(reviewPacket).toContain(priorHead)
+    expect(reviewPacket).toContain('Change counts: 2 files changed')
+    const replayRequest = (await requests()).messages.find(
+      (msg) => msg.text === replayPrompt && msg.from === starter,
+    )!
+    expect((await requests()).messages.filter((msg) => msg.re === replayRequest.id)).toEqual([])
+    expect((await set('review', false)).status).toBe(200)
+    await server.close()
+    runGit(
+      checkout,
+      '-c',
+      'user.name=Fixture',
+      '-c',
+      'user.email=fixture@example.invalid',
+      'commit',
+      '--allow-empty',
+      '-m',
+      'Change checkout across restart',
+    )
+    server = await open()
+    await until(async () => (await requests()).messages.some((msg) => msg.re === replayRequest.id))
+    expect((await requests()).messages.filter((msg) => msg.re === replayRequest.id)).toEqual([
+      expect.objectContaining({ text: 'The original Review was stale after restart.' }),
+    ])
+    expect(staleReachedTool).toBe(true)
+    expect(reviewAttempts).toBe(1)
   } finally {
     await server.close()
     await rm(home, { recursive: true, force: true })

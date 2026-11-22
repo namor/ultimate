@@ -9,7 +9,7 @@ import {
   ROOT_CONVERSATION_ID,
   section,
 } from '@earendil-works/pi-durable'
-import type { ConversationId, TaskId } from '@earendil-works/pi-durable'
+import type { ConversationId, TaskId, Tx } from '@earendil-works/pi-durable'
 import { obj, opt, str, union, lit } from '@earendil-works/pi-schema'
 import { implementAction } from '../../lib/actions.ts'
 import { previewModel } from '../../lib/agents.ts'
@@ -35,7 +35,7 @@ const Preferences = defineDoc<Preferences>({
   checkpointWhen: () => false,
   initial: () => ({}),
 })
-const Runs = defineDoc<{
+export const Runs = defineDoc<{
   tasks: Record<string, { id: TaskId<ModeResult | null>; caller?: TaskId }>
 }>({
   kind: 'coordinator-modes.runs',
@@ -69,7 +69,16 @@ async function cleanHead(
     workspaces.git({ cwd: workspace.path, timeout: 5000, signal }, ...args)
   if ((await git('symbolic-ref', '--short', 'HEAD')) !== workspace.branch)
     throw new Error('Review needs the registered workspace branch checked out')
-  if (await git('--no-optional-locks', '-c', 'core.fsmonitor=false', 'status', '--porcelain'))
+  if (
+    await git(
+      '--no-optional-locks',
+      '-c',
+      'core.fsmonitor=false',
+      'status',
+      '--porcelain',
+      '--untracked-files=normal',
+    )
+  )
     throw new Error('Review needs a clean worktree')
   return git('rev-parse', 'HEAD')
 }
@@ -120,6 +129,7 @@ function taskFor(host: ExtensionHost) {
       key: string
       mode: Mode
       packet: string
+      shareable?: true
       base?: string
       revision?: string
       truncated?: true
@@ -175,7 +185,10 @@ function taskFor(host: ExtensionHost) {
         type Receipt = Awaited<ReturnType<typeof conversations.askSummaryModel>>
         let response = await runtime.memo<Receipt>('response', ctx)
         try {
-          if (projectDecision(host.projectRoot, host.userHome) !== true) {
+          if (!task.input.shareable) {
+            result.text =
+              'The request predates the shareable evidence policy. No model request was sent.'
+          } else if (projectDecision(host.projectRoot, host.userHome) !== true) {
             result.text = 'Project-local setup is not trusted. No new model request was sent.'
           } else if (await stale()) {
             result.status = 'stale'
@@ -228,11 +241,13 @@ function taskFor(host: ExtensionHost) {
         }
         await runtime.commit(async (tx) => {
           if (!(await conversations.concludedIn(tx)).has(id)) {
+            const consumedByTool =
+              automatic || (await tx.doc(Runs, id)).tasks[key]?.caller !== undefined
             const entry = { kind: Result.kind, data: result }
             const requestId = `coordinator-modes:${key}`
             await coordinator.submit(
               tx,
-              automatic
+              consumedByTool
                 ? { type: 'write', requestId, entry }
                 : {
                     type: 'input',
@@ -263,6 +278,11 @@ async function start(
 ) {
   const automatic = caller !== undefined
   const harness = host.harness()
+  if (caller !== undefined) {
+    const existing = await harness.snapshot(Runs, id, context)
+    const admitted = Object.values(existing?.tasks ?? {}).find((run) => run.caller === caller)
+    if (admitted) return { started: false, task: admitted.id }
+  }
   const branch = (await harness.snapshot(Branch, id, context))?.branch
   if (!branch) throw new Error('Run Plan or Review in a coordinator branch')
   if (projectDecision(host.projectRoot, host.userHome) !== true)
@@ -300,15 +320,22 @@ async function start(
     )
   }
   const key = mode === 'plan' ? mode : `${mode}:${revision}`
-  const existing = await harness.commit(async (tx) => {
+  const findOrClaim = async (tx: Tx) => {
     const task = (await tx.doc(Runs, id)).tasks[key]
-    return task === undefined
-      ? undefined
-      : { started: false, task: caller && task.caller === caller ? task.id : undefined }
-  }, context)
+    if (task === undefined) return undefined
+    if (caller !== undefined && task.caller === undefined) {
+      const actual = await tx.task(task.id)
+      if (actual && actual.state.status !== 'terminal') task.caller = caller
+    }
+    return {
+      started: false,
+      task: caller !== undefined && task.caller === caller ? task.id : undefined,
+    }
+  }
+  const existing = await harness.commit(findOrClaim, context)
   if (existing) return existing
   const brief = Buffer.from(
-    `Shareable brief:\n${(description ?? '').trim().slice(0, maxBytes + 1)}${revision ? `\nCandidate: ${base}..${revision}\nChange counts: ${counts}` : ''}`,
+    `${revision ? `Candidate: ${base}..${revision}\nChange counts: ${counts}\n` : ''}Shareable brief:\n${(description ?? '').trim().slice(0, maxBytes + 1)}`,
   )
   const selected = await selection(host)
   const byteLimit = Math.min(maxBytes, selected.contextWindow - 4096)
@@ -319,13 +346,8 @@ async function start(
     const skip = { started: false, task: undefined }
     if (automatic && (await tx.doc(Preferences, ROOT_CONVERSATION_ID))[mode] === false) return skip
     if ((await host.need(ConversationsApi).concludedIn(tx)).has(id)) return skip
-    const runs = await tx.doc(Runs, id)
-    const previous = runs.tasks[key]
-    if (previous !== undefined)
-      return {
-        started: false,
-        task: caller && previous.caller === caller ? previous.id : undefined,
-      }
+    const previous = await findOrClaim(tx)
+    if (previous) return previous
     const task = await tx.createTask(
       taskFor(host),
       {
@@ -333,6 +355,7 @@ async function start(
         key,
         mode,
         packet,
+        shareable: true as const,
         ...(revision ? { revision } : {}),
         ...(base ? { base } : {}),
         ...(clipped ? { truncated: true as const } : {}),
@@ -344,7 +367,7 @@ async function start(
         background: !automatic,
       },
     )
-    runs.tasks[key] = { id: task, ...(caller === undefined ? {} : { caller }) }
+    ;(await tx.doc(Runs, id)).tasks[key] = { id: task, ...(caller === undefined ? {} : { caller }) }
     return { started: true, task }
   }, context)
   if (admission.started) harness.resume()
