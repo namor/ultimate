@@ -34,7 +34,11 @@ export type Goal = {
   startedAt: number
   criteria: Criterion[]
   decisions: Decision[]
-  /** The "Goal reminder" automation that wakes @ultimate every 30 minutes while the goal is open. */
+  /** New goals never had a scheduled timer, even if an automation matches their ID. */
+  workEvents?: true
+  /** Last event before the current active interval. */
+  afterEvent?: EntryId
+  /** Legacy scheduled reminder ID, retained for upgrade cleanup. */
   reminder?: string
   /** Set while @ultimate is blocked on the user: the reminder is paused until it resumes. */
   waiting?: { reason: string; at: number }
