@@ -87,6 +87,7 @@ export async function send(
     report?: boolean
     routed?: EntryId
     echo?: boolean
+    standaloneQuestion?: true
     serveBranch?: true
   } = {},
 ) {
@@ -163,7 +164,7 @@ export async function send(
       for (const m of (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages)
         if (openQuestion(m) && m.id === input.re) m.state = input.dismiss ? 'dismissed' : 'answered'
     let re = input.re
-    if (from !== 'user' && input.reply !== false) {
+    if (from !== 'user' && input.reply !== false && !options.standaloneQuestion) {
       const log = await tx.doc(Messages, ROOT_CONVERSATION_ID)
 
       const readMessageOwedToRecipient = log.messages.find(

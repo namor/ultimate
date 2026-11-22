@@ -248,7 +248,8 @@ export function scheduler(
     phases: {
       plan: (task, runtime, context) =>
         runtime.commit(async (tx) => {
-          const a = (await tx.doc(Automations)).automations[task.input.id]
+          const state = await tx.doc(Automations)
+          const a = state.automations[task.input.id] ?? state.eventSchedules?.[task.input.id]
           if (!a?.enabled || a.scheduler !== task.id) return retiredSchedulerOnly
           const planFromNow = () =>
             nextAt(
@@ -268,7 +269,8 @@ export function scheduler(
         ),
       fire: (task, runtime, context) =>
         runtime.commit(async function atomicFireRunCheckpoint(tx) {
-          const a = (await tx.doc(Automations)).automations[task.input.id]
+          const state = await tx.doc(Automations)
+          const a = state.automations[task.input.id] ?? state.eventSchedules?.[task.input.id]
           if (!a?.enabled || a.scheduler !== task.id) return retiredSchedulerOnly
           await fire(tx, a, runtime.now())
           delete a.nextAt

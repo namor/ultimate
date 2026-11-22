@@ -70,7 +70,11 @@ import { isSlug, STANDING } from './types.ts'
 import { safeToRerun } from '../../lib/replay.ts'
 export type { Automation, Run } from './types.ts'
 export { launchHandshake } from './supervisor.ts'
-type Ledger = { next: number; automations: Record<string, Automation> }
+type Ledger = {
+  next: number
+  automations: Record<string, Automation>
+  eventSchedules?: Record<string, Automation>
+}
 export const Automations = defineDoc<Ledger>({
   kind: 'ultimate.automations',
   checkpointWhen: () => false,
@@ -740,30 +744,23 @@ function backend(host: ExtensionHost) {
   const ensureEventSchedule: AutomationsService['ensureEventSchedule'] = (key, name, recurrence) =>
     host.harness().commit(async (tx) => {
       const state = await tx.doc(Automations)
-      const existing = Object.values(state.automations).find((a) => a.key === key)
-      if (existing) {
-        if (
-          existing.prompt ||
-          existing.subscribers.length ||
-          !isDeepStrictEqual(existing.schedule, recurrence)
-        )
-          throw new Error(`Automation key already has a different target: ${key}`)
-        return existing.id
-      }
+      const recurrenceSpec = parseSchedule(recurrence)
+      const existing = Object.values(state.eventSchedules ?? {}).find((a) => a.key === key)
+      if (existing) return existing.id
       const id = `A${state.next++}`
       const now = Date.now()
-      state.automations[id] = {
+      const record: Automation = {
         id,
         key,
         name,
-        schedule: recurrence,
+        schedule: recurrenceSpec,
         enabled: true,
         createdAt: now,
         updatedAt: now,
         fires: 0,
         runs: [],
         subscribers: [],
-        nextAt: nextAt(recurrence, now),
+        nextAt: nextAt(recurrenceSpec, now),
         scheduler: await tx.createTask(
           schedule.Scheduler,
           { id },
@@ -774,6 +771,8 @@ function backend(host: ExtensionHost) {
           },
         ),
       }
+      if (state.eventSchedules) state.eventSchedules[id] = record
+      else state.eventSchedules = { [id]: record }
       return id
     }, BACKGROUND_CONTEXT)
   return { ...schedule, ...scripts, prepare, change, apply, operate, trigger, ensureEventSchedule }
@@ -874,7 +873,8 @@ export default function automations(host: ExtensionHost) {
     run: async (id) => (await api.operate({ action: 'run', id }), api.status(id)),
     status: api.status,
     read: async (tx, id) => {
-      const a = (await tx.doc(Automations)).automations[id]
+      const state = await tx.doc(Automations)
+      const a = state.automations[id] ?? state.eventSchedules?.[id]
       return a && json(a)
     },
   })

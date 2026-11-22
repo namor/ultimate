@@ -41,7 +41,7 @@ export function dailyReview(host: ExtensionHost) {
         await messages.ask(
           from,
           `Verification timed out on two separate submissions. Event references: ${refs.join(', ')}.`,
-          { kind: 'confirm', ref: '1', text: 'Review recurring verification timeouts?' },
+          { kind: 'confirm', text: 'Review recurring verification timeouts?' },
           reviewId,
           ctx,
         )

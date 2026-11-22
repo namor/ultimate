@@ -16,6 +16,7 @@ import { Metadata } from '../../../server/metadata.ts'
 import { docs as lineageDocs } from '../../lineage/server.ts'
 import { Messages, MessagesApi } from '../../messages/api.ts'
 import messages from '../../messages/server.ts'
+import { send } from '../../messages/send.ts'
 import { Workspaces, landingPending, pendingLandingCards } from '../../workspaces/workspaces.ts'
 import { CheckRan } from '../../workspaces/api.ts'
 import { ReviewState, reviewId } from '../review.ts'
@@ -55,13 +56,40 @@ it('catches up a daily proposal once, stays quiet without evidence and respects 
   const f = await fixture(true)
   f.faux.setResponses([fauxAssistantMessage('Unexpected model call')])
   let schedule = (await f.harness.snapshot(ReviewState, ROOT_CONVERSATION_ID, context))!.schedule!
+  expect(await f.ids()).not.toContain(schedule)
+  await expect(f.action('run', { id: schedule })).rejects.toThrow(/Unknown automation/)
+  await expect(f.action('subscribe', { id: schedule, to: `#${f.ultimate}` })).rejects.toThrow(
+    /Unknown automation/,
+  )
+  await expect(f.action('update', { id: schedule, prompt: 'Must not run' })).rejects.toThrow(
+    /Unknown automation/,
+  )
+  await expect(
+    f.host.need(AutomationsApi).ensureEventSchedule('invalid', 'Invalid', { kind: 'every', ms: 0 }),
+  ).rejects.toThrow('Intervals must be at least 1s')
+  const owed = await send(
+    f.host,
+    'user',
+    { to: `#${f.ultimate}`, text: 'Separate request', reply: true },
+    context,
+    { note: true },
+  )
   const status = () =>
     f.host.harness().commit(
       async (tx) => ({
         record: await f.host.need(AutomationsApi).read(tx, schedule),
         messages: (await tx.doc(Messages, ROOT_CONVERSATION_ID)).messages
           .filter((m) => m.to === 'user')
-          .map(({ id, text, state }) => ({ id, text, state })),
+          .map(({ id, text, state, re, questions }) => ({
+            id,
+            text,
+            state,
+            re,
+            questions: questions?.map(({ text: questionText, ref }) => ({
+              text: questionText,
+              ref,
+            })),
+          })),
       }),
       context,
     )
@@ -90,6 +118,12 @@ it('catches up a daily proposal once, stays quiet without evidence and respects 
   expect(proposal.text).toMatch(
     /^Verification timed out on two separate submissions\. Event references: \d+, \d+\.$/,
   )
+  expect(proposal.re).toBeUndefined()
+  expect(proposal.questions).toEqual([
+    { text: 'Review recurring verification timeouts?', ref: undefined },
+  ])
+  const unrelated = await f.host.harness().snapshot(Messages, ROOT_CONVERSATION_ID, context)
+  expect(unrelated?.messages.find(({ id }) => id === owed)?.state).toBe('delivered')
   await f.host.need(MessagesApi).dismiss(proposal.id, context)
   await f.reopen(start + 4 * day)
   await f.emitTimeout('three')

@@ -272,6 +272,7 @@ export default function messages(host: ExtensionHost) {
     ask: (from, text, question, requestId, ctx) =>
       send(host, from, { to: 'user', text, reply: true, questions: [question] }, ctx, {
         requestId,
+        standaloneQuestion: true,
       }),
     questionReceipt,
     tell: (from, input, ctx) => tell(host, from, input, ctx),
