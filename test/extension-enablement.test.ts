@@ -204,14 +204,15 @@ it('refuses a tool name another extension of the same layer already provides', a
       name: 'clash_tool', description: '${name}${version}', parameters: obj({}),
       execute: async () => ({})
     })] })`
+  const info = (name: string) => server.extensions.info().find((e) => e.name === name)
   const files: Record<string, string> = {}
   for (const name of ['aaa-clash', 'bbb-clash']) {
     const folder = join(projectRoot, '.ultimate/extensions', name)
     await mkdir(folder, { recursive: true })
     files[name] = join(folder, 'server.ts')
     await writeFile(files[name], facet(name))
+    if (name === 'aaa-clash') await until(() => !!info(name)?.server?.loadedAt)
   }
-  const info = (name: string) => server.extensions.info().find((e) => e.name === name)
   const clash = async () =>
     (await server.root.agent(context)).tools.find((tool) => tool.name === 'clash_tool')?.description
   await until(() => !!info('bbb-clash')?.server)
