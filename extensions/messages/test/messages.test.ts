@@ -51,6 +51,7 @@ import { Standing, Subagents } from '../../subagents/api.ts'
 import { landingPending, pendingLandingCards, Workspaces } from '../../workspaces/workspaces.ts'
 import { actions as conversationActions, concludedIn } from '../../conversations/server.ts'
 import { UiState } from '../../../shared/ui-state.ts'
+import { inboxItems } from '../../inbox/items.ts'
 
 const homes: string[] = []
 const hosts: OpenHost[] = []
@@ -316,6 +317,13 @@ async function fixture(
       return fauxAssistantMessage([])
     if (last.role === 'user' && text.startsWith('Message from') && text.includes('\nASK'))
       return fauxAssistantMessage([fauxText('Scope changed. Proceed?\n1. Yes\n2. No')])
+    if (
+      last.role === 'toolResult' &&
+      JSON.stringify(transcript.messages.at(-3) ?? '').includes('Verify slot handoff')
+    )
+      return fauxAssistantMessage([
+        fauxText('Accepted: branch owns the free slot. Resume normal verification.'),
+      ])
     return fauxAssistantMessage([fauxText(last.role === 'toolResult' ? 'Done' : `Answer: ${text}`)])
   }
   prepared.faux!.setResponses([route])
@@ -1508,6 +1516,13 @@ it('lets a branch ask the user directly and leaves passive question and answer n
   const after = await f.opened.root.context(context)
   expect(after.entries.filter((entry) => entry.kind === 'pi.assistant')).toHaveLength(generations)
 
+  await f.opened.close()
+  await f.open()
+  await b.settled()
+  expect(inboxItems((await f.log())!.messages).map((item) => item.key)).toEqual([
+    `message:${question.id}`,
+  ])
+
   const text = 'Q: Use the smaller change?\nA: Yes'
   await f.service().answer(question.id, text, context)
   await until(async () => (await entries('board.answered')).length === 1)
@@ -1609,6 +1624,14 @@ it("leaves a branch's final answer as a note while its work is under way", async
     undefined,
   ])
   expect(view.entries.filter((e) => e.id > note!.id && e.kind === 'pi.assistant')).toHaveLength(0)
+  await f.opened.close()
+  await f.open()
+  await b.settled()
+  const reopened = await f.opened.root.context(context)
+  expect(reopened.entries.filter((e) => e.id > note!.id && e.kind === 'pi.assistant')).toHaveLength(
+    0,
+  )
+  expect(inboxItems((await f.log())!.messages)).toEqual([])
 })
 it('leaves the final answer of a branch its landing concluded as a note, since the landing woke the starter', async () => {
   const f = await fixture()
@@ -2034,6 +2057,33 @@ it("routes a branch's answer to its starter's reply, so the starter hears how it
     ['Done', undefined],
     [expect.stringContaining('Reply from'), true],
   ])
+})
+it('wakes an approved branch once when its slot handoff is accepted after reopen', async () => {
+  const f = await fixture()
+  const b = await branched(f, 'Approved: deliver through normal verification')
+  const text =
+    'Verify slot handoff: fixture work stopped, no source dependency. Confirm who takes the slot.\nHOLD'
+  const handoff = await sendMessage(
+    f.host,
+    b.id as ConversationId,
+    { to: '#1', text, reply: true },
+    context,
+  )
+  await until(f.holding)
+  expect((await placed(f, 1, handoff))?.input).toBe(true)
+
+  await f.opened.close()
+  await f.open()
+  f.hold.release()
+  await b.settled()
+  const accepted = 'Accepted: branch owns the free slot. Resume normal verification.'
+  expect((await f.log())!.messages.filter((m) => m.re === handoff)).toMatchObject([
+    { to: b.id, text: accepted },
+  ])
+  expect(
+    f.observed.filter((input) => input.startsWith('Reply from') && input.includes(accepted)),
+  ).toHaveLength(1)
+  expect(inboxItems((await f.log())!.messages)).toEqual([])
 })
 it('recovers once after input placement, before the recipient settles', async () => {
   const f = await fixture()
