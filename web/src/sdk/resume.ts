@@ -19,6 +19,7 @@ export const covered = () => covering
 
 function copyViewportWithPlaceholders(node: Node): Node {
   if (!(node instanceof HTMLElement)) return node.cloneNode(true)
+  if (node.dataset.resumeExclude !== undefined) return document.createTextNode('')
   const box = node.getBoundingClientRect()
   if (box.bottom < 0 || box.top > innerHeight || box.right < 0 || box.left > innerWidth) {
     const { margin, position } = getComputedStyle(node)
