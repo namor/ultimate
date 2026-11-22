@@ -276,6 +276,15 @@ async function fixture(
       })
     if (last.role === 'user' && (text === 'HOLD' || text.includes('\nHOLD')))
       return fauxAssistantMessage([fauxToolCall('hold', {})], { stopReason: 'toolUse' })
+    if (
+      last.role === 'user' &&
+      text.startsWith('Reply from') &&
+      text.includes('Resume normal verification.')
+    )
+      return fauxAssistantMessage(
+        [fauxToolCall('message', { to: '#1', text: 'Ran the approved step', reply: false })],
+        { stopReason: 'toolUse' },
+      )
     // A branch answers its starter's request by message and keeps working in the same round, as with a submit.
     if (last.role === 'user' && text.startsWith('Message from') && text.includes('REPLYTHENWORK'))
       return fauxAssistantMessage(
@@ -1631,6 +1640,10 @@ it("leaves a branch's final answer as a note while its work is under way", async
   expect(reopened.entries.filter((e) => e.id > note!.id && e.kind === 'pi.assistant')).toHaveLength(
     0,
   )
+  const held = (await f.opened.harness.conversation(b.id as ConversationId, context))!
+  expect((await held.context(context)).entries.filter((e) => e.id > note!.id && e.input)).toEqual(
+    [],
+  )
   expect(inboxItems((await f.log())!.messages)).toEqual([])
 })
 it('leaves the final answer of a branch its landing concluded as a note, since the landing woke the starter', async () => {
@@ -2063,6 +2076,7 @@ it('wakes an approved branch once when its slot handoff is accepted after reopen
   const b = await branched(f, 'Approved: deliver through normal verification')
   const text =
     'Verify slot handoff: fixture work stopped, no source dependency. Confirm who takes the slot.\nHOLD'
+  const inputCount = (await b.branch.context(context)).entries.filter((e) => e.input).length
   const handoff = await sendMessage(
     f.host,
     b.id as ConversationId,
@@ -2080,9 +2094,10 @@ it('wakes an approved branch once when its slot handoff is accepted after reopen
   expect((await f.log())!.messages.filter((m) => m.re === handoff)).toMatchObject([
     { to: b.id, text: accepted },
   ])
-  expect(
-    f.observed.filter((input) => input.startsWith('Reply from') && input.includes(accepted)),
-  ).toHaveLength(1)
+  const resumed = (await f.opened.harness.conversation(b.id as ConversationId, context))!
+  const inputs = (await resumed.context(context)).entries.filter((e) => e.input)
+  expect(inputs.slice(inputCount).map((e) => e.kind)).toEqual(['board.reply'])
+  expect((await b.from()).filter((m) => m.text === 'Ran the approved step')).toHaveLength(1)
   expect(inboxItems((await f.log())!.messages)).toEqual([])
 })
 it('recovers once after input placement, before the recipient settles', async () => {
