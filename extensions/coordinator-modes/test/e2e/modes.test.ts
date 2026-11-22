@@ -434,6 +434,54 @@ test('one result for each automatic checkpoint on the exact candidate; repeat st
       manualGate.resolve()
     }
 
+    const late = await newCoordinator()
+    const solGate = Promise.withResolvers<void>()
+    let solWaiting = false
+    let nextSawAdvice = false
+    let paid = 0
+    const lateRoute = ((request, _options, _state, model) => {
+      faux.appendResponses([lateRoute])
+      if (model.id === 'astra') {
+        paid++
+        return fauxAssistantMessage('Advice from the already finished manual request')
+      }
+      const sent = JSON.stringify(request.messages)
+      if (sent.includes('Advice from the already finished manual request')) {
+        nextSawAdvice = true
+        return fauxAssistantMessage('Continued after using the advice')
+      }
+      if (sent.includes('Hold Sol before the checkpoint')) {
+        solWaiting = true
+        return solGate.promise.then(() => ask('plan'))
+      }
+      return fauxAssistantMessage('Noted')
+    }) satisfies Parameters<typeof faux.setResponses>[0][number]
+    faux.setResponses([lateRoute])
+    const lateActor = (await server.harness.conversation(late, ctx))!
+    const original = await lateActor.submit(
+      { type: 'input', content: 'Hold Sol before the checkpoint' },
+      ctx,
+    )
+    const manualDelivery = () =>
+      server.harness.commit((tx) => tx.submissionByRequest(late, 'coordinator-modes:plan'), ctx)
+    try {
+      await until(() => solWaiting)
+      expect((await requestMode('plan', late)).status).toBe(200)
+      await until(async () => (await manualDelivery())?.status === 'queued')
+      solGate.resolve()
+      await original.wait(ctx)
+      await lateActor.waitForIdle(ctx)
+      expect(nextSawAdvice).toBe(true)
+      expect(paid).toBe(1)
+      expect(await manualDelivery()).toMatchObject({
+        status: 'unanswered',
+        reason: 'consumed_by_checkpoint',
+      })
+      expect(await entries(late)).toHaveLength(1)
+    } finally {
+      solGate.resolve()
+    }
+
     expect((await set('review', true)).status).toBe(200)
     const replayPrompt = 'Prove automatic Review survives restart'
     const priorHead = runGit(checkout, 'rev-parse', 'HEAD')

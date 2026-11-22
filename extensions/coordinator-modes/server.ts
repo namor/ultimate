@@ -6,6 +6,7 @@ import {
   defineExtension,
   defineTask,
   defineTool,
+  InboxDoc,
   ROOT_CONVERSATION_ID,
   section,
 } from '@earendil-works/pi-durable'
@@ -326,6 +327,26 @@ async function start(
     if (caller !== undefined && task.caller === undefined) {
       const actual = await tx.task(task.id)
       if (actual && actual.state.status !== 'terminal') task.caller = caller
+      else if (
+        actual?.state.status === 'terminal' &&
+        actual.state.outcome.status === 'completed' &&
+        actual.state.outcome.result
+      ) {
+        const submission = await tx.submissionByRequest(id, `coordinator-modes:${key}`)
+        if (submission?.type === 'input' && submission.status === 'queued') {
+          const inbox = await tx.doc(InboxDoc, id)
+          const queued = inbox.items.findIndex((item) => item.id === submission.id)
+          if (queued >= 0) {
+            inbox.items.splice(queued, 1)
+            task.caller = caller
+            tx.settleSubmission(submission.id, {
+              status: 'unanswered',
+              reason: 'consumed_by_checkpoint',
+            })
+            await tx.appendEntry(Result, id, { data: actual.state.outcome.result as ModeResult })
+          }
+        }
+      }
     }
     return {
       started: false,
