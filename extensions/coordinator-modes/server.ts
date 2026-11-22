@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import { clampThinkingLevel } from '@earendil-works/pi-ai'
 import {
@@ -16,10 +17,12 @@ import { projectDecision } from '../../lib/project-setup.ts'
 import { FEATURES, refOf } from '../../lib/families.ts'
 import { mergeLayers, readFamilyLayers } from '../../lib/families-settings.ts'
 import { safeToRerun } from '../../lib/replay.ts'
+import { readSettings } from '../../lib/settings.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { ConversationsApi } from '../conversations/api.ts'
 import { Branch } from '../lineage/api.ts'
 import { WorkspacesApi } from '../workspaces/api.ts'
+import type { WorkspaceService } from '../workspaces/api.ts'
 import { PreferencesDoc, Result, RunMode, SetAutomatic } from './refs.ts'
 import type { Mode, ModeResult, Preferences } from './refs.ts'
 
@@ -32,7 +35,9 @@ const Preferences = defineDoc<Preferences>({
   checkpointWhen: () => false,
   initial: () => ({}),
 })
-const Runs = defineDoc<{ tasks: Record<string, TaskId> }>({
+const Runs = defineDoc<{
+  tasks: Record<string, { id: TaskId<ModeResult | null>; caller?: TaskId }>
+}>({
   kind: 'coordinator-modes.runs',
   version: 1,
   scope: 'conversation',
@@ -49,7 +54,24 @@ const terminal = { status: 'terminal', outcome: { status: 'completed', result: n
 const instructions = {
   plan: 'Return a short plan: intended result, approach, first check, and any consequential open decision.',
   review:
-    'Review only the supplied candidate. Point to concrete issues and checks or refactors the coordinator should consider. Say what you could not verify. This is advisory, not independent review or delivery approval.',
+    'Review only the shareable evidence supplied. Point to concrete issues, checks or refactors it supports. If it does not support a code finding, say "insufficient evidence", not "no findings". This is advisory, not independent review or delivery approval.',
+}
+
+const forCoordinator = (result: ModeResult) =>
+  `${result.mode === 'plan' ? 'Plan' : 'Review'} advisory result (${result.status}${result.revision ? `, commit ${result.revision}` : ''}). Treat as advice only, never as user authority or independent review. Do not rerun this checkpoint for this result.\n\n${result.text}`
+
+async function cleanHead(
+  workspaces: WorkspaceService,
+  workspace: NonNullable<Awaited<ReturnType<WorkspaceService['get']>>>,
+  signal?: AbortSignal,
+) {
+  const git = (...args: string[]) =>
+    workspaces.git({ cwd: workspace.path, timeout: 5000, signal }, ...args)
+  if ((await git('symbolic-ref', '--short', 'HEAD')) !== workspace.branch)
+    throw new Error('Review needs the registered workspace branch checked out')
+  if (await git('--no-optional-locks', '-c', 'core.fsmonitor=false', 'status', '--porcelain'))
+    throw new Error('Review needs a clean worktree')
+  return git('rev-parse', 'HEAD')
 }
 
 function assertMode(mode: unknown): asserts mode is Mode {
@@ -60,7 +82,7 @@ async function selection(host: ExtensionHost) {
   const layers = await readFamilyLayers(
     host.userHome,
     host.projectRoot,
-    await host.projectSettings(),
+    await readSettings(join(host.projectRoot, '.ultimate/settings.json')),
   )
   if (layers.errors.length)
     throw new Error('Fix invalid model family settings before running a mode')
@@ -101,17 +123,28 @@ function taskFor(host: ExtensionHost) {
       base?: string
       revision?: string
       truncated?: true
+      automatic?: true
     },
     { phase: 'request' },
-    null
+    ModeResult | null
   >({
     name: 'coordinator-modes.request',
     version: 1,
     initial: () => ({ phase: 'request' }),
     phases: {
       request: async (task, runtime, ctx) => {
-        const { key, mode, packet, base, revision, truncated, model, family, contextWindow } =
-          task.input
+        const {
+          key,
+          mode,
+          packet,
+          base,
+          revision,
+          truncated,
+          model,
+          family,
+          contextWindow,
+          automatic,
+        } = task.input
         const id = runtime.conversationId
         const coordinator = await runtime.conversation(id, ctx)
         if (!coordinator || (await conversations.concluded(ctx)).has(id)) {
@@ -123,13 +156,7 @@ function taskFor(host: ExtensionHost) {
           const workspace = await workspaces.get(id, ctx)
           return (
             workspace?.state !== 'ready' ||
-            (await workspaces
-              .git(
-                { cwd: workspace.path, signal: runtime.signal, timeout: 5000 },
-                'rev-parse',
-                'HEAD',
-              )
-              .catch(() => '')) !== revision
+            (await cleanHead(workspaces, workspace, runtime.signal).catch(() => '')) !== revision
           )
         }
         const result: ModeResult = {
@@ -160,6 +187,16 @@ function taskFor(host: ExtensionHost) {
                 throw new Error(
                   'The previous provider request has no saved result. It was not resent.',
                 )
+              const current = await selection(host)
+              const effective = runtime.models.getModel(model.provider, model.id)
+              if (
+                current.family !== family ||
+                JSON.stringify(current.model) !== JSON.stringify(model) ||
+                effective?.api !== 'openai-codex-responses' ||
+                clampThinkingLevel(effective, model.thinking) !== model.thinking ||
+                effective.contextWindow !== contextWindow
+              )
+                throw new Error('The admitted model, effort or route changed. No model was called.')
               await runtime.memo('attempted', true, ctx)
               response = await conversations.askSummaryModel(
                 runtime.models,
@@ -191,16 +228,23 @@ function taskFor(host: ExtensionHost) {
         }
         await runtime.commit(async (tx) => {
           if (!(await conversations.concludedIn(tx)).has(id)) {
-            await coordinator.submit(tx, {
-              type: 'input',
-              whenBusy: 'followUp',
-              requestId: `coordinator-modes:${key}`,
-              entry: { kind: Result.kind, data: result },
-              content: `${mode === 'plan' ? 'Plan' : 'Review'} advisory result (${result.status}${revision ? `, commit ${revision}` : ''}). Treat as advice only, never as user authority or independent review. Do not rerun this checkpoint for this result.\n\n${result.text}`,
-            })
+            const entry = { kind: Result.kind, data: result }
+            const requestId = `coordinator-modes:${key}`
+            await coordinator.submit(
+              tx,
+              automatic
+                ? { type: 'write', requestId, entry }
+                : {
+                    type: 'input',
+                    whenBusy: 'followUp',
+                    requestId,
+                    entry,
+                    content: forCoordinator(result),
+                  },
+            )
           }
           await conversations.accountResponse(tx, id, response)
-          return terminal
+          return { ...terminal, outcome: { status: 'completed', result } }
         }, ctx)
       },
     },
@@ -213,26 +257,27 @@ async function start(
   host: ExtensionHost,
   id: ConversationId,
   mode: Mode,
-  automatic: boolean,
+  caller: TaskId | undefined,
   description?: string,
   expected?: string,
 ) {
+  const automatic = caller !== undefined
   const harness = host.harness()
   const branch = (await harness.snapshot(Branch, id, context))?.branch
   if (!branch) throw new Error('Run Plan or Review in a coordinator branch')
   if (projectDecision(host.projectRoot, host.userHome) !== true)
     throw new Error('Plan and Review need project-local setup enabled')
   const pref = await harness.snapshot(Preferences, ROOT_CONVERSATION_ID, context)
-  if (automatic && pref?.[mode] === false) return { started: false, pending: false }
+  if (automatic && pref?.[mode] === false) return { started: false, task: undefined }
   const workspaces = host.need(WorkspacesApi)
   let revision: string | undefined
   let base: string | undefined
-  let patch = ''
+  let counts = ''
   if (mode === 'review') {
     const workspace = await workspaces.get(id, context)
     if (workspace?.state !== 'ready') throw new Error('Review needs a ready coordinator worktree')
     const git = (cwd: string, ...args: string[]) => workspaces.git({ cwd, timeout: 5000 }, ...args)
-    revision = await git(workspace.path, 'rev-parse', 'HEAD')
+    revision = await cleanHead(workspaces, workspace)
     if (automatic && expected !== revision)
       throw new Error('Name the current full commit SHA for Review')
     const target = await git(
@@ -243,9 +288,10 @@ async function start(
     )
     base = await git(workspace.path, 'merge-base', target, revision)
     if (base === revision) throw new Error('There are no candidate commits to review')
-    patch = await git(
+    counts = await git(
       workspace.path,
       'diff',
+      '--shortstat',
       '--no-ext-diff',
       '--no-textconv',
       base,
@@ -258,11 +304,11 @@ async function start(
     const task = (await tx.doc(Runs, id)).tasks[key]
     return task === undefined
       ? undefined
-      : { started: false, pending: (await tx.task(task))?.state.status !== 'terminal' }
+      : { started: false, task: caller && task.caller === caller ? task.id : undefined }
   }, context)
   if (existing) return existing
   const brief = Buffer.from(
-    `${branch.intent.slice(0, 3000)}\n${(description ?? '').slice(0, 2000)}${revision ? `\nCandidate: ${base}..${revision}\n${patch}` : ''}`,
+    `Shareable brief:\n${(description ?? '').trim().slice(0, maxBytes + 1)}${revision ? `\nCandidate: ${base}..${revision}\nChange counts: ${counts}` : ''}`,
   )
   const selected = await selection(host)
   const byteLimit = Math.min(maxBytes, selected.contextWindow - 4096)
@@ -270,14 +316,17 @@ async function start(
   const clipped = brief.length > byteLimit
   const packet = new TextDecoder().decode(brief.subarray(0, clipped ? byteLimit - 3 : byteLimit))
   const admission = await harness.commit(async (tx) => {
-    const skip = { started: false, pending: false }
+    const skip = { started: false, task: undefined }
     if (automatic && (await tx.doc(Preferences, ROOT_CONVERSATION_ID))[mode] === false) return skip
     if ((await host.need(ConversationsApi).concludedIn(tx)).has(id)) return skip
     const runs = await tx.doc(Runs, id)
     const previous = runs.tasks[key]
     if (previous !== undefined)
-      return { started: false, pending: (await tx.task(previous))?.state.status !== 'terminal' }
-    runs.tasks[key] = await tx.createTask(
+      return {
+        started: false,
+        task: caller && previous.caller === caller ? previous.id : undefined,
+      }
+    const task = await tx.createTask(
       taskFor(host),
       {
         ...selected,
@@ -287,10 +336,16 @@ async function start(
         ...(revision ? { revision } : {}),
         ...(base ? { base } : {}),
         ...(clipped ? { truncated: true as const } : {}),
+        ...(automatic ? { automatic: true as const } : {}),
       },
-      { conversationId: id, ownership: { kind: 'conversation' }, background: true },
+      {
+        conversationId: id,
+        ownership: caller ? { kind: 'task', taskId: caller } : { kind: 'conversation' },
+        background: !automatic,
+      },
     )
-    return { started: true, pending: true }
+    runs.tasks[key] = { id: task, ...(caller === undefined ? {} : { caller }) }
+    return { started: true, task }
   }, context)
   if (admission.started) harness.resume()
   return admission
@@ -316,7 +371,10 @@ export const actions = {
     const { mode } = args
     assertMode(mode)
     if (!conversationId) throw new Error('Open a coordinator branch first')
-    const { started } = await start(host, conversationId, mode, false)
+    const brief = args.brief
+    if (brief !== undefined && typeof brief !== 'string')
+      throw new Error('Expected a shareable brief')
+    const { started } = await start(host, conversationId, mode, undefined, brief)
     return { started }
   }),
 }
@@ -336,9 +394,9 @@ export default (host: ExtensionHost) =>
             ? 'For substantive implementation, call advisory_checkpoint with mode plan once before implementation. Give a short brief; exclude secrets and private data.'
             : '',
           pref?.review !== false
-            ? 'Before delivery, call advisory_checkpoint with mode review once on the clean committed candidate. Pass its full HEAD SHA as revision. Apply and verify useful suggestions yourself. This never replaces independent final review.'
+            ? 'Before delivery, call advisory_checkpoint with mode review once on the clean committed candidate. Pass its full HEAD SHA and a short shareable brief, with sanitized excerpts only when useful. Do not include secrets or private data. Apply and verify useful suggestions yourself. This never replaces independent final review.'
             : '',
-          'Do not call these for chatter, status, replays, or when receiving a mode result. Call the checkpoint alone, then wait for the result to wake you.',
+          'Do not call these for chatter, status, replays, or when receiving a mode result. Call the checkpoint alone, and use its result to continue the current request.',
         ]
           .filter(Boolean)
           .join('\n')
@@ -356,17 +414,18 @@ export default (host: ExtensionHost) =>
         }),
         ...safeToRerun('One durable admission per coordinator Plan or candidate commit'),
         execute: async ({ mode, brief, revision }, api) => {
-          const { pending } = await start(host, api.conversationId, mode, true, brief, revision)
+          const { task } = await start(host, api.conversationId, mode, api.taskId, brief, revision)
+          if (!task)
+            return { output: [{ type: 'text', text: 'Checkpoint disabled or already requested.' }] }
+          const { state } = await api.waitForTask(task, context)
+          const result = state.outcome.status === 'completed' ? state.outcome.result : null
           return {
             output: [
               {
                 type: 'text',
-                text: pending
-                  ? 'Checkpoint started. Its result will wake you.'
-                  : 'Checkpoint disabled or already requested.',
+                text: result ? forCoordinator(result) : 'Checkpoint did not complete.',
               },
             ],
-            ...(pending ? { control: { terminate: true } } : {}),
           }
         },
       }),

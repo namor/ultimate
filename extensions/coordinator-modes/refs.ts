@@ -12,7 +12,10 @@ export const SetAutomatic = actionRef<{ mode: Mode; enabled: boolean }, null>(
   'setAutomatic',
 )
 /** Request a checkpoint in this coordinator branch even if automatic mode is off. User-only. */
-export const RunMode = actionRef<{ mode: Mode }, { started: boolean }>('coordinator-modes', 'run')
+export const RunMode = actionRef<{ mode: Mode; brief?: string }, { started: boolean }>(
+  'coordinator-modes',
+  'run',
+)
 /** One machine-authored advisory result and its request and usage metadata. */
 export const Result = defineEntry<ModeResult>('coordinator-modes.result')
 export type ModeResult = {

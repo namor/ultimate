@@ -1,4 +1,5 @@
 import { GitForkIcon } from 'lucide-react'
+import { useState } from 'react'
 import { Card, ROOT, api, defineWebExtension, renderEntry, useConversation, useDocOf } from '@/sdk'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { PreferencesDoc, Result, RunMode, SetAutomatic } from './refs.ts'
@@ -10,6 +11,7 @@ const modeTitle = (mode: Mode) => (mode === 'plan' ? 'Plan' : 'Review')
 function Controls() {
   const { id } = useConversation()
   const preferences = useDocOf(ROOT, PreferencesDoc)
+  const [brief, setBrief] = useState('')
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -24,6 +26,19 @@ function Controls() {
       </PopoverTrigger>
       <PopoverContent className="w-64 space-y-2 p-3" side="top" align="start">
         <div className="section-label">Coordinator checkpoints</div>
+        <label className="block text-xs">
+          Brief for a manual run
+          <textarea
+            className="mt-1 w-full rounded border border-border bg-background p-1.5"
+            rows={2}
+            value={brief}
+            maxLength={3000}
+            onChange={(event) => setBrief(event.currentTarget.value)}
+          />
+          <span className="text-muted-foreground">
+            Sent to the selected model. Exclude private data.
+          </span>
+        </label>
         {modes.map((mode) => {
           const title = modeTitle(mode)
           return (
@@ -41,7 +56,7 @@ function Controls() {
               <button
                 type="button"
                 className="rounded px-2 py-1 hover:bg-accent"
-                onClick={() => api.action(RunMode, { mode }, { conversationId: id })}
+                onClick={() => api.action(RunMode, { mode, brief }, { conversationId: id })}
               >
                 Run {title}
               </button>

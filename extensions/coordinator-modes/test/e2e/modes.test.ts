@@ -4,16 +4,18 @@ import {
   fauxProvider,
   fauxToolCall,
 } from '@earendil-works/pi-ai/providers/faux'
-import { AgentDoc } from '@earendil-works/pi-durable'
+import { AgentDoc, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
+import type { ConversationId } from '@earendil-works/pi-durable'
 import { execFileSync } from 'node:child_process'
 import { mkdir, writeFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
 import { Branch } from '../../../lineage/api.ts'
+import { Messages } from '../../../messages/api.ts'
 import { Workspaces } from '../../../workspaces/workspaces.ts'
 import { Result } from '../../refs.ts'
 import type { ModeResult } from '../../refs.ts'
-import { fauxServer, post, sourceCopy, temp, until } from '../../../../test/helpers.ts'
+import { fauxServer, held, post, sourceCopy, temp, until } from '../../../../test/helpers.ts'
 
 const runGit = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
@@ -39,6 +41,11 @@ test('one result for each automatic checkpoint on the exact candidate; repeat st
   )
   await mkdir(projectRoot)
   runGit(projectRoot, 'init', '-b', 'main')
+  await writeFile(
+    join(projectRoot, 'removed.txt'),
+    'deleted-private-sentinel\n' + 'x'.repeat(1024 * 1024) + '\n',
+  )
+  runGit(projectRoot, 'add', 'removed.txt')
   runGit(
     projectRoot,
     '-c',
@@ -53,6 +60,7 @@ test('one result for each automatic checkpoint on the exact candidate; repeat st
   const base = runGit(projectRoot, 'rev-parse', 'HEAD')
   runGit(projectRoot, 'worktree', 'add', '-b', 'fixture', checkout)
   await writeFile(join(checkout, 'candidate.txt'), 'candidate-evidence\n')
+  runGit(checkout, 'rm', 'removed.txt')
   runGit(checkout, 'add', 'candidate.txt')
   runGit(
     checkout,
@@ -81,7 +89,7 @@ test('one result for each automatic checkpoint on the exact candidate; repeat st
         ;(await tx.doc(Branch, coordinator)).branch = {
           from: coordinator,
           at: entry.id,
-          intent: 'Change a text fixture',
+          intent: 'private-branch-intent-sentinel',
         }
         ;(await tx.doc(Workspaces, 1 as typeof coordinator)).items[coordinator] = {
           path: checkout,
@@ -179,7 +187,12 @@ test('one result for each automatic checkpoint on the exact candidate; repeat st
       })),
     )
     for (const call of encountered) expect(call.text).not.toContain('inherited-history-sentinel')
-    expect(encountered[1].text).toContain('candidate-evidence')
+    for (const call of encountered)
+      expect(call.text).not.toContain('private-branch-intent-sentinel')
+    expect(encountered[1].text).not.toContain('candidate-evidence')
+    expect(encountered[1].text).not.toContain('deleted-private-sentinel')
+    expect(encountered[1].text).not.toContain('removed.txt')
+    expect(encountered[1].text).toContain('2 files changed')
     const calls = faux.state.callCount
     for (const mode of ['plan', 'review']) {
       const repeated = await post(server, '/api/extensions/coordinator-modes/actions/run', {
@@ -266,6 +279,99 @@ test('one result for each automatic checkpoint on the exact candidate; repeat st
       ctx,
     )
     expect(keyed).toMatchObject({ conversationId: restored, type: 'input', status: 'done' })
+
+    expect((await set('plan', true)).status).toBe(200)
+    const standing = await post(server, '/api/extensions/subagents/actions/standing', {
+      args: { name: 'ultimate' },
+    })
+    expect(standing.status).toBe(200)
+    const starter = standing.data.result as ConversationId
+    const requests = async () =>
+      (await server.harness.snapshot(Messages, ROOT_CONVERSATION_ID, ctx))!
+    const gate = Promise.withResolvers<void>()
+    let waiting = false
+    const prompt = 'Prove the real branch request is preserved'
+    const done = 'Completed the real branch request after receiving Plan.'
+    const route = ((request, _options, _state, model) => {
+      faux.appendResponses([route])
+      const last = request.messages.at(-1)
+      const body = JSON.stringify(last?.content)
+      if (model.id === 'astra') {
+        waiting = true
+        return gate.promise.then(() => fauxAssistantMessage('Advisory Plan'))
+      }
+      if (last?.role === 'user' && body.includes('start-fixture-branch'))
+        return fauxAssistantMessage(fauxToolCall('branch', { prompt, isolated: false }), {
+          stopReason: 'toolUse',
+        })
+      if (last?.role === 'user' && body.includes(prompt)) return ask('plan')
+      if (last?.role === 'toolResult' && last.toolName === 'advisory_checkpoint')
+        return fauxAssistantMessage(done)
+      return fauxAssistantMessage('Noted')
+    }) satisfies Parameters<typeof faux.setResponses>[0][number]
+    faux.setResponses([route])
+    await (await server.harness.conversation(starter, ctx))!.submit(
+      { type: 'input', content: 'start-fixture-branch' },
+      ctx,
+    )
+    try {
+      await until(() => waiting, 8000)
+      const request = (await requests()).messages.find(
+        (msg) => msg.text === prompt && msg.from === starter,
+      )!
+      expect(request.reply).toBe(true)
+      expect((await requests()).messages.filter((msg) => msg.re === request.id)).toEqual([])
+      gate.resolve()
+      await until(async () => (await requests()).messages.some((msg) => msg.re === request.id))
+      expect((await requests()).messages.filter((msg) => msg.re === request.id)).toEqual([
+        expect.objectContaining({ text: done, to: starter }),
+      ])
+    } finally {
+      gate.resolve()
+    }
+
+    const rejected = await newCoordinator()
+    const requestMode = (mode: 'plan' | 'review', coordinator: ConversationId) =>
+      post(server, '/api/extensions/coordinator-modes/actions/run', {
+        args: { mode },
+        conversationId: coordinator,
+      })
+    await writeFile(join(checkout, 'not-committed.txt'), 'unsaved')
+    expect((await requestMode('review', rejected)).data).toMatchObject({
+      error: expect.stringContaining('clean worktree'),
+    })
+    await rm(join(checkout, 'not-committed.txt'))
+    await mkdir(join(projectRoot, '.ultimate'), { recursive: true })
+    await writeFile(join(projectRoot, '.ultimate/settings.json'), '{')
+    expect((await requestMode('plan', rejected)).status).toBe(500)
+    await rm(join(projectRoot, '.ultimate/settings.json'))
+
+    let providerReceived = false
+    faux.setResponses([
+      (request, options, state, model) => {
+        providerReceived = true
+        return held(request, options, state, model)
+      },
+    ])
+    expect((await requestMode('plan', rejected)).status).toBe(200)
+    await until(() => providerReceived)
+    await server.close()
+    const reopenedModels: string[] = []
+    const afterRestart = ((_request, _options, _state, model) => {
+      reopenedModels.push(model.id)
+      faux.appendResponses([afterRestart])
+      return fauxAssistantMessage('Noted interruption')
+    }) satisfies Parameters<typeof faux.setResponses>[0][number]
+    faux.setResponses([afterRestart])
+    server = await open()
+    await until(async () => (await entries(rejected)).length === 1)
+    await (await server.harness.conversation(rejected, ctx))!.waitForIdle(ctx)
+    expect((await entries(rejected))[0].data).toMatchObject({
+      status: 'failed',
+      text: expect.stringContaining('was not resent'),
+    })
+    expect(reopenedModels).toContain('sol')
+    expect(reopenedModels).not.toContain('astra')
   } finally {
     await server.close()
     await rm(home, { recursive: true, force: true })
