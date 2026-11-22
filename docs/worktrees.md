@@ -1,10 +1,14 @@
 ## Working in a git worktree
 
-Run `git worktree add ../ultimate-preview -b preview`, then `cd ../ultimate-preview`, `pnpm install`, and `pnpm start --no-open` to run that worktree's code. Each project path gets its own default state home (a hash of the path), storage and supervisor locks, first free port from 4747, and Vite cache inside its home; explicit home or port overrides must remain distinct. The global `ultimate` command runs the clone it was linked from, so use `pnpm start` inside the worktree instead.
+### Standalone preview
+
+Outside an Ultimate-managed workspace, run `git worktree add ../ultimate-preview -b preview`, then `cd ../ultimate-preview`, `pnpm install`, and `pnpm start --no-open` to run that worktree's code. Each project path gets its own default state home (a hash of the path), storage and supervisor locks, first free port from 4747, and Vite cache inside its home; explicit home or port overrides must remain distinct. The global `ultimate` command runs the clone it was linked from, so use `pnpm start` inside the worktree instead.
+
+### Managed subagent worktrees
 
 Start a subagent with `isolate: "worktree"` (the worker default) to give its tools a separate checkout; verify its commits, then `land` them or `discard` the checkout while keeping its branch. For Ultimate itself, `instance start` with `subagent: <child id>` previews that child's code on a free port with a separate temporary home; stop the preview afterwards.
 
-### Main-agent final integration
+### Managed workspace integration
 
 Coordinator branches started by @ultimate are isolated in their own worktrees by default: under `<home>/worktrees`, or
 where the project's `isolates.worktree.path` says, made by its `add` and `remove` commands when set
@@ -12,17 +16,19 @@ where the project's `isolates.worktree.path` says, made by its `add` and `remove
 `workspace status` shows its tip and the original checkout's tip.
 Keep the managed workspace's allocated, registered branch name shown there: submission refuses a checkout on a
 different branch. Do not check out a fresh named branch to update the baseline or reconcile target advancement.
-Leave ordinary target advancement to the lander; any separately authorized reconciliation must preserve history
-within the allocated branch. If the checkout already differs from the registered branch, stop and report it for a
-separately authorized, non-destructive repair, rather than renaming branches or rewriting the registration yourself.
-This constraint applies to managed workspaces, not the manual worktree recipe above, and grants no new merge authority.
+The lander handles ordinary target advancement. Do not merge the target branch into your managed workspace before
+`workspace submit`, even if the target has moved. You can inspect the incoming commits without changing your branch.
+Any separately authorized reconciliation must preserve history on the allocated branch. If the checked-out branch
+already differs from the registered branch, stop and report it for a separately authorized, non-destructive repair.
+Do not rename branches or rewrite the registration yourself.
 
 Read worker reports and diffs; rerun checks only for missing or thin evidence, reported failures, changes crossing
 workers, `server/` or `shared/` changes, or surprises in the diff, then land and call `workspace submit`.
 The lander is code, not a model. With [personal PR delivery](../extensions/workspaces/README.md#personal-pr-delivery),
 it runs the explicit serial checks on an immutable candidate before publishing a branch, reconciles a PR, waits for successful
 required GitHub checks and the applicable user approvals (the card, or @ultimate on the user's recorded instruction), then
-merges through GitHub before advancing local main.
+merges through GitHub before advancing local main. If integration changes the reviewed tree, independently review the
+candidate the lander reports. Resubmit the same workspace tip with `reviewedTree`, `risk`, and `review`.
 Here `pnpm verify` covers frozen installs, lint/types and all identified suites with a clean environment.
 Without that opt-in, the legacy path runs only its effective `lander.checks`, retries a failing check once, then fast-forwards
 locally and optionally pushes to `lander.push`. Tracked project settings do not apply when project trust is declined;
@@ -45,9 +51,15 @@ permission applies only where separately authorized, whether public or private, 
 uses its frozen personal delivery configuration or the effective legacy settings; never assume a tracked `lander.push` applies.
 Subagents commit and report; only the top-level agent submits.
 
-Use normal, non-force pushes only. Remote advancement or a non-fast-forward rejection is normal: fetch, inspect the
-incoming log and diff, and merge non-destructively in an isolated workspace, preserving both histories. Rerun checks,
-then submit through the configured path without bypassing its gates. Stop and report ambiguous conflicts,
-failing checks, security concerns, or a situation requiring a force push or history rewrite—not ordinary remote
-advancement. Do not push secrets or unrelated unverified work.
-This standing permission does not authorize releases, publishing, deployments, or GitHub issue/PR changes.
+Use normal, non-force pushes only. In a managed workspace, follow [Managed workspace integration](#managed-workspace-integration)
+when the remote advances or a push is rejected. Do not use a standalone checkout to bypass the lander.
+Do not push secrets or unrelated unverified work. This standing permission does not authorize releases, publishing,
+deployments, or GitHub issue/PR changes.
+
+### Reconciling remote advancement in a standalone worktree
+
+Use this only for separately authorized manual integration outside Ultimate-managed workspaces. If the remote
+advances or rejects a non-fast-forward push, fetch the intended ref and inspect the incoming log and diff. Merge
+in the standalone worktree without rewriting either history, then rerun checks. Stop and report ambiguous conflicts,
+failing checks, security concerns, or any need for a force push or history rewrite. This recipe grants no push or
+merge authority.
