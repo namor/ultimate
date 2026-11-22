@@ -1,5 +1,5 @@
 import { fauxProvider } from '@earendil-works/pi-ai/providers/faux'
-import { mkdir, rm, writeFile, symlink } from 'node:fs/promises'
+import { appendFile, mkdir, rm, writeFile, symlink } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import {
@@ -135,7 +135,11 @@ it('discovers late project and user roots and follows extension symlinks with br
 it('loads external project facets over user and built-in names, actions and transitive reloads', async () => {
   const projectRoot = await temp()
   const userHome = await temp()
-  await extension(join(userHome, '.ultimate'), 'coding-tools', 'user')
+  const fallback = await extension(join(userHome, '.ultimate'), 'coding-tools', 'user')
+  await appendFile(
+    join(fallback, 'server.ts'),
+    '\nObject.assign(actions, { fallbackReady: async () => null })\n',
+  )
   const path = await extension(join(projectRoot, '.ultimate'), 'coding-tools', 'project')
   await writeFile(
     join(projectRoot, '.ultimate/settings.json'),
@@ -215,8 +219,19 @@ it('loads external project facets over user and built-in names, actions and tran
   expect(
     (await post(server.url, '/api/extensions/coding-tools/actions/hello')).data.result.value,
   ).toBe('edited')
+  const editedLoadedAt = record().server!.loadedAt
   await rm(path, { recursive: true })
-  await until(() => record().source === 'user')
+  // Discovery can report the new source while carrying over the previous server and actions.
+  await until(() => {
+    const entry = record()
+    return (
+      entry.source === 'user' &&
+      !!entry.server?.loadedAt &&
+      entry.server.loadedAt !== editedLoadedAt &&
+      !entry.server.error &&
+      entry.actions.includes('fallbackReady')
+    )
+  })
   expect(
     (await post(server.url, '/api/extensions/coding-tools/actions/hello')).data.result.value,
   ).toBe('user')
