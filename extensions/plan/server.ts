@@ -388,7 +388,7 @@ export default (host: ExtensionHost) => {
                     throw new Error(
                       `${item.key} has ${total} acceptance criteria, not ${outside}` +
                         (total === 0
-                          ? `\nAdd a section like this to the epic body:\n\n${criteriaExample}`
+                          ? `\nAdd or replace the acceptance criteria section in the epic body:\n\n${criteriaExample}`
                           : ''),
                     )
                 }
