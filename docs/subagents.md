@@ -27,13 +27,12 @@ Briefs name the source revision, acceptance criteria, unresolved questions and s
 copying the transcript. Keep one behavior contract and its test obligations. Summaries are navigation aids, not proof;
 reuse check evidence only while the relevant code, dependencies and environment still match.
 
-Final review goes through one fresh `reviewer` with `fork: false` and an immutable full-SHA `base..head` range. It is
-independent of implementation and early design readers, and owns one review verdict. Available `reviewer-*`
-definitions are a catalog; add one only for a named uncovered hazard, not because the definition exists. Here
-`.ultimate/agents/` offers three specialties. The lead inspects their evidence, deduplicates root causes and preserves
-material disagreements. Repairs return to the same reviewer and relevant specialists with the new range and checks;
-fresh scrutiny needs a material reason for independence. The coordinator owns final acceptance, and the lander runs
-required checks on the merged revision.
+Planning may fork. Final review starts with one fresh read-only `reviewer`, `fork: false`, a neutral brief and full
+base, head and tree SHAs. The reviewer chooses checks before inspecting receipts and gives one verdict for that tree.
+Available `reviewer-*` definitions are a catalog; add one only for a named uncovered hazard. The lead inspects their
+evidence, deduplicates root causes and preserves material disagreements. Send compact findings to one implementer.
+Return repairs to the same reviewer with the changed range, tree and receipts. Replace the reviewer only if it is no
+longer independent. The coordinator owns final acceptance, and the lander runs required checks on the merged revision.
 
 Existing child reports, automation events and supervised scripts handle waits. Bound startup and I/O deadlines,
 check durable state before retrying side effects, and wake a model only for a meaningful transition, blocker or

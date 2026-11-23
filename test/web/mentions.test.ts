@@ -1,4 +1,4 @@
-import { createElement } from 'react'
+import { createContext, createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, it, vi } from 'vitest'
 import {
@@ -18,7 +18,21 @@ vi.mock('@/sdk', () => ({
   useConversationSummary: (id?: number) => known.find((item: { id: number }) => item.id === id),
   useUltimate: () => ({ switchConversation: () => {}, showSurface: () => {} }),
 }))
+vi.mock('../../web/src/sdk/hooks.ts', () => ({
+  ExtensionNameContext: createContext(''),
+  useExtensions: () => [{ name: 'conversations', version: 1, extension: { link: MentionLink } }],
+}))
 const { MentionLink } = await import('../../extensions/conversations/mention.tsx')
+const { MessageResponse } = await import('../../web/src/components/ai/message.tsx')
+
+it('opens an explicit conversation query link without blocking it or losing its label', () => {
+  const html = renderToStaticMarkup(
+    createElement(MessageResponse, null, '[Branch #157029](?conversation=157029)'),
+  )
+  expect(html).toContain('href="?conversation=157029"')
+  expect(html).toContain('>Branch #157029</a>')
+  expect(html).not.toContain('[blocked]')
+})
 
 const mentions = (text: string) =>
   splitMentions(text).flatMap((part) => (typeof part === 'string' ? [] : [part.text]))
@@ -40,8 +54,13 @@ it('leaves short numbers, words, paths, URLs and entities alone', () => {
 })
 
 it('round-trips a mention through its href', () => {
-  expect(parseMention(mentionHref('157029'))).toEqual({ conversation: 157029, entry: undefined })
+  expect(parseMention(mentionHref('157029'))).toEqual({
+    explicit: false,
+    conversation: 157029,
+    entry: undefined,
+  })
   expect(parseMention(mentionHref('157029', '158003'))).toEqual({
+    explicit: false,
     conversation: 157029,
     entry: 158003,
   })

@@ -65,6 +65,8 @@ export const Messages = defineDoc<{ messages: Message[]; next: number }>({
 })
 
 export type MessagesService = {
+  /** The conversation that started the branch, read in the caller's transaction. */
+  starterIn(tx: Tx, branch: ConversationId): Promise<ConversationId | undefined>
   /**
    * Reply `text` from the user to open message `messageId`, from browser `device`; returns the reply's message
    * id. Records a `user.input` event. With `call` (a tool call), a receipt commits with the reply, and a replay of

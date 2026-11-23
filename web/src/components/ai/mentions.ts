@@ -5,11 +5,12 @@ export const mentionHref = (conversation: string, entry?: string) =>
   `#conversation-${conversation}${entry ? `-${entry}` : ''}`
 
 export function parseMention(href: string) {
-  const match = /^#conversation-(\d+)(?:-(\d+))?$/.exec(href)
+  const match = /^#conversation-(link-)?(\d+)(?:-(\d+))?$/.exec(href)
   return match
     ? {
-        conversation: parseConversationId(Number(match[1])),
-        entry: match[2] ? parseEntryId(Number(match[2])) : undefined,
+        explicit: Boolean(match[1]),
+        conversation: parseConversationId(Number(match[2])),
+        entry: match[3] ? parseEntryId(Number(match[3])) : undefined,
       }
     : undefined
 }
@@ -27,11 +28,16 @@ export function splitMentions(text: string) {
 }
 
 type Node = { type: string; value?: string; children?: Node[]; url?: string }
+const conversationQuery = /^\?conversation=([1-9]\d*)$/
 
 export function remarkMentions() {
   const visit = (node: Node) => {
-    const preservesExistingLink = () => node.type === 'link' || node.type === 'linkReference'
-    if (!node.children || preservesExistingLink()) return
+    if (node.type === 'link') {
+      const query = node.url?.match(conversationQuery)
+      if (query) node.url = `#conversation-link-${query[1]}`
+      return
+    }
+    if (!node.children || node.type === 'linkReference') return
     node.children = node.children.flatMap((child) => {
       if (child.type !== 'text' || !child.value?.includes('#')) {
         visit(child)

@@ -25,6 +25,8 @@ export const Compacted = defineEvent<{
  */
 export const Concluded = defineEvent<{
   conversations: ConversationId[]
+  /** Top-level conversations that had not already been concluded. Absent in older events. */
+  newlyConcluded?: ConversationId[]
   by: ConversationId | 'landing' | 'user'
 }>('conversations.concluded')
 

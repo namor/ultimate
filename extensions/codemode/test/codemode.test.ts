@@ -6,6 +6,7 @@ import {
   fauxProvider,
 } from '@earendil-works/pi-ai/providers/faux'
 import { num, obj, opt, str } from '@earendil-works/pi-schema'
+import { CodemodeSandbox } from '@earendil-works/pi-codemode'
 import { defineExtension, defineTool } from '@earendil-works/pi-durable'
 import { ProjectTrustStore } from '@earendil-works/pi-coding-agent'
 import type { ConversationId, ToolExecutionResult } from '@earendil-works/pi-durable'
@@ -202,7 +203,9 @@ it('keeps model-only tools callable directly but out of script bindings and guid
   const result = await run(server, 'return await tools.model_only_probe({})')
   expect(executions).toBe(1)
   expect(result.data.isError).toBe(true)
-  expect(result.text).toContain('model_only_probe')
+  expect(result.text).toContain('tools.model_only_probe does not exist.')
+  expect(result.text).toContain('ALL_TOOLS lists available tools.')
+  expect(result.text).not.toContain('searchTools')
   expect(result.data.details.calls).toEqual([])
   const agent = await server.root.agent(context)
   const section = server.host.registry.snapshot().extension('codemode')!.sections![0]
@@ -211,6 +214,28 @@ it('keeps model-only tools callable directly but out of script bindings and guid
     context,
   )
   expect(guidance?.split('Available: ')[1].split(', ')).not.toContain('model_only_probe')
+})
+
+it('suggests searchTools when the sandbox has a callable search helper', async () => {
+  const sandbox = new CodemodeSandbox({
+    globals: [{ name: 'searchTools', description: 'Find tools', execute: async () => [] }],
+  })
+  try {
+    const result = await sandbox.execute(`
+      await searchTools('probe');
+      return tools.missing();
+    `)
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        message: expect.stringContaining(
+          'ALL_TOOLS lists available tools. searchTools(query) finds tools by topic.',
+        ),
+      },
+    })
+  } finally {
+    await sandbox.close()
+  }
 })
 
 async function run(

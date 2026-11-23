@@ -5,6 +5,7 @@ import { ConversationRef } from './feature.tsx'
 
 export function MentionLink({
   href,
+  children,
   core,
 }: {
   href: string
@@ -31,7 +32,7 @@ export function MentionLink({
       onClick={open}
       title={`Open #${conversation.id}${entry !== undefined ? ` at entry ${entry}` : ''}${conversation.title ? `: ${conversation.title}` : ''}`}
     >
-      <ConversationRef className="gap-1" id={conversation.id} />
+      {mention.explicit ? children : <ConversationRef className="gap-1" id={conversation.id} />}
       {entry !== undefined && <span className="shrink-0 text-muted-foreground/70">/{entry}</span>}
     </a>
   )

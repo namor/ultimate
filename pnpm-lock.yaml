@@ -10,6 +10,7 @@ overrides:
 patchedDependencies:
   '@earendil-works/chord@1.5.2': 0a84e0316a4ce02b090b6c94540148771592890bc6f0869d75243fa34e5d3f25
   '@earendil-works/pi-claude-code@0.1.0': 4bc4746322ece483bd183d7a87656ae557d6aa0566cd84cb9a39b2c9345f885c
+  '@earendil-works/pi-codemode@1.5.2': 1ca74d67a29c1f83fa458c991047f94be769d2d0d827ee8194d6acaa795dcc04
   '@earendil-works/pi-durable@1.5.2': 6ef0ff2a5419734bfa3850b7574431dc2e79a53b0a3b2a530783b0b4fc4a95e5
 
 importers:
@@ -27,7 +28,7 @@ importers:
         version: https://codeload.github.com/earendil-works/pi-claude-code/tar.gz/70abb65186592ca788b29b3db22c3160d629c41f(patch_hash=4bc4746322ece483bd183d7a87656ae557d6aa0566cd84cb9a39b2c9345f885c)(@earendil-works/pi-ai@1.5.2(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2))(@earendil-works/pi-coding-agent@1.5.2(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4))
       '@earendil-works/pi-codemode':
         specifier: 1.5.2
-        version: 1.5.2
+        version: 1.5.2(patch_hash=1ca74d67a29c1f83fa458c991047f94be769d2d0d827ee8194d6acaa795dcc04)
       '@earendil-works/pi-coding-agent':
         specifier: 1.5.2
         version: 1.5.2(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)
@@ -4007,7 +4008,7 @@ snapshots:
       '@earendil-works/pi-ai': 1.5.2(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2)
       '@earendil-works/pi-coding-agent': 1.5.2(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)
 
-  '@earendil-works/pi-codemode@1.5.2':
+  '@earendil-works/pi-codemode@1.5.2(patch_hash=1ca74d67a29c1f83fa458c991047f94be769d2d0d827ee8194d6acaa795dcc04)':
     dependencies:
       quickjs-wasi: 3.6.2
 
@@ -4015,7 +4016,7 @@ snapshots:
     dependencies:
       '@earendil-works/pi-agent-core': 1.5.2(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.12.3)
       '@earendil-works/pi-ai': 1.5.2(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.12.3)
-      '@earendil-works/pi-codemode': 1.5.2
+      '@earendil-works/pi-codemode': 1.5.2(patch_hash=1ca74d67a29c1f83fa458c991047f94be769d2d0d827ee8194d6acaa795dcc04)
       '@earendil-works/pi-mcp': 1.5.2
       '@earendil-works/pi-tui': 1.5.2
       '@silvia-odwyer/photon-node': 0.3.4
@@ -4051,7 +4052,7 @@ snapshots:
     dependencies:
       '@earendil-works/chord': 1.5.2(patch_hash=0a84e0316a4ce02b090b6c94540148771592890bc6f0869d75243fa34e5d3f25)(esbuild@0.28.2)(react@19.3.0)
       '@earendil-works/pi-ai': 1.5.2(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2)
-      '@earendil-works/pi-codemode': 1.5.2
+      '@earendil-works/pi-codemode': 1.5.2(patch_hash=1ca74d67a29c1f83fa458c991047f94be769d2d0d827ee8194d6acaa795dcc04)
       '@earendil-works/pi-schema': 1.5.2
       '@earendil-works/pi-telemetry': 1.5.2
       '@silvia-odwyer/photon': 0.3.3

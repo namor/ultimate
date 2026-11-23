@@ -95,12 +95,10 @@ authorized to use the native Cursor route, retain serial jobs from committed
 HEAD, non-fast execution and the ten-minute limit; this recipe never unpauses it.
 Inspect integrated diffs
 and actual check output, run the project's required checks and affected tests on
-the delivered revision, then obtain one independent final code review on exact
-immutable `base..head`, with the original request, authorized scope changes and
-acceptance criteria, using the configured review family. Design readers do not
-substitute for it. Keep corrections in that final reviewer's conversation and
-repin its range. Available `reviewer-*` definitions are a specialist catalog,
-not an instruction to launch them all; honor the current single-reviewer policy.
+the delivered revision, then obtain one independent final code review using the
+configured review family. Follow the [coordinator's final-review brief and repair handoff](../../agents/coordinator.md#delegation).
+Design readers do not substitute for final review. Available `reviewer-*`
+definitions are a specialist catalog, not an instruction to launch them all.
 
 Preflight effective reader/reviewer instructions, family model, thinking, tools
 and availability; after return verify the actual returned-model envelope. A

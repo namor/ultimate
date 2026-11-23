@@ -6,6 +6,8 @@ vi.mock('node:child_process', () => ({ spawnSync: vi.fn<typeof spawnSync>() }))
 
 it('keeps pnpm on its persistent store while isolating verification from host secrets', async () => {
   vi.stubEnv('PIPELINE_PRIVATE_TOKEN', 'synthetic')
+  vi.stubEnv('ULTIMATE_VERIFY_PHASES', '1')
+  const output = vi.spyOn(console, 'log').mockImplementation(() => {})
   const environments: NodeJS.ProcessEnv[] = []
   vi.mocked(spawnSync).mockImplementation((_command, _args, options) => {
     environments.push(options?.env ?? {})
@@ -22,7 +24,10 @@ it('keeps pnpm on its persistent store while isolating verification from host se
       checks.map(() => true),
     )
     expect(checks.map((env) => env.HOME !== process.env.HOME)).toEqual(checks.map(() => true))
+    expect(environments.every((env) => env.ULTIMATE_VERIFY_PHASES === undefined)).toBe(true)
+    expect(output).toHaveBeenCalledWith('Verification phase: e2e')
   } finally {
+    output.mockRestore()
     vi.unstubAllEnvs()
   }
 })

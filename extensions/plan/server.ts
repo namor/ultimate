@@ -21,6 +21,8 @@ import { PlanDoc, ProgressDoc, TaskIndexDoc } from './refs.ts'
 import type { EpicProgress, Estimate } from './refs.ts'
 import { safeToRerun } from '../../lib/replay.ts'
 
+const criteriaExample = '## Acceptance criteria\n1. The regression test passes.'
+
 export type Task = {
   key: string
   title: string
@@ -263,7 +265,8 @@ export default (host: ExtensionHost) => {
       defineTool({
         name: 'plan',
         description:
-          'Maintain the durable epic/task ledger. The tool assigns keys: epics E1, E2; tasks E1.1, E1.2. Use only keys a call has returned: wait for create/add results before calls that reference them (epic, deps, key), never in the same parallel batch. create {title,body}; add {epic,title,role,description,deps?}; update {key,status?,title?,description?,body?,child?,verdict?,met?} replaces only the fields given (description, body and met whole: show first to extend them); in codemode every action returns the object; note {key,text} notes a task only (E1.1, not E1; record on an epic with update verdict or body); show {key?} reads an epic, task, or the whole ledger. Epic bodies use Request, Selected approach, Intent, Scope (in/out), binary Acceptance criteria, Implementation, Verification, Risks. Task descriptions use Outcome, Scope, Non-goals, Files, Acceptance criteria with a verification command, Constraints. Epic statuses: planning, in_progress, done, blocked. Task statuses: backlog, todo, in_progress, in_review, done, blocked, canceled. child links a conversation number; deps are task keys. body is epic-only; verdict records evidence on either an epic or a task; met lists the numbers of the epic acceptance criteria you verified. Children read the root coordinator’s ledger with show; only that coordinator can edit it. Read full plans with show; the prompt contains only a compact ledger.',
+          'Maintain the durable epic/task ledger. The tool assigns keys: epics E1, E2; tasks E1.1, E1.2. Use only keys a call has returned: wait for create/add results before calls that reference them (epic, deps, key), never in the same parallel batch. create {title,body}; add {epic,title,role,description,deps?}; update {key,status?,title?,description?,body?,child?,verdict?,met?} replaces only the fields given (description, body and met whole: show first to extend them); in codemode every action returns the object; note {key,text} notes a task only (E1.1, not E1; record on an epic with update verdict or body); show {key?} reads an epic, task, or the whole ledger. Epic bodies use Request, Selected approach, Intent, Scope (in/out), binary Acceptance criteria, Implementation, Verification, Risks. Task descriptions use Outcome, Scope, Non-goals, Files, Acceptance criteria with a verification command, Constraints. Epic statuses: planning, in_progress, done, blocked. Task statuses: backlog, todo, in_progress, in_review, done, blocked, canceled. child links a conversation number; deps are task keys. body is epic-only; verdict records evidence on either an epic or a task; met lists the numbers of the epic acceptance criteria you verified. Children read the root coordinator’s ledger with show; only that coordinator can edit it. Read full plans with show; the prompt contains only a compact ledger.\n\nExample acceptance criteria section:\n\n' +
+          criteriaExample,
         ...safeToRerun(
           'A memoized receipt id records the result in the same transaction as the ledger change.',
         ),
@@ -382,7 +385,12 @@ export default (host: ExtensionHost) => {
                   const total = criteriaOfBody(args.body ?? item.body)?.length ?? 0
                   const outside = args.met.find((n) => n > total)
                   if (outside !== undefined)
-                    throw new Error(`${item.key} has ${total} acceptance criteria, not ${outside}`)
+                    throw new Error(
+                      `${item.key} has ${total} acceptance criteria, not ${outside}` +
+                        (total === 0
+                          ? `\nAdd or replace the acceptance criteria section in the epic body:\n\n${criteriaExample}`
+                          : ''),
+                    )
                 }
                 if (!task && args.body !== undefined) {
                   const before = criteriaOfBody(item.body) ?? []

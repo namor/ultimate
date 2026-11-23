@@ -17,9 +17,10 @@ const env = {
   CI: '1',
   PNPM_CONFIG_STORE_DIR: store.stdout.trim(),
 }
-const commands: [string, string[]][] = [
-  ['pnpm', ['install', '--frozen-lockfile', '--prefer-offline']],
+const commands: [phase: string, command: string, args: string[]][] = [
+  ['install', 'pnpm', ['install', '--frozen-lockfile', '--prefer-offline']],
   [
+    'install-deepwiki',
     'pnpm',
     [
       '--dir',
@@ -31,6 +32,7 @@ const commands: [string, string[]][] = [
     ],
   ],
   [
+    'install-public-docs',
     'pnpm',
     [
       '--dir',
@@ -41,23 +43,29 @@ const commands: [string, string[]][] = [
       '--ignore-workspace',
     ],
   ],
-  ['pnpm', ['check']],
-  ['pnpm', ['test']],
-  ['pnpm', ['test:e2e']],
-  [process.execPath, ['--test', '.ultimate/extensions/cursor-task/test/e2e/runner.test.ts']],
+  ['check', 'pnpm', ['check']],
+  ['fast', 'pnpm', ['test']],
+  ['e2e', 'pnpm', ['test:e2e']],
   [
+    'cursor-runner',
+    process.execPath,
+    ['--test', '.ultimate/extensions/cursor-task/test/e2e/runner.test.ts'],
+  ],
+  [
+    'cursor-tests',
     'pnpm',
     ['exec', 'vp', 'test', '--config', '.ultimate/extensions/cursor-task/test/vite.config.ts'],
   ],
-  [process.execPath, ['.ultimate/extensions/deepwiki/verify.mjs', process.cwd()]],
-  [process.execPath, ['.ultimate/extensions/public-docs/verify.mjs', process.cwd()]],
+  ['deepwiki', process.execPath, ['.ultimate/extensions/deepwiki/verify.mjs', process.cwd()]],
+  ['public-docs', process.execPath, ['.ultimate/extensions/public-docs/verify.mjs', process.cwd()]],
 ]
 try {
   console.log(
     `Verification runtime: ${process.version} ${process.platform}/${process.arch}; ${availableParallelism()} CPUs`,
   )
-  for (const [command, args] of commands) {
+  for (const [phase, command, args] of commands) {
     console.log(`\nVerifying: ${command} ${args.join(' ')}`)
+    if (process.env.ULTIMATE_VERIFY_PHASES === '1') console.log(`Verification phase: ${phase}`)
     const result = spawnSync(command, args, { env, stdio: 'inherit', timeout: 10 * 60 * 1000 })
     if (result.error) throw result.error
     if (result.status !== 0) {
