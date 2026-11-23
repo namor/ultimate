@@ -1384,67 +1384,106 @@ it.concurrent.each(['queued', 'retained'] as const)(
   },
 )
 
-it.concurrent('links the repair in the late registration turn without a second recovery action', async () => {
-  const { f, id } = await concluding()
-  f.host.projectSettings = async () => ({ lander: { checks: ['test -f repaired.txt'] } })
-  const attempt = await f.service.submit(id, 'None', context)
-  await submitted(f, id)
-  await f.reopen()
-  const failed = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
-    .results[attempt.id]
-  expect(failed.reason).toBe('check failed twice: test -f repaired.txt')
-  await commit((await f.service.get(id, context))!.path, 'repaired.txt')
-  let key: number | undefined
-  const route: FauxResponseFactory = async ({ messages }) => {
-    f.prepared.faux!.appendResponses([route])
-    const last = messages.at(-1)!
-    if (last.role === 'user' && JSON.stringify(last.content).includes('REGISTER-REPAIR'))
-      return fauxAssistantMessage(
-        fauxToolCall('workspace', {
-          action: 'follow',
-          after: attempt.id,
-          outcome: 'Land the repaired change',
-        }),
-        { stopReason: 'toolUse' },
+it.concurrent.each(['registration', 'overlap repairs', 'overlap quiet'] as const)(
+  'settles late recovery once: %s',
+  async (mode) => {
+    const { f, id } = await concluding()
+    f.host.projectSettings = async () => ({ lander: { checks: ['test -f repaired.txt'] } })
+    const attempt = await f.service.submit(id, 'None', context)
+    await submitted(f, id)
+    await f.reopen()
+    const failed = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+      .results[attempt.id]
+    expect(failed.reason).toBe('check failed twice: test -f repaired.txt')
+    await commit((await f.service.get(id, context))!.path, 'repaired.txt')
+    let key: number | undefined
+    let overlap: number | undefined
+    const observer = () =>
+      f.opened.harness.commit(
+        async (tx) =>
+          (await tx.scanTasks({ kind: 'workspaces.continuation', conversationId: id }, 1)).items[0],
+        context,
       )
-    if (
-      last.role === 'toolResult' &&
-      JSON.stringify(last.content).includes('needs-action') &&
-      key === undefined
-    ) {
-      key = (await f.service.get(id, context))!.continuation!.key
-      return fauxAssistantMessage(
-        fauxToolCall('workspace', { action: 'submit', divergence: 'None', continueFrom: key }),
-        { stopReason: 'toolUse' },
+    const route: FauxResponseFactory = async ({ messages }) => {
+      f.prepared.faux!.appendResponses([route])
+      const last = messages.at(-1)!
+      if (last.role === 'user' && JSON.stringify(last.content).includes('REGISTER-REPAIR'))
+        return fauxAssistantMessage(
+          fauxToolCall('workspace', {
+            action: 'follow',
+            after: attempt.id,
+            outcome: 'Land the repaired change',
+          }),
+          { stopReason: 'toolUse' },
+        )
+      if (
+        last.role === 'toolResult' &&
+        JSON.stringify(last.content).includes('needs-action') &&
+        key === undefined
+      ) {
+        key = (await f.service.get(id, context))!.continuation!.key
+        if (mode !== 'registration') {
+          overlap = (
+            await owner.submit({ type: 'input', whenBusy: 'followUp', content: 'OVERLAP' }, context)
+          ).id
+          return fauxAssistantMessage('Finished registering')
+        }
+      }
+      if (last.role === 'user' && JSON.stringify(last.content).includes('OVERLAP')) {
+        await until(async () => {
+          const state = (await observer())?.state
+          if (!state || state.status === 'terminal') return !!state
+          const checkpoint =
+            'checkpoint' in state ? (state.checkpoint as { overlapping?: number[] }) : undefined
+          return overlap !== undefined && !!checkpoint?.overlapping?.includes(overlap)
+        })
+        if (mode === 'overlap quiet') return fauxAssistantMessage('Finished unrelated work')
+      }
+      if (
+        key !== undefined &&
+        ((mode === 'registration' &&
+          last.role === 'toolResult' &&
+          JSON.stringify(last.content).includes('needs-action')) ||
+          (mode === 'overlap repairs' &&
+            last.role === 'user' &&
+            JSON.stringify(last.content).includes('OVERLAP')))
       )
+        return fauxAssistantMessage(
+          fauxToolCall('workspace', { action: 'submit', divergence: 'None', continueFrom: key }),
+          { stopReason: 'toolUse' },
+        )
+      return fauxAssistantMessage('finished')
     }
-    return fauxAssistantMessage('finished')
-  }
-  f.prepared.faux!.setResponses([route])
-  const owner = (await f.opened.harness.conversation(id, context))!
-  await (await owner.submit({ type: 'input', content: 'REGISTER-REPAIR' }, context)).wait(context)
-  await until(async () =>
-    Object.values(
-      (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!.results,
-    ).some((r) => r.conversationId === id && r.outcome === 'landed'),
-  )
-  await f.reopen()
-  expect(key).toBeDefined()
-  const reopened = (await f.opened.harness.conversation(id, context))!
-  expect(
-    (await reopened.context(context)).entries.filter((e) => e.kind === 'workspaces.continuation'),
-  ).toHaveLength(0)
-  expect(
-    await f.opened.harness.commit(
+    f.prepared.faux!.setResponses([route])
+    const owner = (await f.opened.harness.conversation(id, context))!
+    await (await owner.submit({ type: 'input', content: 'REGISTER-REPAIR' }, context)).wait(context)
+    await until(async () => (await observer())?.state.status === 'terminal')
+    if (mode !== 'overlap quiet')
+      await until(async () =>
+        Object.values(
+          (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!.results,
+        ).some((r) => r.conversationId === id && r.outcome === 'landed'),
+      )
+    await f.reopen()
+    expect(key).toBeDefined()
+    const reopened = (await f.opened.harness.conversation(id, context))!
+    expect(
+      (await reopened.context(context)).entries.filter((e) => e.kind === 'workspaces.continuation'),
+    ).toHaveLength(0)
+    const handoff = await f.opened.harness.commit(
       (tx) =>
         tx.submissionByRequest(
           ROOT_CONVERSATION_ID,
           `workspaces.continuation:handoff:${key}:${attempt.id}`,
         ),
       context,
-    ),
-  ).toBeUndefined()
-})
+    )
+    expect(!!handoff).toBe(mode === 'overlap quiet')
+    expect((await f.service.get(id, context))!.continuation?.state).toBe(
+      mode === 'overlap quiet' ? 'needs-action' : undefined,
+    )
+  },
+)
 
 it.concurrent('continues one approved delivery after its exact prerequisite fails across reopen', async () => {
   const { f, id: owner } = await concluding()

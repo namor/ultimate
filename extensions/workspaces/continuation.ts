@@ -1,4 +1,4 @@
-import { defineTask, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
+import { defineTask, InboxDoc, LiveDoc, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import type {
   ConversationDocToken,
   ConversationId,
@@ -28,7 +28,8 @@ export function continuationTask(
 ) {
   return defineTask<
     Wake,
-    { phase: 'deliver' } | { phase: 'observe'; admitted: SubmissionId },
+    | { phase: 'deliver' }
+    | { phase: 'observe'; admitted: SubmissionId; overlapping?: SubmissionId[] },
     null
   >({
     name: 'workspaces.continuation',
@@ -67,8 +68,11 @@ export function continuationTask(
         }, ctx)
       },
       observe: async ({ input, state }, runtime, ctx) => {
-        const receipt = await host.harness().submission(state.checkpoint.admitted, ctx)
-        await receipt?.wait(ctx)
+        const { admitted, overlapping } = state.checkpoint
+        for (const id of overlapping ?? [admitted]) {
+          const receipt = await host.harness().submission(id, ctx)
+          await receipt?.wait(ctx)
+        }
         const branches = host.want(Branches)
         const starter = await branches?.starter(input.owner, ctx)
         const to =
@@ -83,15 +87,27 @@ export function continuationTask(
             current?.key === input.key &&
             current.submission === input.submission &&
             current.state === 'needs-action' &&
-            !(await host.need(ConversationsApi).concludedIn(tx)).has(input.owner) &&
-            !(await branches?.working(tx, input.owner))
-          )
+            !(await host.need(ConversationsApi).concludedIn(tx)).has(input.owner)
+          ) {
+            if (!overlapping) {
+              const active = (await tx.doc(LiveDoc, input.owner)).run?.inputs ?? []
+              const queued = (await tx.doc(InboxDoc, input.owner)).items
+                .filter((i) => i.mode !== 'write')
+                .map((i) => i.id)
+              const pending = [...new Set([...active, ...queued])].filter((id) => id !== admitted)
+              if (pending.length)
+                return {
+                  status: 'running',
+                  checkpoint: { phase: 'observe', admitted, overlapping: pending },
+                }
+            }
             await to.submit(tx, {
               type: 'input',
               whenBusy: 'followUp',
               requestId: `workspaces.continuation:handoff:${input.key}:${input.submission}`,
-              content: `Workspace #${input.owner} has an open delivery after ${input.submission} ${input.result}. Its recovery turn ended without a linked attempt or active handoff. Reconcile its current state with its owner; diagnose before retrying. No approval or verifier capacity was transferred.`,
+              content: `Workspace #${input.owner} has an open delivery after ${input.submission} ${input.result}. No next attempt or prerequisite was linked. Check the owner's current work and pending replies before acting; diagnose before retrying. No approval or verifier capacity was transferred.`,
             })
+          }
           return complete
         }, ctx)
       },

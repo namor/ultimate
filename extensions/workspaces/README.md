@@ -283,7 +283,7 @@ To keep its own approved landing open across failed attempts, the coordinator ca
 
 Inspect `workspace status` before acting. Its `continuation` names the obligation and its current key. Diagnose the result. If the supposed prerequisite is unnecessary, do not wait for it to land. While enrolled, `workspace submit` requires `continueFrom` set to that key. It links the next normal attempt; an obsolete key cannot submit in its place. To change the wait, pass its current key to `follow`. An own failed attempt stays open and uses the lander's normal failure report. A linked successful landing closes the workspace delivery, not a deployment. `workspace unfollow` with the current key stops tracking only; it does not stop a delivery or declare the work finished.
 
-A wake is not permission to retry, publish, merge or start a full suite. If the recovery turn ends without a linked next step or active work, its starter can receive one request to reconcile it. Use an acknowledged handoff for conditions outside the lander. No person is asked automatically.
+A wake is not permission to retry, publish, merge or start a full suite. When the recovery turn ends, the observer waits for inputs already active or queued in that workspace. If none links a new attempt or prerequisite, the starter gets one reconciliation request. Later unrelated work does not extend this wait. Use an acknowledged handoff for conditions outside the lander. No person is asked automatically.
 
 ### Pull request text
 
