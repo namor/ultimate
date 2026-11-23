@@ -4,7 +4,7 @@ import type { ExtensionHost } from '../../server/extensions.ts'
 import { discoverAgents } from '../../lib/agents.ts'
 import { meansNone } from '../../lib/errors.ts'
 import { DEFAULT_FAMILY, FEATURES, mergeFamilies, parseFamilies } from '../../lib/families.ts'
-import { readFamilyLayers } from '../../lib/families-settings.ts'
+import { mergeLayers, readFamilyLayers } from '../../lib/families-settings.ts'
 import { readJson, updateJson } from '../../lib/json-file.ts'
 import { readSettings, updateSettings, userSettingsPath } from '../../lib/settings.ts'
 import { saveFamilies } from './families.ts'
@@ -54,7 +54,8 @@ export function parsePreset(value: unknown, where = 'preset'): Preset {
       throw new Error(`${where}.pins.${feature}: only summaries and preview are pinned`)
     pins[feature] = checkPin(pin, `${where}.pins.${feature}`)
   }
-  for (const user of Object.keys(assign)) if (!Object.hasOwn(FEATURES, user)) delete assign[user]
+  for (const user of Object.keys(assign))
+    if (user === 'automaticPlan' || !Object.hasOwn(FEATURES, user)) delete assign[user]
   for (const [user, family] of Object.entries(assign))
     if (!Object.hasOwn(families, family))
       throw new Error(`${where}.assign.${user}: unknown family ${family}`)
@@ -196,7 +197,23 @@ export async function applyPreset(host: ExtensionHost, name: unknown) {
         .map(({ name: provider, models }) => `${provider} (${models.join(', ')})`)
         .join('; ')}`,
     )
-  await saveFamilies(host, { families: preset.families, assign: preset.assign, unpin: [] })
+  const layers = await readFamilyLayers(
+    host.userHome,
+    host.projectRoot,
+    await host.projectSettings(),
+  )
+  const { base, from, project } = layers
+  const plan =
+    (from === 'project' ? base.assign.automaticPlan : undefined) ?? project.assign.automaticPlan
+  const own = plan && plan !== 'off' ? mergeLayers(layers).families[plan] : undefined
+  await saveFamilies(host, {
+    families: {
+      ...preset.families,
+      ...(own && plan ? { [plan]: { ...preset.families[plan], ...own } } : {}),
+    },
+    assign: { ...preset.assign, ...(plan ? { automaticPlan: plan } : {}) },
+    unpin: [],
+  })
   await updateSettings(userSettingsPath(host.userHome), (settings) => {
     if (preset.pins.summaries === undefined) delete settings.summaryModel
     else settings.summaryModel = preset.pins.summaries

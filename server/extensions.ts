@@ -320,6 +320,8 @@ export async function loadExtensions(
     const poll = pollActions.get(name)?.includes(action)
     const by = caller === 'agent' ? { source: 'agent' as const } : { ...source, ...device }
     const sealed = privateActions.get(name)?.includes(action)
+    if (sealed && (caller !== 'ui' || source.source !== 'person'))
+      throw new Error(`${name}/${action} requires a person’s action`)
     return trace.run(
       { kind: 'action', ...call, ...(poll ? { poll } : {}), ...(sealed ? { sealed } : {}) },
       () =>

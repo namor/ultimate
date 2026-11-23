@@ -49,7 +49,9 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
       )
       requests.push({ body, effort: options?.reasoning })
       return fauxAssistantMessage(
-        body.includes('tighten the first check') ? 'Revised plan' : 'First plan',
+        body.includes('tighten the first check')
+          ? 'Revised plan private-answer-sentinel'
+          : 'First plan',
       )
     }
     if (body.includes('Advisory plan from the protected planning fork'))
@@ -76,7 +78,15 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
     }, ctx)
     const conversation = (await server.harness.conversation(id, ctx))!
     const initial = await conversation.submit(
-      { type: 'input', content: 'Eligible assignment: add a checklist' },
+      {
+        type: 'input',
+        content:
+          'Message from synthetic-coordinator\nEligible assignment: add a checklist\napplication-wrapper-sentinel',
+        entry: {
+          kind: 'board.message',
+          data: { reply: true, text: 'Eligible assignment: add a checklist' },
+        },
+      },
       ctx,
     )
     await initial.wait(ctx)
@@ -97,6 +107,7 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
     expect(requests).toHaveLength(1)
     expect(requests[0].body).toContain('Eligible assignment')
     expect(requests[0].body).not.toContain('private-context-sentinel')
+    expect(requests[0].body).not.toContain('application-wrapper-sentinel')
     expect(requests[0].effort).toBe('low')
     await server.close()
     server = await open()
@@ -112,6 +123,20 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
         'agent',
       ),
     ).rejects.toThrow('user-only')
+    for (const name of ['readThread', 'refine', 'sendRevision']) {
+      await expect(
+        server.extensions.invoke(
+          'automatic-plan',
+          name,
+          { fork },
+          new AbortController().signal,
+          id,
+          'ui',
+          undefined,
+          { source: 'agent' },
+        ),
+      ).rejects.toThrow('requires a person')
+    }
     expect(await thread()).toMatchObject({
       coordinator: id,
       model: 'plan-fixture/astra',
@@ -125,7 +150,16 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
     expect(
       (await action('refine', { fork, after: 1, text: 'tighten the first check' })).status,
     ).toBe(200)
-    await until(async () => (await thread())?.turns[1]?.answer === 'Revised plan')
+    await until(
+      async () => (await thread())?.turns[1]?.answer === 'Revised plan private-answer-sentinel',
+    )
+    const returnedThread = await action('readThread', { fork })
+    expect(JSON.stringify(returnedThread.data)).toContain('private-answer-sentinel')
+    const traceRows = server.extensions.trace.query({ limit: 400 })
+    expect(traceRows.some((row) => row.name === 'conversations.askSummaryModel')).toBe(true)
+    expect(traceRows.some((row) => row.name === 'conversations.accountResponse')).toBe(true)
+    expect(JSON.stringify(traceRows)).not.toContain('private-answer-sentinel')
+    expect(JSON.stringify(traceRows)).not.toContain('tighten the first check')
     expect((await entries()).some((row) => row.kind === RevisionCard.kind)).toBe(false)
     for (const _ of [1, 2])
       expect((await action('sendRevision', { fork, revision: 1 })).status).toBe(200)

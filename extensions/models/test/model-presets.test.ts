@@ -42,6 +42,28 @@ async function setup(available: string[]) {
   return { host, userHome, projectRoot, agent, ultimateRoot, settings, writeSettings }
 }
 
+it('does not copy Automatic Plan consent through a preset', async () => {
+  const solModel = 'openai-codex/gpt-6.1-sol'
+  const { host, userHome, projectRoot } = await setup([
+    solModel,
+    'openai-codex/gpt-6-astra',
+    'openai-codex/gpt-6-luna',
+    'claude-code/claude-opus-5-5',
+  ])
+  const other = join(projectRoot, '../other')
+  await mkdir(other)
+  await writeFamilies(userHome, projectRoot, {
+    families: { plan: { model: solModel } },
+    assign: { automaticPlan: 'plan' },
+  })
+  await savePreset(host, 'From enabled project')
+  await writeFamilies(userHome, other, { assign: { automaticPlan: 'off' } })
+  const destination = { ...host, projectRoot: other }
+  await applyPreset(destination, 'From enabled project')
+  expect((await readFamilies(userHome, other, {})).assign.automaticPlan).toBe('off')
+  await expect(savePreset(destination, 'From off project')).resolves.toBeDefined()
+})
+
 const claude = {
   families: {
     default: { model: 'claude-code/claude-sonnet-5-5', thinking: 'medium' },

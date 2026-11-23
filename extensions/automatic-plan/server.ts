@@ -44,7 +44,7 @@ const Admission = defineDoc<{ fork?: ConversationId; caller?: TaskId; task?: Tas
   initial: () => ({}),
 })
 export const userActions = ['readThread', 'refine', 'sendRevision']
-export const privateActions = ['readThread', 'refine']
+export const privateActions = ['readThread', 'refine', 'sendRevision']
 const packetLimit = 12_000
 export function reportedCompletionModel(event: unknown): string | undefined {
   if (
@@ -264,8 +264,12 @@ async function plan(host: ExtensionHost, id: ConversationId, caller: TaskId) {
   const text = view.entries
     .flatMap((entry, index) => {
       if (entry.conversationId !== id || entry.input !== true) return []
+      const assignment =
+        entry.kind === MessageEntry.kind
+          ? (entry.data as { reply?: boolean; text?: string })
+          : undefined
       if (entry.kind === MessageEntry.kind) {
-        if (!(entry.data as { reply?: boolean })?.reply) return []
+        if (!assignment?.reply || !assignment.text) return []
       } else if (entry.kind !== 'pi.user' && entry.kind !== 'lineage.prompt') return []
       const contribution = view.contributions[index] ?? []
       const content = contribution
@@ -277,7 +281,13 @@ async function plan(host: ExtensionHost, id: ConversationId, caller: TaskId) {
               : message.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])),
         )
         .join('\n')
-      return content.trim() && !/<skill\b/i.test(content) ? [content] : []
+      const eligible =
+        assignment?.text && content.startsWith('Message from ') && content.includes(assignment.text)
+          ? assignment.text
+          : content.startsWith('Message from ')
+            ? ''
+            : content
+      return eligible.trim() && !/<skill\b/i.test(eligible) ? [eligible] : []
     })
     .slice(-4)
     .join('\n\n')

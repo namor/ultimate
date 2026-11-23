@@ -1,11 +1,16 @@
 export type Api<Name extends string, PhantomService> = {
   readonly name: Name
   readonly service?: PhantomService
+  readonly privateMethods?: readonly string[]
 }
 
 export const defineApi =
   <Service>() =>
-  <Name extends string>(name: Name): Api<Name, Service> => ({ name })
+  <Name extends string>(
+    name: Name,
+    privateMethods?: readonly Extract<keyof Service, string>[],
+  ): Api<Name, Service> =>
+    privateMethods ? { name, privateMethods } : { name }
 
 export type DocRef<PhantomValue> = {
   readonly kind: string
