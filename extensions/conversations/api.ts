@@ -126,5 +126,8 @@ export const Marks = defineDoc<Record<string, AgentMarkStyle>>({
   initial: () => ({}),
 })
 /** Conversation subjects and the summary model; core, so `need` it. */
-export const ConversationsApi = defineApi<ConversationsService>()('conversations')
+export const ConversationsApi = defineApi<ConversationsService>()('conversations', [
+  'askSummaryModel',
+  'accountResponse',
+])
 export const tier = 'core'
