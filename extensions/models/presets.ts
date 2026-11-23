@@ -4,7 +4,7 @@ import type { ExtensionHost } from '../../server/extensions.ts'
 import { discoverAgents } from '../../lib/agents.ts'
 import { meansNone } from '../../lib/errors.ts'
 import { DEFAULT_FAMILY, FEATURES, mergeFamilies, parseFamilies } from '../../lib/families.ts'
-import { mergeLayers, readFamilyLayers } from '../../lib/families-settings.ts'
+import { readFamilyLayers } from '../../lib/families-settings.ts'
 import { readJson, updateJson } from '../../lib/json-file.ts'
 import { readSettings, updateSettings, userSettingsPath } from '../../lib/settings.ts'
 import { saveFamilies } from './families.ts'
@@ -203,15 +203,19 @@ export async function applyPreset(host: ExtensionHost, name: unknown) {
     await host.projectSettings(),
   )
   const { base, from, project } = layers
-  const plan =
-    (from === 'project' ? base.assign.automaticPlan : undefined) ?? project.assign.automaticPlan
-  const own = plan && plan !== 'off' ? mergeLayers(layers).families[plan] : undefined
+  const ownPlan = from === 'project' ? base.assign.automaticPlan : undefined
+  const plan = ownPlan ?? project.assign.automaticPlan
+  const families = { ...preset.families }
+  if (plan && plan !== 'off') {
+    delete families[plan]
+    if (from === 'project' && base.families[plan]) {
+      const original = base.families[plan]
+      families[plan] = { ...original, color: original.color ?? 'sky' }
+    }
+  }
   await saveFamilies(host, {
-    families: {
-      ...preset.families,
-      ...(own && plan ? { [plan]: { ...preset.families[plan], ...own } } : {}),
-    },
-    assign: { ...preset.assign, ...(plan ? { automaticPlan: plan } : {}) },
+    families,
+    assign: { ...preset.assign, ...(ownPlan ? { automaticPlan: ownPlan } : {}) },
     unpin: [],
   })
   await updateSettings(userSettingsPath(host.userHome), (settings) => {

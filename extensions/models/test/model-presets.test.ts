@@ -62,6 +62,25 @@ it('does not copy Automatic Plan consent through a preset', async () => {
   await applyPreset(destination, 'From enabled project')
   expect((await readFamilies(userHome, other, {})).assign.automaticPlan).toBe('off')
   await expect(savePreset(destination, 'From off project')).resolves.toBeDefined()
+
+  const inherited = join(projectRoot, '../inherited')
+  await mkdir(inherited)
+  let inheritedPlan = 'fast'
+  const projectSettings = async () => ({
+    modelFamilies: {
+      families: { fast: { model: solModel } },
+      assign: { automaticPlan: inheritedPlan },
+    },
+  })
+  const configured = { ...host, projectRoot: inherited, projectSettings }
+  await applyPreset(configured, 'From enabled project')
+  expect(
+    (await readFamilies(userHome, inherited, await projectSettings())).assign.automaticPlan,
+  ).toBe('fast')
+  inheritedPlan = 'off'
+  expect(
+    (await readFamilies(userHome, inherited, await projectSettings())).assign.automaticPlan,
+  ).toBe('off')
 })
 
 const claude = {

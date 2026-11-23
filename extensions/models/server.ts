@@ -103,6 +103,7 @@ export const userActions = [
   'deletePreset',
   'saveFamilies',
 ]
+export const privateActions = ['saveFamilies']
 
 const invalidateLoginHealthBestEffort = async (host: ActionContext['host'], provider: string) =>
   host

@@ -74,6 +74,11 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
         at: entry.id,
         intent: 'protected branch intent',
       }
+      await tx.appendEntry(coordinator, {
+        kind: 'pi.user',
+        input: true,
+        model: [{ role: 'user', content: 'Message from QA: fix the export', timestamp: 1 }],
+      })
       return coordinator
     }, ctx)
     const conversation = (await server.harness.conversation(id, ctx))!
@@ -108,6 +113,7 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
     expect(requests[0].body).toContain('Eligible assignment')
     expect(requests[0].body).not.toContain('private-context-sentinel')
     expect(requests[0].body).not.toContain('application-wrapper-sentinel')
+    expect(requests[0].body).toContain('Message from QA: fix the export')
     expect(requests[0].effort).toBe('low')
     await server.close()
     server = await open()
@@ -123,6 +129,18 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
         'agent',
       ),
     ).rejects.toThrow('user-only')
+    await expect(
+      server.extensions.invoke(
+        'models',
+        'saveFamilies',
+        { families: {}, assign: { automaticPlan: 'off' }, unpin: [] },
+        new AbortController().signal,
+        id,
+        'ui',
+        undefined,
+        { source: 'agent' },
+      ),
+    ).rejects.toThrow('requires a person')
     for (const name of ['readThread', 'refine', 'sendRevision']) {
       await expect(
         server.extensions.invoke(

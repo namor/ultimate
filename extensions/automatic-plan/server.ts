@@ -85,7 +85,9 @@ async function selection(host: ExtensionHost) {
     (layers.from === 'project' ? layers.base.assign.automaticPlan : undefined) ??
     layers.project.assign.automaticPlan
   if (!name || name === 'off') return undefined
-  const spec = mergeLayers(layers).families[name]
+  const spec = mergeLayers(
+    layers.from === 'recent' ? { ...layers, base: { families: {}, assign: {} } } : layers,
+  ).families[name]
   const ref = refOf(spec?.model)
   const model = host.modelRuntime
     .getAvailableSnapshot()
@@ -282,11 +284,11 @@ async function plan(host: ExtensionHost, id: ConversationId, caller: TaskId) {
         )
         .join('\n')
       const eligible =
-        assignment?.text && content.startsWith('Message from ') && content.includes(assignment.text)
-          ? assignment.text
-          : content.startsWith('Message from ')
-            ? ''
-            : content
+        assignment && content.startsWith('Message from ')
+          ? assignment.text && content.includes(assignment.text)
+            ? assignment.text
+            : ''
+          : content
       return eligible.trim() && !/<skill\b/i.test(eligible) ? [eligible] : []
     })
     .slice(-4)
