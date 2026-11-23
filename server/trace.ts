@@ -230,9 +230,11 @@ export function callTrace(file: string | (() => string), retention = { rows: 200
           ok ? 1 : 0,
           ok
             ? null
-            : sealed
-              ? `${call.kind === 'tool' ? 'Tool' : 'Private call'} failed`
-              : failure(value, credentials),
+            : sealed && call.kind === 'tool'
+              ? 'Tool failed'
+              : call.sealed
+                ? 'Private call failed'
+                : failure(value, credentials),
           args ?? null,
           (ok && !sealed && summary(value)) || null,
           context.conversationId ?? null,
