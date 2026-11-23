@@ -277,6 +277,14 @@ Delivery uses the lander's durable sleeps, not model polling; a wait on a person
 outcomes are reported, without waking a model for each poll. Existing check/landing events remain available for bounded
 feedback automations; adding a delivery setting does not activate unrelated standing automations.
 
+### Follow one delivery attempt
+
+To keep its own approved landing open across failed attempts, the coordinator can opt in atomically with `workspace submit` and `outcome`. To wait on an exact prerequisite instead, call `workspace follow` with `outcome` (the delivery it still owes) and `after` (an exact submission ID in the same source checkout). Only that workspace can register the wait. A missing ID is not a reason to wait for a branch that never submitted. A retained result returns `needs-action` immediately. A still-queued attempt wakes its owner when it ends, including on failure, stop or replacement. Intermediate checks and parked approvals are not terminal. There is no automatic enrollment or background polling.
+
+Inspect `workspace status` before acting. Its `continuation` names the obligation and its current key. Diagnose the result. If the supposed prerequisite is unnecessary, do not wait for it to land. While enrolled, `workspace submit` requires `continueFrom` set to that key. It links the next normal attempt; an obsolete key cannot submit in its place. To change the wait, pass its current key to `follow`. An own failed attempt stays open and uses the lander's normal failure report. A linked successful landing closes the workspace delivery, not a deployment. `workspace unfollow` with the current key stops tracking only; it does not stop a delivery or declare the work finished.
+
+A wake is not permission to retry, publish, merge or start a full suite. When the recovery turn ends, the observer waits for inputs already active or queued in that workspace. If none links a new attempt or prerequisite, the starter gets one reconciliation request. Later unrelated work does not extend this wait. Use an acknowledged handoff for conditions outside the lander. No person is asked automatically.
+
 ### Pull request text
 
 The coordinator supplies `pullRequest: { title, body }` with `workspace submit`. Name the behavior change in the title

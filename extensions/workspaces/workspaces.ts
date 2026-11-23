@@ -41,6 +41,7 @@ import {
 } from './lander.ts'
 import { deliverySettings } from './delivery-settings.ts'
 import { supersedes } from './delivery.ts'
+import { continuationTask, follow, resolveContinuations } from './continuation.ts'
 import type { DeliveryRisk } from './delivery.ts'
 import type { PullRequestCopy } from './pull-request.ts'
 import type {
@@ -86,6 +87,7 @@ export const Workspaces = defineDoc<WorkspaceIndex>({
 export async function landingPending(tx: Tx, id: ConversationId) {
   const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
   return (
+    !!index.items[String(id)]?.continuation ||
     index.queue.some((item) => item.conversationId === id) ||
     (await hasPendingLanderReport(tx, index, id))
   )
@@ -216,9 +218,12 @@ export function workspaces(host: Host) {
     'workspaces.disk',
     (): { last?: WorkspaceDisk; running?: Promise<WorkspaceDisk> } => ({}),
   )
+  const Continuation = continuationTask(host, Workspaces)
   const Lander = createLander(host, Workspaces, serializeSourceWrites, {
     starter: async (id, context) => host.want(Branches)?.starter(id, context),
-    working: async (tx, id) => (await host.want(Branches)?.working(tx, id)) ?? false,
+    working: async (tx, id) =>
+      Boolean((await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).items[String(id)]?.continuation) ||
+      ((await host.want(Branches)?.working(tx, id)) ?? false),
     conclude: async (tx, id) =>
       void (await host.need(ConversationsApi).concludeIn(tx, [id], 'landing')),
     reserveLanding: async (tx, id, result) => {
@@ -771,6 +776,8 @@ export function workspaces(host: Host) {
       reviewedTree?: string
       pullRequest?: PullRequestCopy
     },
+    continueFrom?: number,
+    outcome?: string,
   ): Promise<SubmitResult> {
     if (!divergence?.trim())
       throw new Error(
@@ -805,7 +812,9 @@ export function workspaces(host: Host) {
       if (at === undefined)
         throw new Error('Submitting requires a conversation entry for its breadcrumb')
       const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
-      const { source, target } = index.items[String(id)]
+      const { source, target, continuation } = index.items[String(id)]
+      if (continuation?.key !== continueFrom)
+        throw new Error('Continuation changed; inspect workspace status first')
       const idleReadBeforeWrites = await landerIdle(tx, index, source)
       const lander = await ensureLanderBeforeWrites(tx, index, source, target, path)
       const queued = index.queue.find((item) => item.conversationId === id && item.tip === tip)
@@ -849,6 +858,7 @@ export function workspaces(host: Host) {
                 note: `Superseded by a newer submission of the same branch (${newId}).`,
               },
             ]
+          await resolveContinuations(tx, index, old.id, Continuation, false)
           await log(tx, lander, old, { outcome: 'failed', reason: index.results[old.id].reason })
         }
       index.queue = index.queue.filter((item) => !index.results[item.id])
@@ -868,10 +878,29 @@ export function workspaces(host: Host) {
         ...(subject ? { subject } : {}),
         steps: [],
       }
+      if (continuation && outcome !== undefined && continuation.outcome !== outcome.trim())
+        throw new Error('Do not replace an open delivery with a different outcome')
+      if (
+        continuation &&
+        continueFrom === continuation.key &&
+        (entry.id !== continuation.submission || continuation.tracks !== 'delivery')
+      ) {
+        continuation.key = (
+          await tx.appendEntry(id, {
+            kind: 'workspaces.continued',
+            data: { previous: continueFrom, submission: entry.id },
+          })
+        ).id
+        continuation.submission = entry.id
+        continuation.tracks = 'delivery'
+        continuation.state = 'waiting'
+      }
       if (!queued) {
         await log(tx, lander, entry, { step: 'queued' })
         index.queue.push(entry)
       }
+      if (!continuation && outcome !== undefined)
+        await follow(tx, index, id, entry.id, outcome, 'delivery')
       if (idleReadBeforeWrites) await startIdleLander(tx, index, source)
       const position = index.queue
         .filter((item) => item.source === source)
@@ -1016,6 +1045,7 @@ export function workspaces(host: Host) {
   return {
     Preparation,
     Lander,
+    Continuation,
     resume,
     standLander,
     started: tasksStartedByThisModule,
