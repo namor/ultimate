@@ -171,13 +171,17 @@ it('answers a decisions card with letters, arrows and Enter', async () => {
   const next = page.locator(`[data-questions-card="message:${second.id}"]`)
   await next.locator('fieldset').nth(2).waitFor()
   const send = next.getByRole('button', { name: 'Send', exact: true })
+  await page.clock.install()
+  const browserNow = await page.evaluate(() => Date.now())
+  await page.clock.pauseAt(browserNow + 10_000)
   const box = (await send.boundingBox())!
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-  // Released early, the hold is an ordinary click: Send with its undo window.
+  // Let exactly 400 ms of browser time pass, even if the test driver stalls.
   await page.mouse.down()
-  await page.waitForTimeout(400)
+  await page.clock.runFor(400)
   await page.mouse.up()
   await next.getByRole('button', { name: 'Undo' }).click()
+  await page.clock.resume()
   await send.waitFor()
   const picked = async () =>
     (await log())?.messages.find((m) => m.re === second.id && m.from === 'user')
@@ -193,13 +197,34 @@ it('answers a decisions card with letters, arrows and Enter', async () => {
   expect((await picked())!.text).toMatch(/^1a\. .+\n\n2a\. .+\n\n3a\. Land it: yes$/)
 })
 
-it('sends a held answer when the page is left inside the undo window', async () => {
+it.each([
+  ['inside the undo window', false],
+  ['after the timer fires but before the request reaches the server', true],
+])('sends one answer when the page is left %s', async (_label, timerFirst) => {
   const { log, asked, page, card } = await openCard()
+  const requests: string[] = []
+  const cd = timerFirst ? await page.context().newCDPSession(page) : undefined
+  if (cd) {
+    cd.on('Fetch.requestPaused', ({ requestId }) => requests.push(requestId))
+    await cd.send('Fetch.enable', {
+      patterns: [{ urlPattern: '*/api/extensions/questions/actions/answer' }],
+    })
+  }
   await card.getByRole('button', { name: 'Send', exact: true }).click()
   await card.getByRole('button', { name: 'Undo' }).waitFor()
+  // Let the actual timer fire, but don't let its request reach the server before pagehide.
+  if (cd) await until(() => requests.length > 0)
   await page.goto('about:blank')
-  const answer = async () =>
-    (await log())?.messages.find((m) => m.re === asked.id && m.from === 'user')
-  await until(async () => !!(await answer()))
-  expect((await answer())!.text).toMatch(/^1a\. .+\n\n2a\. .+\n\n3a\. Land it: yes$/)
+  const resumed = await cd?.send('Fetch.continueRequest', { requestId: requests[0] }).then(
+    () => true,
+    () => false,
+  )
+  const answers = async () =>
+    (await log())?.messages.filter((m) => m.re === asked.id && m.from === 'user') ?? []
+  await until(async () => (await answers()).length > 0)
+  const saved = await answers()
+  expect(saved).toHaveLength(1)
+  expect(saved[0].text).toMatch(/^1a\. .+\n\n2a\. .+\n\n3a\. Land it: yes$/)
+  expect(resumed).toBe(timerFirst ? true : undefined)
+  expect(requests).toHaveLength(timerFirst ? 1 : 0)
 })

@@ -36,6 +36,14 @@ describe('extension actions', () => {
     })
   })
 
+  it('keeps a small action request alive but sends oversized encoded JSON normally', async () => {
+    const { api, fetch } = setup(() => json(200, { result: null }))
+    const answer = ref('questions', 'answer')
+    await api.action(answer, { note: 'short' }, { keepalive: true })
+    await api.action(answer, { note: 'é'.repeat(31 * 1024) }, { keepalive: true })
+    expect(fetch.mock.calls.map(([, init]) => init?.keepalive)).toEqual([true, false])
+  })
+
   it('rejects with an ActionError naming the extension, action, status, and message', async () => {
     const { api } = setup(() => json(500, { error: 'Extension action failed' }))
     const error = await api.action(ref('notes', 'save'), 'x').catch((failure: unknown) => failure)

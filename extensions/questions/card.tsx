@@ -465,7 +465,7 @@ function Card({
       )
     }
     if (immediately) return fire()
-    undoWindowSend.current = { cancel: deadline(ANSWER_UNDO_WINDOW_MS, fire), fire }
+    undoWindowSend.current = { cancel: deadline(ANSWER_UNDO_WINDOW_MS, () => fire(true)), fire }
     setPhase('undo')
   }
   const unlock = () => {

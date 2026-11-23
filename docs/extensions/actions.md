@@ -69,8 +69,8 @@ Call actions from the UI in one of two ways:
   `data` stays while a refetch runs; `refetch()` calls again, also when not `enabled`. A failure shows as a notice
   unless a reader passes `onError`. Pass the signal as `on` rather than calling `refetch()` from an effect.
 - `api.action(ref, args?, { conversationId?, signal?, keepalive? })` acts, once: a click that saves,
-  closes, or labels something; `keepalive` lets a call sent on `pagehide` outlive the page. It returns a promise of
-  the result; afterwards, `refetch()` what changed. A rejection (an `ActionError` with `extension`, `action`,
+  closes, or labels something; `keepalive` lets a call outlive the page. The SDK uses ordinary transport if the
+  encoded JSON body exceeds 60 KiB. It returns a promise of the result; afterwards, `refetch()` what changed. A rejection (an `ActionError` with `extension`, `action`,
   `status`, `message`) that nothing catches shows as a notice; catch it to handle it yourself.
 
 ```tsx
