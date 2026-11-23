@@ -35,10 +35,11 @@ export const BUILTIN_FAMILIES: Record<string, FamilySpec & { color: FamilyColor 
 }
 
 export const FEATURES = {
-  coordinatorModes: {
-    family: 'review',
-    label: 'Plan and Review',
-    description: 'Advisory checkpoints before implementation and delivery',
+  automaticPlan: {
+    family: 'default',
+    label: 'Automatic Plan',
+    description:
+      'Choose a family for this project to send bounded task and user input text to that provider. No tool output, images, system prompt or memory.',
   },
   summaries: {
     family: 'tiny',

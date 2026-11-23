@@ -42,6 +42,8 @@
 - `extensions/subagents/server.ts` — internal ToolTaskInput.assistant locates the calling assistant for history forks. Drop when ToolExecutionApi exposes the calling assistant entry ID.
 - `server/skills.ts` — copies AgentSession's unexported _expandSkillCommand block format for /skill:name invocation. Drop when Pi exports the skill command expansion.
 
+The Pi Durable patch also adds sealed forks. The shared transaction refuses new entries, submissions, tasks, configuration changes through `configure`, and descendants for a sealed conversation. Automatic Plan keeps its thread in a separate document and uses only its own tool-free tasks. Remove this patch only when Pi provides equivalent admission checks.
+
 On a Pi upgrade, run `rg "Pi upstream:"` and recheck each marked item against the new version; `scripts/pi-upstream.ts` (part of `pnpm check`) checks that every tracked marker matches the installed package version and its path appears in this list, and the backticked path each entry starts with is tracked and contains a marker; backticks later in an entry are prose.
 Delete copies and patches that Pi now exports or fixes, then update the remaining markers and this list after verification.
 

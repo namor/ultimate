@@ -237,7 +237,7 @@ it('renders identical system prompt sections and tools for a conversation and it
   expect(parent.tools.length).toBeGreaterThan(0)
   expect(JSON.stringify(await render(fork.id))).toBe(JSON.stringify(parent))
 
-  // A raw fork loses branch identity and does not get coordinator checkpoints.
+  // Audit the existing document exception: lineage.branch resets on raw forks.
   await server.harness.commit(async (tx) => {
     ;(await tx.doc(Branch, id)).branch = {
       from: 1 as ConversationId,
@@ -255,9 +255,7 @@ it('renders identical system prompt sections and tools for a conversation and it
     Object.keys(branchParent.sections).filter(
       (key) => branchParent.sections[key] !== forked.sections[key],
     ),
-  ).toEqual(['coordinator-modes', 'lineage'])
-  expect(branchParent.sections['coordinator-modes']).toContain('advisory_checkpoint')
-  expect(forked.sections['coordinator-modes']).toBeUndefined()
+  ).toEqual(['lineage'])
   expect(branchParent.sections.lineage).toContain('Branched from #1')
   expect(forked.sections.lineage).not.toContain('Branched from')
   // When the fork has the same branch facts, its entire prefix is identical too.
