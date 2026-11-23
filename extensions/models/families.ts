@@ -15,18 +15,13 @@ import {
   refOf,
 } from '../../lib/families.ts'
 import type { Families, Feature, FamilySpec } from '../../lib/families.ts'
-import {
-  automaticPlanChoice,
-  mergeLayers,
-  readFamilyLayers,
-  writeFamilies,
-} from '../../lib/families-settings.ts'
-import type { FamilyLayers } from '../../lib/families-settings.ts'
+import { mergeLayers, readFamilyLayers, writeFamilies } from '../../lib/families-settings.ts'
 import { readSettings, updateSettings, userSettingsPath } from '../../lib/settings.ts'
 import type { FamiliesView, FamilyUser, SaveFamilies } from './refs.ts'
 
-const featurePinsInSettings: Partial<
-  Record<Feature, { key: string; read: (settings: JsonObject) => unknown }>
+const featurePinsInSettings: Record<
+  Feature,
+  { key: string; read: (settings: JsonObject) => unknown }
 > = {
   summaries: { key: 'summaryModel', read: (settings) => settings.summaryModel },
   preview: {
@@ -80,10 +75,7 @@ export async function familiesView(host: ExtensionHost): Promise<FamiliesView> {
       ([field, value]) =>
         value !== undefined && own[name]?.[field as keyof FamilySpec] === undefined,
     )
-  const plan = automaticPlanChoice(layers)
-  const visibleFamilies =
-    plan.family && plan.spec ? { ...config.families, [plan.family]: plan.spec } : config.families
-  const families = Object.entries(visibleFamilies).map(([name, spec]) => {
+  const families = Object.entries(config.families).map(([name, spec]) => {
     const follows = name === DEFAULT_FAMILY && !spec.model && pi.model
     return {
       name,
@@ -116,23 +108,22 @@ export async function familiesView(host: ExtensionHost): Promise<FamiliesView> {
   })
   const features: FamilyUser[] = (Object.keys(FEATURES) as Feature[]).map((id) => {
     const { label, description, family } = FEATURES[id]
-    const setting = featurePinsInSettings[id]
-    const projectPin = pinned(setting?.read(project))
-    const pin = projectPin ?? pinned(setting?.read(user))
-    const assigned = id === 'automaticPlan' ? (plan.family ?? 'off') : (config.assign[id] ?? family)
+    const projectPin = pinned(featurePinsInSettings[id].read(project))
+    const pin = projectPin ?? pinned(featurePinsInSettings[id].read(user))
+    const assigned = config.assign[id] ?? family
     return {
       id,
       kind: 'feature',
       label,
       description,
-      ...(pin || assigned === 'off'
+      ...(pin
         ? {}
         : { family: Object.hasOwn(config.families, assigned) ? assigned : DEFAULT_FAMILY }),
       natural: family,
-      ...(pin && setting
+      ...(pin
         ? {
             pinned: pin,
-            pinnedIn: `${projectPin ? 'project' : 'user'} settings: ${setting.key}`,
+            pinnedIn: `${projectPin ? 'project' : 'user'} settings: ${featurePinsInSettings[id].key}`,
           }
         : {}),
       ...(projectPin || Object.hasOwn(layers.project.assign, id) ? { project: true as const } : {}),
@@ -161,14 +152,6 @@ function familyOverridesOnly(families: SaveFamilies['families'], defaults: Famil
     if (!builtin || Object.keys(changed).length) saved[name] = changed
   }
   return saved
-}
-
-function retainPlanDefinition(layers: FamilyLayers, next: Record<string, FamilySpec>) {
-  const { family } = automaticPlanChoice(layers)
-  if (!family || family === 'off') return
-  const own = layers.from === 'project' ? layers.base.families[family] : undefined
-  if (own) next[family] = own
-  else delete next[family]
 }
 
 function omitEmptySettings(value: { families: object; assign: object }): JsonObject {
@@ -202,7 +185,6 @@ export async function setDefault(host: ExtensionHost, name: string) {
     },
     mergeFamilies(layers.user, layers.project).families,
   )
-  retainPlanDefinition(layers, families)
   const assign =
     layers.from === 'project'
       ? layers.base.assign
@@ -215,7 +197,7 @@ export async function setDefault(host: ExtensionHost, name: string) {
   return { model: ref, thinkingLevel }
 }
 
-export async function saveFamilies(host: ExtensionHost, args: SaveFamilies, preservePlan = false) {
+export async function saveFamilies(host: ExtensionHost, args: SaveFamilies) {
   const layers = await readFamilyLayers(
     host.userHome,
     host.projectRoot,
@@ -225,7 +207,6 @@ export async function saveFamilies(host: ExtensionHost, args: SaveFamilies, pres
     args.families,
     mergeFamilies(layers.user, layers.project).families,
   )
-  if (preservePlan) retainPlanDefinition(layers, families)
   const value = { families, assign: args.assign }
   parseFamilies(value)
   for (const user of Object.keys(args.assign))
@@ -233,13 +214,8 @@ export async function saveFamilies(host: ExtensionHost, args: SaveFamilies, pres
       throw new Error(
         `${user}: only features are assigned here; an agent's family is its definition's`,
       )
-  for (const [feature, name] of Object.entries(args.assign))
-    if (
-      !(feature === 'automaticPlan' && name === 'off') &&
-      !Object.hasOwn(args.families, name) &&
-      !Object.hasOwn(BUILTIN_FAMILIES, name) &&
-      !(feature === 'automaticPlan' && automaticPlanChoice(layers).family === name)
-    )
+  for (const name of Object.values(args.assign))
+    if (!Object.hasOwn(args.families, name) && !Object.hasOwn(BUILTIN_FAMILIES, name))
       throw new Error(`Unknown family ${name}`)
   await writeFamilies(host.userHome, host.projectRoot, omitEmptySettings(value))
   if (args.unpin.length)

@@ -1,4 +1,3 @@
-import { join } from 'node:path'
 import { BACKGROUND_CONTEXT as background } from '@earendil-works/chord/context'
 import { clampThinkingLevel } from '@earendil-works/pi-ai'
 import {
@@ -13,16 +12,23 @@ import { obj } from '@earendil-works/pi-schema'
 import { implementAction } from '../../lib/actions.ts'
 import { previewModel } from '../../lib/agents.ts'
 import { refOf } from '../../lib/families.ts'
-import { automaticPlanChoice, readFamilyLayers } from '../../lib/families-settings.ts'
 import { parseConversationId } from '../../lib/ids.ts'
 import { projectDecision } from '../../lib/project-setup.ts'
 import { safeToRerun } from '../../lib/replay.ts'
-import { readSettings } from '../../lib/settings.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { ConversationsApi } from '../conversations/api.ts'
 import { MessageEntry } from '../entries/api.ts'
 import { Branch } from '../lineage/api.ts'
-import { PlanCard, ReadThread, Refine, RevisionCard, SendRevision } from './refs.ts'
+import {
+  PlanCard,
+  PlanSettings,
+  ReadThread,
+  Refine,
+  RevisionCard,
+  SendRevision,
+  SetPlan,
+} from './refs.ts'
+import { linkedFamily, linkPlan, planOptions } from './settings.ts'
 import type { Thread } from './refs.ts'
 
 export const Planning = defineDoc<Thread & { packet?: string }>({
@@ -43,8 +49,8 @@ const Admission = defineDoc<{ fork?: ConversationId; caller?: TaskId; task?: Tas
   checkpointWhen: () => false,
   initial: () => ({}),
 })
-export const userActions = ['readThread', 'refine', 'sendRevision']
-export const privateActions = ['readThread', 'refine', 'sendRevision']
+export const userActions = ['readThread', 'refine', 'sendRevision', 'setPlan']
+export const privateActions = userActions
 const packetLimit = 12_000
 export function reportedCompletionModel(event: unknown): string | undefined {
   if (
@@ -74,30 +80,15 @@ const finish = <T>(result: T) => ({
 
 async function selection(host: ExtensionHost) {
   if (projectDecision(host.projectRoot, host.userHome) !== true) return undefined
-  const layers = await readFamilyLayers(
-    host.userHome,
-    host.projectRoot,
-    await readSettings(join(host.projectRoot, '.ultimate/settings.json')),
-  )
-  if (layers.errors.length)
-    throw new Error('Fix model family settings before starting Automatic Plan')
-  const { family, spec } = automaticPlanChoice(layers)
-  if (!family || family === 'off') return undefined
-  const ref = refOf(spec?.model)
-  const model = host.modelRuntime
-    .getAvailableSnapshot()
-    .find((m) => m.provider === ref?.provider && m.id === ref.modelId)
-  if (!model || model.api !== 'openai-codex-responses')
-    throw new Error(
-      'Automatic Plan requires an available Codex Responses model. No fallback is used.',
-    )
+  const family = await linkedFamily(host)
+  if (!family) return undefined
+  const model = (await planOptions(host)).find((option) => option.family === family)
+  if (!model)
+    throw new Error('The linked Plan family is missing or unavailable. No fallback is used.')
   const pin = previewModel()
   if (pin && (pin.provider !== model.provider || pin.modelId !== model.id))
     throw new Error('Automatic Plan differs from this preview’s model pin')
-  const thinking = spec?.thinking ?? 'low'
-  if (clampThinkingLevel(model, thinking) !== thinking)
-    throw new Error('The configured Plan effort is unsupported')
-  return { provider: model.provider, id: model.id, thinking }
+  return { provider: model.provider, id: model.id, thinking: model.effort }
 }
 
 function requestTask(host: ExtensionHost) {
@@ -123,16 +114,20 @@ function requestTask(host: ExtensionHost) {
         try {
           if (!receipt) {
             if (!packet) throw new Error('No saved planning context')
-            const model = await selection(host)
-            const current = model && runtime.models.getModel(model.provider, model.id)
+            const ref = refOf(thread.model)
+            const current = ref && runtime.models.getModel(ref.provider, ref.modelId)
+            const thinking = thread.effort
             if (
-              !model ||
-              `${model.provider}/${model.id}` !== thread.model ||
-              model.thinking !== thread.effort ||
-              current?.api !== 'openai-codex-responses' ||
-              clampThinkingLevel(current, model.thinking) !== model.thinking
+              projectDecision(host.projectRoot, host.userHome) !== true ||
+              !current ||
+              current.api !== 'openai-codex-responses' ||
+              !thinking ||
+              clampThinkingLevel(current, thinking) !== thinking
             )
-              throw new Error('Automatic Plan family selection changed. No replacement was used.')
+              throw new Error(
+                'The planning thread’s pinned model or effort is unavailable. No replacement was used.',
+              )
+            const model = { provider: current.provider, id: current.id, thinking }
             if (await runtime.memo<boolean>('attempted', ctx))
               throw new Error(
                 'The previous provider request has no saved answer. It was not resent.',
@@ -339,6 +334,16 @@ const argsOf = (value: unknown) => {
 }
 
 export const actions = {
+  settings: implementAction(PlanSettings, async (_args, { host }) => ({
+    family: await linkedFamily(host),
+    options: await planOptions(host),
+  })),
+  setPlan: implementAction(SetPlan, async (family, { host }) => {
+    if (family !== null && (typeof family !== 'string' || !family))
+      throw new Error('Choose a family or Off')
+    await linkPlan(host, family)
+    return null
+  }),
   readThread: implementAction(ReadThread, async (args, { host }) => {
     const { fork } = argsOf(args)
     const thread = await host.harness().snapshot(Planning, fork, background)

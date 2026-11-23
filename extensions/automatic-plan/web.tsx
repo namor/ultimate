@@ -1,6 +1,14 @@
 import { useState } from 'react'
 import { GitForkIcon } from 'lucide-react'
-import { api, Card, defineWebExtension, errorMessage, renderEntry, useAction } from '@/sdk'
+import {
+  api,
+  Card,
+  defineWebExtension,
+  errorMessage,
+  renderEntry,
+  useAction,
+  useDialog,
+} from '@/sdk'
 import {
   Dialog,
   DialogContent,
@@ -8,8 +16,73 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { PlanCard, ReadThread, Refine, RevisionCard, SendRevision } from './refs.ts'
+import {
+  PlanCard,
+  PlanSettings,
+  ReadThread,
+  Refine,
+  RevisionCard,
+  SendRevision,
+  SetPlan,
+} from './refs.ts'
 import type { ConversationId } from '@earendil-works/pi-durable'
+
+const settingsDialog = 'automatic-plan.settings'
+
+function PlanPreferences() {
+  const [open, setOpen] = useDialog(settingsDialog)
+  const preferences = useAction(PlanSettings, null, { enabled: open })
+  const [error, setError] = useState<string>()
+  async function setFamily(family: string | null) {
+    setError(undefined)
+    try {
+      await api.action(SetPlan, family)
+      await preferences.refetch()
+    } catch (failure) {
+      setError(errorMessage(failure))
+    }
+  }
+  const selected = preferences.data?.family
+  const options = preferences.data?.options ?? []
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogTitle>Automatic Plan</DialogTitle>
+        <DialogDescription>
+          New plans use this family’s current model and effort. Existing planning threads keep their
+          original model. The provider receives bounded task and user input text, without the full
+          transcript, tools, images, or memory.
+        </DialogDescription>
+        <label className="grid gap-2 text-sm">
+          Family for this project
+          <select
+            className="rounded border border-border bg-background p-2"
+            value={selected ?? ''}
+            disabled={!preferences.data}
+            onChange={(event) => void setFamily(event.currentTarget.value || null)}
+          >
+            <option value="">Off</option>
+            {selected && !options.some((choice) => choice.family === selected) && (
+              <option value={selected} disabled>
+                {selected} · unavailable
+              </option>
+            )}
+            {options.map((choice) => (
+              <option key={choice.family} value={choice.family}>
+                {choice.family} · {choice.id} · {choice.effort}
+              </option>
+            ))}
+          </select>
+        </label>
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
 
 function PlanningThread({ fork }: { fork: ConversationId }) {
   const [open, setOpen] = useState(false)
@@ -130,6 +203,14 @@ function CardBody({
 }
 
 export default defineWebExtension({
+  slots: { overlay: [PlanPreferences] },
+  commands: [
+    {
+      id: settingsDialog,
+      title: 'Automatic Plan…',
+      run: (context) => context.open(settingsDialog),
+    },
+  ],
   entries: {
     [PlanCard.kind]: renderEntry(PlanCard, ({ entry }) => <CardBody {...entry.data} />),
     [RevisionCard.kind]: renderEntry(RevisionCard, ({ entry }) => <CardBody {...entry.data} />),

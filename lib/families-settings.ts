@@ -62,11 +62,9 @@ export async function readFamilyLayers(
   )
   const own = isObject(stored.projects) ? stored.projects[projectKey(projectRoot)] : undefined
   const from = own !== undefined ? 'project' : stored.recent !== undefined ? 'recent' : 'builtin'
-  const base = parseLayerOrReportEmpty(own ?? stored.recent, `${familiesPath(userHome)} (${from})`)
-  if (from !== 'project') delete base.assign.automaticPlan
   return {
     user: parseLayerOrReportEmpty(user.modelFamilies, 'user settings: modelFamilies'),
-    base,
+    base: parseLayerOrReportEmpty(own ?? stored.recent, `${familiesPath(userHome)} (${from})`),
     from,
     project: parseLayerOrReportEmpty(
       (settings ?? (await projectSettings(projectRoot, userHome))).modelFamilies,
@@ -78,15 +76,6 @@ export async function readFamilyLayers(
 
 export const mergeLayers = ({ user, base, from, project }: FamilyLayers) =>
   from === 'project' ? mergeFamilies(user, project, base) : mergeFamilies(user, base, project)
-
-export function automaticPlanChoice(layers: FamilyLayers) {
-  const own = layers.from === 'project' ? layers.base.assign.automaticPlan : undefined
-  const family = own ?? layers.project.assign.automaticPlan
-  const effective = mergeLayers(
-    layers.from === 'recent' ? { ...layers, base: { families: {}, assign: {} } } : layers,
-  )
-  return { own, family, spec: family && family !== 'off' ? effective.families[family] : undefined }
-}
 
 export async function readFamilies(
   userHome: string,

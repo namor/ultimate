@@ -1,7 +1,22 @@
 /** Plan cards, their protected planning thread, and explicit follow-up actions. */
+import type { ModelThinkingLevel } from '@earendil-works/pi-ai'
 import type { ConversationId } from '@earendil-works/pi-durable'
 import { defineEntry } from '@earendil-works/pi-durable'
 import { actionRef } from '../../shared/extension-api.ts'
+
+export type PlanSelection = {
+  family: string
+  provider: string
+  id: string
+  effort: ModelThinkingLevel
+}
+/** Read the project's linked family and the eligible family choices. */
+export const PlanSettings = actionRef<null, { family: string | null; options: PlanSelection[] }>(
+  'automatic-plan',
+  'settings',
+)
+/** Link Automatic Plan to one model family in this project, or turn planning off. Person-only. */
+export const SetPlan = actionRef<string | null, null>('automatic-plan', 'setPlan')
 
 export type PlanTurn = {
   prompt?: string
@@ -13,7 +28,7 @@ export type PlanTurn = {
 export type Thread = {
   coordinator?: ConversationId
   model?: string
-  effort?: string
+  effort?: ModelThinkingLevel
   turns: PlanTurn[]
   sent?: number
   sending?: number

@@ -23,7 +23,6 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
     JSON.stringify({
       modelFamilies: {
         families: { plan: { model: 'plan-fixture/astra', thinking: 'low' } },
-        assign: { automaticPlan: 'plan' },
       },
     }),
   )
@@ -61,7 +60,10 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
   faux.setResponses([route])
   const open = () => fauxServer({ ultimateRoot, projectRoot, home, userHome: home, faux })
   let server = await open()
+  const action = (name: string, args: unknown) =>
+    post(server, `/api/extensions/automatic-plan/actions/${name}`, { args })
   try {
+    expect((await action('setPlan', 'plan')).status).toBe(200)
     const id = await server.harness.commit(async (tx) => {
       const { id: coordinator } = await tx.createConversation({ ownership: { kind: 'ownerless' } })
       ;(await tx.doc(AgentDoc, coordinator)).model = { provider: 'plan-fixture', modelId: 'sol' }
@@ -131,9 +133,9 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
     ).rejects.toThrow('user-only')
     await expect(
       server.extensions.invoke(
-        'models',
-        'saveFamilies',
-        { families: {}, assign: { automaticPlan: 'off' }, unpin: [] },
+        'automatic-plan',
+        'setPlan',
+        null,
         new AbortController().signal,
         id,
         'ui',
@@ -155,13 +157,20 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
         ),
       ).rejects.toThrow('requires a person')
     }
+    await writeFile(
+      join(projectRoot, '.ultimate/settings.json'),
+      JSON.stringify({
+        modelFamilies: { families: { plan: { model: 'plan-fixture/sol', thinking: 'off' } } },
+      }),
+    )
+    expect((await action('settings', null)).data.result.options).toContainEqual(
+      expect.objectContaining({ family: 'plan', id: 'sol', effort: 'off' }),
+    )
     expect(await thread()).toMatchObject({
       coordinator: id,
       model: 'plan-fixture/astra',
       turns: [{ answer: 'First plan' }],
     })
-    const action = (name: string, args: unknown) =>
-      post(server, `/api/extensions/automatic-plan/actions/${name}`, { args })
     expect(
       (await action('refine', { fork, after: 1, text: 'tighten the first check' })).status,
     ).toBe(200)
@@ -184,6 +193,7 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
     await until(async () => (await thread())?.sent === 1)
     expect((await entries()).filter((row) => row.kind === RevisionCard.kind)).toHaveLength(1)
     expect(requests).toHaveLength(2)
+    expect(requests[1].effort).toBe('low')
     for (const [reported, error] of [
       ['not-astra', 'different completion model'],
       [undefined, 'did not report the completion model'],

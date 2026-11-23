@@ -35,12 +35,6 @@ export const BUILTIN_FAMILIES: Record<string, FamilySpec & { color: FamilyColor 
 }
 
 export const FEATURES = {
-  automaticPlan: {
-    family: 'default',
-    label: 'Automatic Plan',
-    description:
-      'Choose a family for this project to send bounded task and user input text to that provider. No tool output, images, system prompt or memory.',
-  },
   summaries: {
     family: 'tiny',
     label: 'Summaries',

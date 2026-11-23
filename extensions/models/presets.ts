@@ -4,7 +4,7 @@ import type { ExtensionHost } from '../../server/extensions.ts'
 import { discoverAgents } from '../../lib/agents.ts'
 import { meansNone } from '../../lib/errors.ts'
 import { DEFAULT_FAMILY, FEATURES, mergeFamilies, parseFamilies } from '../../lib/families.ts'
-import { automaticPlanChoice, readFamilyLayers } from '../../lib/families-settings.ts'
+import { readFamilyLayers } from '../../lib/families-settings.ts'
 import { readJson, updateJson } from '../../lib/json-file.ts'
 import { readSettings, updateSettings, userSettingsPath } from '../../lib/settings.ts'
 import { saveFamilies } from './families.ts'
@@ -54,8 +54,7 @@ export function parsePreset(value: unknown, where = 'preset'): Preset {
       throw new Error(`${where}.pins.${feature}: only summaries and preview are pinned`)
     pins[feature] = checkPin(pin, `${where}.pins.${feature}`)
   }
-  for (const user of Object.keys(assign))
-    if (user === 'automaticPlan' || !Object.hasOwn(FEATURES, user)) delete assign[user]
+  for (const user of Object.keys(assign)) if (!Object.hasOwn(FEATURES, user)) delete assign[user]
   for (const [user, family] of Object.entries(assign))
     if (!Object.hasOwn(families, family))
       throw new Error(`${where}.assign.${user}: unknown family ${family}`)
@@ -107,19 +106,6 @@ const modelsOf = (preset: Preset) => [
 const availableModels = async (host: ExtensionHost) =>
   new Set((await host.modelRuntime.getAvailable()).map((model) => `${model.provider}/${model.id}`))
 
-function withoutPlanFamily(preset: Preset, family: string | undefined): Preset {
-  if (!family || family === 'off') return preset
-  const families = { ...preset.families }
-  delete families[family]
-  return { ...preset, families }
-}
-
-async function planChoice(host: ExtensionHost) {
-  return automaticPlanChoice(
-    await readFamilyLayers(host.userHome, host.projectRoot, await host.projectSettings()),
-  )
-}
-
 function missingLogins(host: ExtensionHost, preset: Preset, available: Set<string>) {
   const missing = new Map<string, string[]>()
   for (const model of modelsOf(preset))
@@ -155,14 +141,13 @@ export async function presetsView(host: ExtensionHost): Promise<PresetsView> {
     host.modelRuntime,
   )
   const available = await availableModels(host)
-  const plan = await planChoice(host)
   const presets: PresetView[] = Object.entries(stored.presets)
     .toSorted(([a], [b]) => a.localeCompare(b))
     .map(([name, preset]) => ({
       name,
       preset,
       current: !!current && same(preset, current),
-      missing: missingLogins(host, withoutPlanFamily(preset, plan.family), available),
+      missing: missingLogins(host, preset, available),
       orphans: definitions
         .filter(
           (definition) =>
@@ -203,8 +188,7 @@ export async function applyPreset(host: ExtensionHost, name: unknown) {
   const checked = checkName(name)
   const stored = await readStored(presetsPath(host.userHome))
   if (!Object.hasOwn(stored.presets, checked)) throw new Error(`No preset ${checked}`)
-  const plan = await planChoice(host)
-  const preset = withoutPlanFamily(stored.presets[checked], plan.family)
+  const preset = stored.presets[checked]
   const missing = missingLogins(host, preset, await availableModels(host))
   if (missing.length)
     throw new Error(
@@ -212,15 +196,7 @@ export async function applyPreset(host: ExtensionHost, name: unknown) {
         .map(({ name: provider, models }) => `${provider} (${models.join(', ')})`)
         .join('; ')}`,
     )
-  await saveFamilies(
-    host,
-    {
-      families: preset.families,
-      assign: { ...preset.assign, ...(plan.own ? { automaticPlan: plan.own } : {}) },
-      unpin: [],
-    },
-    true,
-  )
+  await saveFamilies(host, { families: preset.families, assign: preset.assign, unpin: [] })
   await updateSettings(userSettingsPath(host.userHome), (settings) => {
     if (preset.pins.summaries === undefined) delete settings.summaryModel
     else settings.summaryModel = preset.pins.summaries
