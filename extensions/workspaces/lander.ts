@@ -24,6 +24,7 @@ import { landingWeight } from '../../lib/token-weight.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { CheckRan, SubmissionFailed, SubmissionLanded } from './api.ts'
 import { setup } from './setup.ts'
+import { continuationTask, resolveContinuations } from './continuation.ts'
 import type { DeliverySettings } from './delivery-settings.ts'
 import {
   askedUnderStanding,
@@ -131,6 +132,8 @@ const starterLine = (
 
 type Host = Pick<
   ExtensionHost,
+  | 'need'
+  | 'want'
   | 'home'
   | 'userHome'
   | 'ultimateRoot'
@@ -568,6 +571,7 @@ export function createLander(
   },
   limits: CheckLimits = defaultCheckLimitsSeconds,
 ) {
+  const continuation = continuationTask(host, Workspaces)
   async function resetTrackedIntegration(source: string, tip: string) {
     const path = await landerCheckout(host.home, source, await host.projectSettings(), tip)
     await git(path, 'reset', '--hard', '-q')
@@ -777,6 +781,7 @@ export function createLander(
               ...(entry.subject ? { subject: entry.subject } : {}),
               ...(entry.approvals ? { approvals: entry.approvals } : {}),
             }
+            await resolveContinuations(tx, draft, id, continuation, true)
             for (const old of Object.keys(draft.results).slice(0, -recentSubmitCardOutcomeLimit))
               delete draft.results[old]
             await log(tx, runtime.conversationId, entry, outcome)
@@ -1363,7 +1368,7 @@ export function createLander(
         const entry = { kind: LanderReportEntry.kind, data: { id, outcome } }
         const next = { status: 'running', checkpoint: { phase: 'next' } } as const
         if (outcome.outcome === 'failed') {
-          await (
+          const receipt = await (
             await runtime.conversation(branch, context)
           )?.submit(
             {
@@ -1375,7 +1380,23 @@ export function createLander(
             },
             context,
           )
-          await runtime.commit(() => next, context)
+          await runtime.commit(async (tx) => {
+            const current = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).items[String(branch)]
+              ?.continuation
+            if (receipt && current?.submission === id && current.state === 'needs-action')
+              await tx.createTask(
+                continuation,
+                {
+                  owner: branch,
+                  key: current.key,
+                  submission: id,
+                  result: 'failed',
+                  admitted: receipt.id,
+                },
+                { conversationId: branch, ownership: { kind: 'conversation' }, background: true },
+              )
+            return next
+          }, context)
           return
         }
         await (

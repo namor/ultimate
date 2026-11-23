@@ -14,6 +14,12 @@ export type Workspace = {
   error?: string
   landed?: string
   deliveryWakes?: number
+  continuation?: {
+    key: EntryId
+    outcome: string
+    submission: string
+    state: 'waiting' | 'needs-action'
+  }
 }
 type SubmitTimeEntryId = EntryId
 type SubmitTimeSubject = ConversationSubject

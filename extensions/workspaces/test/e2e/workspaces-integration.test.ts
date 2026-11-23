@@ -1301,6 +1301,100 @@ it.concurrent('wakes only the submitter on a failed landing and leaves it open',
     ),
   ).toHaveLength(0)
 })
+it.concurrent('keeps a failed followed attempt open and hands a quiet recovery turn to its starter', async () => {
+  const { f, id } = await concluding()
+  const gate = join(f.directory, 'fail-check')
+  f.host.projectSettings = async () => ({
+    lander: { checks: [`while ! test -f '${gate}'; do sleep 0.05; done; exit 1`] },
+  })
+  await f.call(id, 'workspace', {
+    action: 'submit',
+    divergence: 'None',
+    outcome: 'Land the workspace delivery',
+  })
+  const { key, submission: attempt } = (await f.service.get(id, context))!.continuation!
+  await writeFile(gate, '')
+  const request = `workspaces.continuation:handoff:${key}:${attempt}`
+  await until(
+    async () =>
+      !!(await f.opened.harness.commit(
+        (tx) => tx.submissionByRequest(ROOT_CONVERSATION_ID, request),
+        context,
+      )),
+  )
+  await f.reopen()
+  expect((await f.service.get(id, context))!.continuation).toMatchObject({
+    key,
+    submission: attempt,
+    state: 'needs-action',
+  })
+  expect(
+    (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!.queue,
+  ).toHaveLength(0)
+  const owner = (await f.opened.harness.conversation(id, context))!
+  expect(
+    (await owner.context(context)).entries.filter((e) => e.kind === 'workspaces.lander-report'),
+  ).toHaveLength(1)
+})
+
+it.concurrent('continues one approved delivery after its exact prerequisite fails across reopen', async () => {
+  const { f, id: owner } = await concluding()
+  const blocker = await f.create()
+  await f.service.ready(blocker, context)
+  await commit((await f.service.get(blocker, context))!.path, 'bad-candidate.txt')
+  const gate = join(f.directory, 'finish-check')
+  f.host.projectSettings = async () => ({
+    lander: {
+      checks: [`while ! test -f '${gate}'; do sleep 0.05; done; test ! -f bad-candidate.txt`],
+    },
+  })
+  const attempt = await f.service.submit(blocker, 'None', context)
+  const outcome = 'Land the approved change to concluded.txt'
+  expect(
+    JSON.stringify(
+      await f.call(owner, 'workspace', { action: 'follow', after: 'not-submitted', outcome }),
+    ),
+  ).toContain('Do not wait for an unsubmitted prerequisite')
+  await f.call(owner, 'workspace', { action: 'follow', after: attempt.id, outcome })
+  const wait = (await f.service.get(owner, context))!.continuation!
+  expect(wait).toMatchObject({ submission: attempt.id, state: 'waiting' })
+  await f.reopen()
+  const requests: string[] = []
+  const route: FauxResponseFactory = ({ messages }) => {
+    f.prepared.faux!.appendResponses([route])
+    const last = messages.at(-1)!
+    if (
+      last.role === 'user' &&
+      JSON.stringify(last.content).includes(`Submission ${attempt.id} failed.`)
+    ) {
+      requests.push(attempt.id)
+      return fauxAssistantMessage(
+        fauxToolCall('workspace', { action: 'submit', divergence: 'None', continueFrom: wait.key }),
+        { stopReason: 'toolUse' },
+      )
+    }
+    return fauxAssistantMessage('finished')
+  }
+  f.prepared.faux!.setResponses([route])
+  await writeFile(gate, '')
+  await until(async () =>
+    Object.values(
+      (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!.results,
+    ).some((r) => r.conversationId === owner && r.outcome === 'landed'),
+  )
+  const index = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+  expect(index.results[attempt.id].outcome).toBe('failed')
+  expect(index.items[String(owner)].continuation).toBeUndefined()
+  expect(
+    Object.values(index.results).filter(
+      (r) => r.conversationId === owner && r.outcome === 'landed',
+    ),
+  ).toHaveLength(1)
+  expect(await readFile(join(f.projectRoot, 'concluded.txt'), 'utf8')).toBe('concluded.txt')
+  await f.reopen()
+  expect(requests).toEqual([attempt.id])
+})
+
 it.concurrent('delivers a message to a resumed branch whose checkout conclude released', async () => {
   const { f, id } = await concluding()
   await f.service.submit(id, 'None', context)

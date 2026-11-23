@@ -2,7 +2,7 @@ import { offsetEntryId, parseConversationId, parseEntryId } from '../../lib/ids.
 import type { JsonValue } from '@earendil-works/chord/json'
 import { onCommit } from '../../lib/commits.ts'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
-import { obj, opt, str } from '@earendil-works/pi-schema'
+import { num, obj, opt, str } from '@earendil-works/pi-schema'
 import { strEnum } from '../../lib/schema.ts'
 import {
   configure,
@@ -39,6 +39,7 @@ import type { GithubRepo } from './refs.ts'
 import { githubRepo, readGithubRepo } from '../../lib/project-identity.ts'
 import { UserInputEvent } from '../../shared/events.ts'
 import { authorize, park, spent } from './delivery.ts'
+import { follow, resolveContinuations } from './continuation.ts'
 import type { Actor, Approval } from './delivery.ts'
 import { deliveryRuntime } from './advance.ts'
 import { sweepChecks } from './lander.ts'
@@ -266,6 +267,7 @@ export const actions = {
           conversationId: entry.conversationId,
           ...(entry.subject ? { subject: entry.subject } : {}),
         }
+        await resolveContinuations(tx, index, entry.id, workspaces(host).Continuation, false)
         index.queue = index.queue.filter((item) => item.id !== entry.id)
         if (delivery.pr)
           index.closing = [
@@ -505,7 +507,7 @@ export default function workspaceExtension(host: ExtensionHost) {
   })
   return defineExtension({
     name: 'workspaces',
-    tasks: [service.Preparation, service.Lander],
+    tasks: [service.Preparation, service.Lander, service.Continuation],
     hooks: [
       hook(ToolTask, {
         beforeTool: async (call, api, caller) => {
@@ -530,7 +532,26 @@ export default function workspaceExtension(host: ExtensionHost) {
         description:
           'Inspect your workspace and source tips, or submit your clean, verified tip to the lander (submit requires divergence from the original request).',
         parameters: obj({
-          action: strEnum(['status', 'submit']),
+          action: strEnum(['status', 'submit', 'follow', 'unfollow']),
+          after: opt(
+            str({
+              description:
+                'For follow: exact queued submission or retained result to reassess, regardless of success.',
+            }),
+          ),
+          outcome: opt(
+            str({
+              maxLength: 500,
+              description:
+                'For follow, or to track your own submit: name the approved workspace landing. This does not grant approval.',
+            }),
+          ),
+          continueFrom: opt(
+            num({
+              description:
+                'Current continuation key from status. Required to replace or withdraw a wait. Pass to submit to link the next attempt.',
+            }),
+          ),
           risk: opt(strEnum(['low', 'medium', 'high'])),
           pullRequest: opt(
             obj({
@@ -569,7 +590,17 @@ export default function workspaceExtension(host: ExtensionHost) {
           ),
         }),
         async execute(
-          { action, divergence, risk, review, reviewedTree, pullRequest },
+          {
+            action,
+            divergence,
+            risk,
+            review,
+            reviewedTree,
+            pullRequest,
+            after,
+            outcome,
+            continueFrom,
+          },
           api,
           caller,
         ) {
@@ -589,6 +620,26 @@ export default function workspaceExtension(host: ExtensionHost) {
             )
               throw new Error(`Only a top-level main conversation can ${action} its own workspace`)
           }, caller)
+          if (action === 'follow' || action === 'unfollow')
+            return finish(
+              await api.commit(async (tx) => {
+                const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+                if (action === 'follow')
+                  return follow(
+                    tx,
+                    index,
+                    api.conversationId,
+                    after ?? '',
+                    outcome ?? '',
+                    continueFrom,
+                  )
+                const item = index.items[String(api.conversationId)]
+                if (!item?.continuation || item.continuation.key !== continueFrom)
+                  throw new Error('Continuation changed; inspect workspace status first')
+                delete item.continuation
+                return 'Stopped following. No delivery was stopped or completed.'
+              }, caller),
+            )
           return finish(
             await service.submit(
               api.conversationId,
@@ -602,6 +653,8 @@ export default function workspaceExtension(host: ExtensionHost) {
                     ...(pullRequest ? { pullRequest } : {}),
                   }
                 : undefined,
+              continueFrom,
+              outcome,
             ),
           )
         },
