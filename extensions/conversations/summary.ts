@@ -181,6 +181,7 @@ export type SummaryReceipt = {
   response?: ResponseReceipt
   save?(response: ResponseReceipt): Promise<ResponseReceipt>
   maxTokens?: OutputTokensIncludingReasoning
+  onProviderStreamEvent?: (event: unknown) => void
 }
 
 type OutputTokensIncludingReasoning = number
@@ -203,6 +204,7 @@ export async function askSummaryModel(
     {
       ...(thinking === 'off' ? {} : { reasoning: thinking }),
       maxTokens: Math.min(receipt.maxTokens ?? summaryOutputBudget, model.maxTokens || Infinity),
+      onProviderStreamEvent: receipt.onProviderStreamEvent,
       signal,
     },
   )

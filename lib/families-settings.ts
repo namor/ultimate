@@ -62,9 +62,11 @@ export async function readFamilyLayers(
   )
   const own = isObject(stored.projects) ? stored.projects[projectKey(projectRoot)] : undefined
   const from = own !== undefined ? 'project' : stored.recent !== undefined ? 'recent' : 'builtin'
+  const base = parseLayerOrReportEmpty(own ?? stored.recent, `${familiesPath(userHome)} (${from})`)
+  if (from !== 'project') delete base.assign.automaticPlan
   return {
     user: parseLayerOrReportEmpty(user.modelFamilies, 'user settings: modelFamilies'),
-    base: parseLayerOrReportEmpty(own ?? stored.recent, `${familiesPath(userHome)} (${from})`),
+    base,
     from,
     project: parseLayerOrReportEmpty(
       (settings ?? (await projectSettings(projectRoot, userHome))).modelFamilies,

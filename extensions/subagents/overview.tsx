@@ -130,7 +130,8 @@ export function AgentsOverview() {
                 move={
                   <MoveMenu
                     current={family.name}
-                    disabled={!!user.project}
+                    allowOff={user.id === 'automaticPlan'}
+                    disabled={!!user.project && user.id !== 'automaticPlan'}
                     label={user.label}
                     onMove={(to) => void moveFeatureTo(user.id, to)}
                     view={families}
@@ -167,7 +168,8 @@ export function AgentsOverview() {
               meta={user.pinned && short(user.pinned)}
               move={
                 <MoveMenu
-                  disabled={!!user.project}
+                  allowOff={user.id === 'automaticPlan'}
+                  disabled={!!user.project && user.id !== 'automaticPlan'}
                   label={user.label}
                   onMove={(to) => void moveFeatureTo(user.id, to)}
                   view={families}
@@ -360,12 +362,14 @@ function MoveMenu({
   view,
   label,
   disabled,
+  allowOff,
   onMove,
 }: {
   current?: string
   view: FamiliesView
   label: string
   disabled?: boolean
+  allowOff?: boolean
   onMove: (family: string) => void
 }) {
   const family = view.families.find((item) => item.name === current)
@@ -388,6 +392,7 @@ function MoveMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64 font-mono">
         <DropdownMenuLabel className="section-label">Run {label} on</DropdownMenuLabel>
+        {allowOff && <DropdownMenuItem onSelect={() => onMove('off')}>Off</DropdownMenuItem>}
         {view.families.map((item) => {
           const model = runsOn(item)
           return (

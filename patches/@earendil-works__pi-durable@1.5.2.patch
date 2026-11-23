@@ -314,7 +314,7 @@ index df651a4f8f0769d10daee02292ea91380b158d5e..9096ca6c2b59a1cad3a1d61ae8819c76
          const next = state.snapshot.task(current.kind);
          if (next === state.task)
 diff --git a/dist/harness/submissions.js b/dist/harness/submissions.js
-index 512b2477c29b83c03a1c239ee427d928ce553caa..b86d5ac98c07f3af2ff5b64ebe987c6e2dc889d8 100644
+index 512b2477c29b83c03a1c239ee427d928ce553caa..01e888d4f8acd9a0987a3c74e446df97f7ce3ec5 100644
 --- a/dist/harness/submissions.js
 +++ b/dist/harness/submissions.js
 @@ -3,7 +3,7 @@ import { copyJson } from "@earendil-works/chord/json";
@@ -326,7 +326,15 @@ index 512b2477c29b83c03a1c239ee427d928ce553caa..b86d5ac98c07f3af2ff5b64ebe987c6e
  import { LiveDoc } from "./live.js";
  import { DURABLE_TELEMETRY_SCHEMA } from "./telemetry.js";
  import { closedError, Waiters } from "./util.js";
-@@ -205,7 +205,7 @@ export async function admitSubmission(tx, conversationId, draft, now, queueModes
+@@ -168,6 +168,7 @@ function checkInputEntry(entry) {
+  * reaches before the active range.
+  */
+ export async function admitSubmission(tx, conversationId, draft, now, queueModes, span) {
++    await tx.assertWritableConversation(conversationId);
+     if (draft.type === "input" && draft.entry !== undefined)
+         checkInputEntry(draft.entry);
+     if (draft.requestId !== undefined) {
+@@ -205,7 +206,7 @@ export async function admitSubmission(tx, conversationId, draft, now, queueModes
          // Never queued: whether a run can continue depends on how the current one ends. Rejected before any write.
          if (busy)
              throw new ConversationBusy(conversationId);
@@ -335,7 +343,7 @@ index 512b2477c29b83c03a1c239ee427d928ce553caa..b86d5ac98c07f3af2ff5b64ebe987c6e
          const { id } = await tx.createSubmission({ ...fields, type: "continue", status: "placed" });
          // Items an earlier failed run left queued (`afterFailedRun: "keep"`) are placed first and join the run. Its history
          // starts with the failed run's, so `afterRun` hooks see what that run did.
-@@ -214,7 +214,7 @@ export async function admitSubmission(tx, conversationId, draft, now, queueModes
+@@ -214,7 +215,7 @@ export async function admitSubmission(tx, conversationId, draft, now, queueModes
          return { id, status: "placed" };
      }
      // A boundary reads the table, so it is prepared before the first table write; a busy one needs none.
@@ -344,7 +352,7 @@ index 512b2477c29b83c03a1c239ee427d928ce553caa..b86d5ac98c07f3af2ff5b64ebe987c6e
      if (boundary === undefined || boundary.inbox.items.length > 0) {
          const { id } = await tx.createSubmission({
              ...fields,
-@@ -253,6 +253,8 @@ export async function admitSubmission(tx, conversationId, draft, now, queueModes
+@@ -253,6 +254,8 @@ export async function admitSubmission(tx, conversationId, draft, now, queueModes
          const write = { ...fields, type: "write", status: "done", entry: entry.id };
          return { id: (await tx.createSubmission(write)).id, status: "done" };
      }

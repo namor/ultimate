@@ -38,10 +38,15 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
     models: [{ id: 'sol' }, { id: 'astra', reasoning: true }],
   })
   const requests: { body: string; effort?: string }[] = []
-  const route = ((request, options, _state, model) => {
+  let reportedModel: string | undefined = 'astra'
+  const route = (async (request, options, _state, model) => {
     faux.appendResponses([route])
     const body = JSON.stringify(request.messages)
     if (model.id === 'astra') {
+      await options?.onProviderStreamEvent?.(
+        { type: 'response.completed', response: { model: reportedModel } },
+        model,
+      )
       requests.push({ body, effort: options?.reasoning })
       return fauxAssistantMessage(
         body.includes('tighten the first check') ? 'Revised plan' : 'First plan',
@@ -96,6 +101,17 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
     await server.close()
     server = await open()
     const thread = () => server.harness.snapshot(Planning, fork, ctx)
+    expect(server.extensions.doc('automatic-plan.thread')).toBeUndefined()
+    await expect(
+      server.extensions.invoke(
+        'automatic-plan',
+        'readThread',
+        { fork },
+        new AbortController().signal,
+        id,
+        'agent',
+      ),
+    ).rejects.toThrow('user-only')
     expect(await thread()).toMatchObject({
       coordinator: id,
       model: 'plan-fixture/astra',
@@ -116,6 +132,21 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
     await until(async () => (await thread())?.sent === 1)
     expect((await entries()).filter((row) => row.kind === RevisionCard.kind)).toHaveLength(1)
     expect(requests).toHaveLength(2)
+    for (const [reported, error] of [
+      ['not-astra', 'different completion model'],
+      [undefined, 'did not report the completion model'],
+    ] as const) {
+      reportedModel = reported
+      const after = (await thread())!.turns.length
+      expect(
+        (await action('refine', { fork, after, text: 'do not release unverifiable text' })).status,
+      ).toBe(200)
+      await until(async () => !!(await thread())?.turns[after]?.error)
+      expect((await thread())?.turns[after]).toMatchObject({
+        error: expect.stringContaining(error),
+      })
+      expect((await thread())?.turns[after]?.answer).toBeUndefined()
+    }
   } finally {
     await server.close()
   }

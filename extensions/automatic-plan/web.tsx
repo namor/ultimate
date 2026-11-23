@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { GitForkIcon } from 'lucide-react'
-import { api, Card, defineWebExtension, errorMessage, renderEntry, useDocOf } from '@/sdk'
+import { api, Card, defineWebExtension, errorMessage, renderEntry, useAction } from '@/sdk'
 import {
   Dialog,
   DialogContent,
@@ -8,11 +8,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { PlanCard, Refine, RevisionCard, SendRevision, ThreadDoc } from './refs.ts'
+import { PlanCard, ReadThread, Refine, RevisionCard, SendRevision } from './refs.ts'
 import type { ConversationId } from '@earendil-works/pi-durable'
 
 function PlanningThread({ fork }: { fork: ConversationId }) {
-  const thread = useDocOf(fork, ThreadDoc)
+  const [open, setOpen] = useState(false)
+  const { data: thread, refetch } = useAction(ReadThread, { fork }, { enabled: open, every: 1500 })
   const [prompt, setPrompt] = useState('')
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
@@ -26,8 +27,9 @@ function PlanningThread({ fork }: { fork: ConversationId }) {
       if (send) await api.action(SendRevision, { fork, revision: length - 1 })
       else {
         await api.action(Refine, { fork, after: length, text: prompt })
-        setPrompt('')
+        setPrompt((current) => (current === prompt ? '' : current))
       }
+      await refetch()
     } catch (failure) {
       setError(errorMessage(failure))
     } finally {
@@ -35,7 +37,7 @@ function PlanningThread({ fork }: { fork: ConversationId }) {
     }
   }
   return (
-    <Dialog>
+    <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <button type="button" className="ml-auto cursor-pointer text-brand hover:underline">
           Continue planning

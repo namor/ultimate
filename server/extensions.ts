@@ -259,6 +259,7 @@ export async function loadExtensions(
   const actions = new Map<string, Record<string, ExtensionAction>>()
   const userActions = new Map<string, string[]>()
   const pollActions = new Map<string, string[]>()
+  const privateActions = new Map<string, string[]>()
   const settingsReloads = new Set<string>()
   const records = new Map<string, ExtensionInfo>()
   const targets = new Map<string, string>()
@@ -305,6 +306,8 @@ export async function loadExtensions(
     device?: Device,
     source: UiSource = { source: 'person' },
   ) {
+    if (caller === 'agent' && userActions.get(name)?.includes(action))
+      throw new Error(`${name}/${action} is a user-only action`)
     const table = actions.get(name)
     const fn = table && Object.hasOwn(table, action) ? table[action] : undefined
     if (!fn) throw new Error(`Unknown extension action: ${name}/${action}`)
@@ -316,36 +319,36 @@ export async function loadExtensions(
     const call = { caller, callee: name, name: `${name}/${action}`, args, conversationId }
     const poll = pollActions.get(name)?.includes(action)
     const by = caller === 'agent' ? { source: 'agent' as const } : { ...source, ...device }
-    return trace.run({ kind: 'action', ...call, ...(poll ? { poll } : {}) }, () =>
-      fn(args, {
-        host: facetHosts.get(name)!,
-        conversationId,
-        ...(device ? { device } : {}),
-        uiChanged: async (tx, change) => {
-          const data = uiChange(by, { ...change, conversation: conversationId })
-          if (data) await log.emit(tx, ChangedEvent, data)
-        },
-        signal,
-        exec: async (command, commandArgs, options) => {
-          const agent =
-            conversationId === undefined
-              ? undefined
-              : await runtime.harness().snapshot(AgentDoc, conversationId, BACKGROUND_CONTEXT)
-          return actionExec(options?.cwd ?? agent?.cwd ?? host.projectRoot, signal)(
-            command,
-            commandArgs,
-            options,
-          )
-        },
-      }),
+    const sealed = privateActions.get(name)?.includes(action)
+    return trace.run(
+      { kind: 'action', ...call, ...(poll ? { poll } : {}), ...(sealed ? { sealed } : {}) },
+      () =>
+        fn(args, {
+          host: facetHosts.get(name)!,
+          conversationId,
+          ...(device ? { device } : {}),
+          uiChanged: async (tx, change) => {
+            const data = uiChange(by, { ...change, conversation: conversationId })
+            if (data) await log.emit(tx, ChangedEvent, data)
+          },
+          signal,
+          exec: async (command, commandArgs, options) => {
+            const agent =
+              conversationId === undefined
+                ? undefined
+                : await runtime.harness().snapshot(AgentDoc, conversationId, BACKGROUND_CONTEXT)
+            return actionExec(options?.cwd ?? agent?.cwd ?? host.projectRoot, signal)(
+              command,
+              commandArgs,
+              options,
+            )
+          },
+        }),
     )
   }
   const extensionHost: ExtensionHost = {
-    invoke: async (name, action, args, signal, conversationId) => {
-      if (userActions.get(name)?.includes(action))
-        throw new Error(`${name}/${action} is a user-only action`)
-      return invoke(name, action, args, signal, conversationId, 'agent')
-    },
+    invoke: (name, action, args, signal, conversationId) =>
+      invoke(name, action, args, signal, conversationId, 'agent'),
     emit: log.emit,
     react: () => {
       throw new Error('Reactors require a facet scope')
@@ -472,6 +475,7 @@ export async function loadExtensions(
     actions.delete(name)
     userActions.delete(name)
     pollActions.delete(name)
+    privateActions.delete(name)
     settingsReloads.delete(name)
   }
   let closed = false
@@ -577,6 +581,14 @@ export async function loadExtensions(
             )
           )
             throw new Error('userActions must contain registered action names')
+          const exportedPrivateActions: unknown = module.privateActions ?? []
+          if (
+            !Array.isArray(exportedPrivateActions) ||
+            exportedPrivateActions.some(
+              (action) => typeof action !== 'string' || !exportedUserActions.includes(action),
+            )
+          )
+            throw new Error('privateActions must contain user-only action names')
           const exportedPollActions: unknown = module.pollActions ?? []
           if (
             !Array.isArray(exportedPollActions) ||
@@ -611,6 +623,7 @@ export async function loadExtensions(
           actions.set(name, exportedActions)
           userActions.set(name, exportedUserActions)
           pollActions.set(name, exportedPollActions)
+          privateActions.set(name, exportedPrivateActions)
           if (module.reloadOnSettings === true) settingsReloads.add(name)
           else settingsReloads.delete(name)
           record.actions = Object.keys(exportedActions)

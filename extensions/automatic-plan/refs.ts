@@ -1,7 +1,7 @@
 /** Plan cards, their protected planning thread, and explicit follow-up actions. */
 import type { ConversationId } from '@earendil-works/pi-durable'
 import { defineEntry } from '@earendil-works/pi-durable'
-import { actionRef, docRef } from '../../shared/extension-api.ts'
+import { actionRef } from '../../shared/extension-api.ts'
 
 export type PlanTurn = {
   prompt?: string
@@ -18,8 +18,8 @@ export type Thread = {
   sent?: number
   sending?: number
 }
-/** The isolated planning turns stored on the sealed fork. */
-export const ThreadDoc = docRef<Thread>('automatic-plan.thread')
+/** Read one protected planning thread. User-only and excluded from trace contents. */
+export const ReadThread = actionRef<{ fork: number }, Thread>('automatic-plan', 'readThread')
 /** The first plan and its link to the original planning fork. */
 export const PlanCard = defineEntry<{ fork: ConversationId; text: string }>('automatic-plan.result')
 /** An explicit user-selected revision, delivered to the originating coordinator. */

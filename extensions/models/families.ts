@@ -110,13 +110,18 @@ export async function familiesView(host: ExtensionHost): Promise<FamiliesView> {
     const setting = featurePinsInSettings[id]
     const projectPin = pinned(setting?.read(project))
     const pin = projectPin ?? pinned(setting?.read(user))
-    const assigned = config.assign[id] ?? family
+    const assigned =
+      id === 'automaticPlan'
+        ? ((layers.from === 'project' ? layers.base.assign.automaticPlan : undefined) ??
+          layers.project.assign.automaticPlan ??
+          'off')
+        : (config.assign[id] ?? family)
     return {
       id,
       kind: 'feature',
       label,
       description,
-      ...(pin
+      ...(pin || assigned === 'off'
         ? {}
         : { family: Object.hasOwn(config.families, assigned) ? assigned : DEFAULT_FAMILY }),
       natural: family,
@@ -214,8 +219,12 @@ export async function saveFamilies(host: ExtensionHost, args: SaveFamilies) {
       throw new Error(
         `${user}: only features are assigned here; an agent's family is its definition's`,
       )
-  for (const name of Object.values(args.assign))
-    if (!Object.hasOwn(args.families, name) && !Object.hasOwn(BUILTIN_FAMILIES, name))
+  for (const [feature, name] of Object.entries(args.assign))
+    if (
+      !(feature === 'automaticPlan' && name === 'off') &&
+      !Object.hasOwn(args.families, name) &&
+      !Object.hasOwn(BUILTIN_FAMILIES, name)
+    )
       throw new Error(`Unknown family ${name}`)
   await writeFamilies(host.userHome, host.projectRoot, omitEmptySettings(value))
   if (args.unpin.length)
