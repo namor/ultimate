@@ -79,6 +79,15 @@ export async function readFamilyLayers(
 export const mergeLayers = ({ user, base, from, project }: FamilyLayers) =>
   from === 'project' ? mergeFamilies(user, project, base) : mergeFamilies(user, base, project)
 
+export function automaticPlanChoice(layers: FamilyLayers) {
+  const own = layers.from === 'project' ? layers.base.assign.automaticPlan : undefined
+  const family = own ?? layers.project.assign.automaticPlan
+  const effective = mergeLayers(
+    layers.from === 'recent' ? { ...layers, base: { families: {}, assign: {} } } : layers,
+  )
+  return { own, family, spec: family && family !== 'off' ? effective.families[family] : undefined }
+}
+
 export async function readFamilies(
   userHome: string,
   projectRoot: string,

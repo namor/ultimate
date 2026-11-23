@@ -15,7 +15,13 @@ import {
   refOf,
 } from '../../lib/families.ts'
 import type { Families, Feature, FamilySpec } from '../../lib/families.ts'
-import { mergeLayers, readFamilyLayers, writeFamilies } from '../../lib/families-settings.ts'
+import {
+  automaticPlanChoice,
+  mergeLayers,
+  readFamilyLayers,
+  writeFamilies,
+} from '../../lib/families-settings.ts'
+import type { FamilyLayers } from '../../lib/families-settings.ts'
 import { readSettings, updateSettings, userSettingsPath } from '../../lib/settings.ts'
 import type { FamiliesView, FamilyUser, SaveFamilies } from './refs.ts'
 
@@ -74,7 +80,10 @@ export async function familiesView(host: ExtensionHost): Promise<FamiliesView> {
       ([field, value]) =>
         value !== undefined && own[name]?.[field as keyof FamilySpec] === undefined,
     )
-  const families = Object.entries(config.families).map(([name, spec]) => {
+  const plan = automaticPlanChoice(layers)
+  const visibleFamilies =
+    plan.family && plan.spec ? { ...config.families, [plan.family]: plan.spec } : config.families
+  const families = Object.entries(visibleFamilies).map(([name, spec]) => {
     const follows = name === DEFAULT_FAMILY && !spec.model && pi.model
     return {
       name,
@@ -110,12 +119,7 @@ export async function familiesView(host: ExtensionHost): Promise<FamiliesView> {
     const setting = featurePinsInSettings[id]
     const projectPin = pinned(setting?.read(project))
     const pin = projectPin ?? pinned(setting?.read(user))
-    const assigned =
-      id === 'automaticPlan'
-        ? ((layers.from === 'project' ? layers.base.assign.automaticPlan : undefined) ??
-          layers.project.assign.automaticPlan ??
-          'off')
-        : (config.assign[id] ?? family)
+    const assigned = id === 'automaticPlan' ? (plan.family ?? 'off') : (config.assign[id] ?? family)
     return {
       id,
       kind: 'feature',
@@ -159,6 +163,14 @@ function familyOverridesOnly(families: SaveFamilies['families'], defaults: Famil
   return saved
 }
 
+function retainPlanDefinition(layers: FamilyLayers, next: Record<string, FamilySpec>) {
+  const { family } = automaticPlanChoice(layers)
+  if (!family || family === 'off') return
+  const own = layers.from === 'project' ? layers.base.families[family] : undefined
+  if (own) next[family] = own
+  else delete next[family]
+}
+
 function omitEmptySettings(value: { families: object; assign: object }): JsonObject {
   return Object.fromEntries(
     Object.entries(value).filter(([, part]) => Object.keys(part).length),
@@ -190,6 +202,7 @@ export async function setDefault(host: ExtensionHost, name: string) {
     },
     mergeFamilies(layers.user, layers.project).families,
   )
+  retainPlanDefinition(layers, families)
   const assign =
     layers.from === 'project'
       ? layers.base.assign
@@ -202,7 +215,7 @@ export async function setDefault(host: ExtensionHost, name: string) {
   return { model: ref, thinkingLevel }
 }
 
-export async function saveFamilies(host: ExtensionHost, args: SaveFamilies) {
+export async function saveFamilies(host: ExtensionHost, args: SaveFamilies, preservePlan = false) {
   const layers = await readFamilyLayers(
     host.userHome,
     host.projectRoot,
@@ -212,6 +225,7 @@ export async function saveFamilies(host: ExtensionHost, args: SaveFamilies) {
     args.families,
     mergeFamilies(layers.user, layers.project).families,
   )
+  if (preservePlan) retainPlanDefinition(layers, families)
   const value = { families, assign: args.assign }
   parseFamilies(value)
   for (const user of Object.keys(args.assign))
@@ -223,7 +237,8 @@ export async function saveFamilies(host: ExtensionHost, args: SaveFamilies) {
     if (
       !(feature === 'automaticPlan' && name === 'off') &&
       !Object.hasOwn(args.families, name) &&
-      !Object.hasOwn(BUILTIN_FAMILIES, name)
+      !Object.hasOwn(BUILTIN_FAMILIES, name) &&
+      !(feature === 'automaticPlan' && automaticPlanChoice(layers).family === name)
     )
       throw new Error(`Unknown family ${name}`)
   await writeFamilies(host.userHome, host.projectRoot, omitEmptySettings(value))

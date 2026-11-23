@@ -83,6 +83,46 @@ it('does not copy Automatic Plan consent through a preset', async () => {
   ).toBe('off')
 })
 
+it('retains the exact Plan override and skips login for a preserved family', async () => {
+  const astra = 'openai-codex/gpt-6-astra'
+  const solModel = 'openai-codex/gpt-6.1-sol'
+  const { host, userHome, projectRoot } = await setup([
+    astra,
+    solModel,
+    'openai-codex/gpt-6-luna',
+    'claude-code/claude-opus-5-5',
+  ])
+  let projectModel = astra
+  const projectSettings = async () => ({
+    modelFamilies: {
+      families: { teamplan: { model: projectModel } },
+      assign: { automaticPlan: 'teamplan' },
+    },
+  })
+  const configured = { ...host, projectSettings }
+  await savePreset(configured, 'portable', {
+    families: { teamplan: { model: 'unavailable/unused' } },
+    assign: {},
+  })
+  await writeFamilies(userHome, projectRoot, {
+    families: { teamplan: { model: astra } },
+    assign: { automaticPlan: 'teamplan' },
+  })
+  expect(
+    (await presetsView(configured)).presets.find((p) => p.name === 'portable')?.missing,
+  ).toEqual([])
+  await applyPreset(configured, 'portable')
+  projectModel = solModel
+  expect(
+    (await readFamilies(userHome, projectRoot, await projectSettings())).families.teamplan.model,
+  ).toBe(astra)
+  await writeFamilies(userHome, projectRoot, { assign: { automaticPlan: 'teamplan' } })
+  await applyPreset(configured, 'portable')
+  expect(
+    (await readFamilies(userHome, projectRoot, await projectSettings())).families.teamplan.model,
+  ).toBe(solModel)
+})
+
 const claude = {
   families: {
     default: { model: 'claude-code/claude-sonnet-5-5', thinking: 'medium' },

@@ -13,7 +13,7 @@ import { obj } from '@earendil-works/pi-schema'
 import { implementAction } from '../../lib/actions.ts'
 import { previewModel } from '../../lib/agents.ts'
 import { refOf } from '../../lib/families.ts'
-import { mergeLayers, readFamilyLayers } from '../../lib/families-settings.ts'
+import { automaticPlanChoice, readFamilyLayers } from '../../lib/families-settings.ts'
 import { parseConversationId } from '../../lib/ids.ts'
 import { projectDecision } from '../../lib/project-setup.ts'
 import { safeToRerun } from '../../lib/replay.ts'
@@ -81,13 +81,8 @@ async function selection(host: ExtensionHost) {
   )
   if (layers.errors.length)
     throw new Error('Fix model family settings before starting Automatic Plan')
-  const name =
-    (layers.from === 'project' ? layers.base.assign.automaticPlan : undefined) ??
-    layers.project.assign.automaticPlan
-  if (!name || name === 'off') return undefined
-  const spec = mergeLayers(
-    layers.from === 'recent' ? { ...layers, base: { families: {}, assign: {} } } : layers,
-  ).families[name]
+  const { family, spec } = automaticPlanChoice(layers)
+  if (!family || family === 'off') return undefined
   const ref = refOf(spec?.model)
   const model = host.modelRuntime
     .getAvailableSnapshot()
@@ -99,7 +94,7 @@ async function selection(host: ExtensionHost) {
   const pin = previewModel()
   if (pin && (pin.provider !== model.provider || pin.modelId !== model.id))
     throw new Error('Automatic Plan differs from this preview’s model pin')
-  const thinking = spec.thinking ?? 'low'
+  const thinking = spec?.thinking ?? 'low'
   if (clampThinkingLevel(model, thinking) !== thinking)
     throw new Error('The configured Plan effort is unsupported')
   return { provider: model.provider, id: model.id, thinking }
