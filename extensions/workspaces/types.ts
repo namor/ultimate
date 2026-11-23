@@ -18,6 +18,7 @@ export type Workspace = {
     key: EntryId
     outcome: string
     submission: string
+    tracks: 'prerequisite' | 'delivery'
     state: 'waiting' | 'needs-action'
   }
 }

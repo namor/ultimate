@@ -113,7 +113,12 @@ export async function resolveContinuations(
     const wait = item.continuation
     if (wait?.state !== 'waiting' || wait.submission !== submission) continue
     const owner = parseConversationId(Number(id))
-    if (owner === result.conversationId && result.outcome === 'landed' && !result.reason) {
+    if (
+      wait.tracks === 'delivery' &&
+      owner === result.conversationId &&
+      result.outcome === 'landed' &&
+      !result.reason
+    ) {
       delete item.continuation
       continue
     }
@@ -134,6 +139,7 @@ export async function follow(
   owner: ConversationId,
   after: string,
   outcome: string,
+  tracks: 'delivery' | 'prerequisite',
   previous?: number,
 ) {
   const item = index.items[String(owner)]
@@ -156,13 +162,12 @@ export async function follow(
     throw new Error('Name the approved workspace delivery in at most 500 characters')
   if (current && current.outcome !== outcome.trim())
     throw new Error('Do not replace an open delivery with a different outcome')
-  if (result?.conversationId === owner && result.outcome === 'landed' && !result.reason)
-    throw new Error('This submission has already landed')
   const key = (await tx.appendEntry(owner, { kind: 'workspaces.follow', data: { after } })).id
   item.continuation = {
     key,
     outcome: outcome.trim(),
     submission: after,
+    tracks,
     state: result ? 'needs-action' : 'waiting',
   }
   return item.continuation

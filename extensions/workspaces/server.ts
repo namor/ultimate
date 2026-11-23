@@ -9,6 +9,7 @@ import {
   defineExtension,
   defineTool,
   GenerationTask,
+  LiveDoc,
   hook,
   ROOT_CONVERSATION_ID,
   section,
@@ -624,15 +625,37 @@ export default function workspaceExtension(host: ExtensionHost) {
             return finish(
               await api.commit(async (tx) => {
                 const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
-                if (action === 'follow')
-                  return follow(
+                if (action === 'follow') {
+                  const owner = api.conversationId
+                  const admitted = (await tx.doc(LiveDoc, owner)).run?.inputs.at(-1)
+                  const wait = await follow(
                     tx,
                     index,
-                    api.conversationId,
+                    owner,
                     after ?? '',
                     outcome ?? '',
+                    'prerequisite',
                     continueFrom,
                   )
+                  if (wait.state === 'needs-action') {
+                    const result = index.results[wait.submission].outcome
+                    if (admitted === undefined)
+                      throw new Error(
+                        'No active input to observe. Inspect the retained result and arrange an acknowledged handoff instead.',
+                      )
+                    await tx.createTask(
+                      service.Continuation,
+                      { owner, key: wait.key, submission: wait.submission, result, admitted },
+                      {
+                        conversationId: owner,
+                        ownership: { kind: 'conversation' },
+                        background: true,
+                      },
+                    )
+                    return { ...wait, result }
+                  }
+                  return wait
+                }
                 const item = index.items[String(api.conversationId)]
                 if (!item?.continuation || item.continuation.key !== continueFrom)
                   throw new Error('Continuation changed; inspect workspace status first')

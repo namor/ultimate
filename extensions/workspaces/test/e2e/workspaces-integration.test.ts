@@ -1337,6 +1337,115 @@ it.concurrent('keeps a failed followed attempt open and hands a quiet recovery t
   ).toHaveLength(1)
 })
 
+it.concurrent.each(['queued', 'retained'] as const)(
+  'keeps a distinct delivery open when its own %s prerequisite settles',
+  async (registration) => {
+    const { f, id } = await concluding()
+    const gate = join(f.directory, 'end-prerequisite')
+    f.host.projectSettings = async () => ({
+      lander: {
+        checks: [
+          `while ! test -f '${gate}'; do sleep 0.05; done; ${registration === 'queued' ? 'true' : 'false'}`,
+        ],
+      },
+    })
+    const attempt = await f.service.submit(id, 'None', context)
+    if (registration === 'retained') {
+      await writeFile(gate, '')
+      await submitted(f, id)
+      await f.reopen()
+    }
+    await f.call(id, 'workspace', {
+      action: 'follow',
+      after: attempt.id,
+      outcome: 'Land the separate follow-on change',
+    })
+    const open = (await f.service.get(id, context))!.continuation!
+    expect(open.tracks).toBe('prerequisite')
+    if (registration === 'queued') await writeFile(gate, '')
+    const request = `workspaces.continuation:handoff:${open.key}:${attempt.id}`
+    await until(
+      async () =>
+        !!(await f.opened.harness.commit(
+          (tx) => tx.submissionByRequest(ROOT_CONVERSATION_ID, request),
+          context,
+        )),
+    )
+    await f.reopen()
+    expect((await f.service.get(id, context))!.continuation).toMatchObject({
+      key: open.key,
+      state: 'needs-action',
+    })
+    expect(await concludedIds(f)).not.toContain(id)
+    const owner = (await f.opened.harness.conversation(id, context))!
+    expect(
+      (await owner.context(context)).entries.filter((e) => e.kind === 'workspaces.continuation'),
+    ).toHaveLength(registration === 'queued' ? 1 : 0)
+  },
+)
+
+it.concurrent('links the repair in the late registration turn without a second recovery action', async () => {
+  const { f, id } = await concluding()
+  f.host.projectSettings = async () => ({ lander: { checks: ['test -f repaired.txt'] } })
+  const attempt = await f.service.submit(id, 'None', context)
+  await submitted(f, id)
+  await f.reopen()
+  const failed = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+    .results[attempt.id]
+  expect(failed.reason).toBe('check failed twice: test -f repaired.txt')
+  await commit((await f.service.get(id, context))!.path, 'repaired.txt')
+  let key: number | undefined
+  const route: FauxResponseFactory = async ({ messages }) => {
+    f.prepared.faux!.appendResponses([route])
+    const last = messages.at(-1)!
+    if (last.role === 'user' && JSON.stringify(last.content).includes('REGISTER-REPAIR'))
+      return fauxAssistantMessage(
+        fauxToolCall('workspace', {
+          action: 'follow',
+          after: attempt.id,
+          outcome: 'Land the repaired change',
+        }),
+        { stopReason: 'toolUse' },
+      )
+    if (
+      last.role === 'toolResult' &&
+      JSON.stringify(last.content).includes('needs-action') &&
+      key === undefined
+    ) {
+      key = (await f.service.get(id, context))!.continuation!.key
+      return fauxAssistantMessage(
+        fauxToolCall('workspace', { action: 'submit', divergence: 'None', continueFrom: key }),
+        { stopReason: 'toolUse' },
+      )
+    }
+    return fauxAssistantMessage('finished')
+  }
+  f.prepared.faux!.setResponses([route])
+  const owner = (await f.opened.harness.conversation(id, context))!
+  await (await owner.submit({ type: 'input', content: 'REGISTER-REPAIR' }, context)).wait(context)
+  await until(async () =>
+    Object.values(
+      (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!.results,
+    ).some((r) => r.conversationId === id && r.outcome === 'landed'),
+  )
+  await f.reopen()
+  expect(key).toBeDefined()
+  const reopened = (await f.opened.harness.conversation(id, context))!
+  expect(
+    (await reopened.context(context)).entries.filter((e) => e.kind === 'workspaces.continuation'),
+  ).toHaveLength(0)
+  expect(
+    await f.opened.harness.commit(
+      (tx) =>
+        tx.submissionByRequest(
+          ROOT_CONVERSATION_ID,
+          `workspaces.continuation:handoff:${key}:${attempt.id}`,
+        ),
+      context,
+    ),
+  ).toBeUndefined()
+})
+
 it.concurrent('continues one approved delivery after its exact prerequisite fails across reopen', async () => {
   const { f, id: owner } = await concluding()
   const blocker = await f.create()
@@ -1360,16 +1469,30 @@ it.concurrent('continues one approved delivery after its exact prerequisite fail
   expect(wait).toMatchObject({ submission: attempt.id, state: 'waiting' })
   await f.reopen()
   const requests: string[] = []
-  const route: FauxResponseFactory = ({ messages }) => {
+  const route: FauxResponseFactory = async ({ messages }) => {
     f.prepared.faux!.appendResponses([route])
     const last = messages.at(-1)!
     if (
       last.role === 'user' &&
       JSON.stringify(last.content).includes(`Submission ${attempt.id} failed.`)
     ) {
+      const index = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+      const failure = index.results[attempt.id]
+      const current = index.items[String(owner)].continuation!
+      if (
+        failure?.conversationId !== blocker ||
+        !failure.reason?.includes('test ! -f bad-candidate.txt') ||
+        current.submission !== attempt.id ||
+        current.state !== 'needs-action'
+      )
+        return fauxAssistantMessage('Need more evidence')
       requests.push(attempt.id)
       return fauxAssistantMessage(
-        fauxToolCall('workspace', { action: 'submit', divergence: 'None', continueFrom: wait.key }),
+        fauxToolCall('workspace', {
+          action: 'submit',
+          divergence: 'None',
+          continueFrom: current.key,
+        }),
         { stopReason: 'toolUse' },
       )
     }
@@ -1393,6 +1516,9 @@ it.concurrent('continues one approved delivery after its exact prerequisite fail
   expect(await readFile(join(f.projectRoot, 'concluded.txt'), 'utf8')).toBe('concluded.txt')
   await f.reopen()
   expect(requests).toEqual([attempt.id])
+  await expect(f.service.submit(owner, 'None', context, undefined, wait.key)).rejects.toThrow(
+    /Continuation changed|Workspace is removed/,
+  )
 })
 
 it.concurrent('delivers a message to a resumed branch whose checkout conclude released', async () => {

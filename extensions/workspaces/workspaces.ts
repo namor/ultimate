@@ -87,6 +87,7 @@ export const Workspaces = defineDoc<WorkspaceIndex>({
 export async function landingPending(tx: Tx, id: ConversationId) {
   const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
   return (
+    !!index.items[String(id)]?.continuation ||
     index.queue.some((item) => item.conversationId === id) ||
     (await hasPendingLanderReport(tx, index, id))
   )
@@ -882,7 +883,7 @@ export function workspaces(host: Host) {
       if (
         continuation &&
         continueFrom === continuation.key &&
-        entry.id !== continuation.submission
+        (entry.id !== continuation.submission || continuation.tracks !== 'delivery')
       ) {
         continuation.key = (
           await tx.appendEntry(id, {
@@ -891,13 +892,15 @@ export function workspaces(host: Host) {
           })
         ).id
         continuation.submission = entry.id
+        continuation.tracks = 'delivery'
         continuation.state = 'waiting'
       }
       if (!queued) {
         await log(tx, lander, entry, { step: 'queued' })
         index.queue.push(entry)
       }
-      if (!continuation && outcome !== undefined) await follow(tx, index, id, entry.id, outcome)
+      if (!continuation && outcome !== undefined)
+        await follow(tx, index, id, entry.id, outcome, 'delivery')
       if (idleReadBeforeWrites) await startIdleLander(tx, index, source)
       const position = index.queue
         .filter((item) => item.source === source)
