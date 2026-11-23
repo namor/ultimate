@@ -4,14 +4,14 @@ import {
   fauxProvider,
   fauxToolCall,
 } from '@earendil-works/pi-ai/providers/faux'
-import { AgentDoc, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
+import { AgentDoc, InboxDoc, LiveDoc, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
 import { Branch } from '../../lineage/api.ts'
 import { PlanCard, RevisionCard } from '../refs.ts'
 import { Planning } from '../server.ts'
-import { fauxServer, post, sourceCopy, temp, until } from '../../../test/helpers.ts'
+import { fauxServer, held, post, sourceCopy, temp, until } from '../../../test/helpers.ts'
 
 test('plans on a sealed fork and sends only the explicit revision', async () => {
   const home = await temp('automatic-plan')
@@ -38,6 +38,8 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
   })
   const requests: { body: string; effort?: string }[] = []
   let reportedModel: string | undefined = 'astra'
+  let coordinatorCalls = 0
+  const hold = Promise.withResolvers<void>()
   const route = (async (request, options, _state, model) => {
     faux.appendResponses([route])
     const body = JSON.stringify(request.messages)
@@ -52,6 +54,11 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
           ? 'Revised plan private-answer-sentinel'
           : 'First plan',
       )
+    }
+    coordinatorCalls++
+    if (body.includes('retain an unrelated follow-up')) {
+      hold.resolve()
+      return held(request, options, _state, model)
     }
     if (body.includes('Advisory plan from the protected planning fork'))
       return fauxAssistantMessage('Continuing on Sol')
@@ -188,9 +195,24 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
     expect(JSON.stringify(traceRows)).not.toContain('private-answer-sentinel')
     expect(JSON.stringify(traceRows)).not.toContain('tighten the first check')
     expect((await entries()).some((row) => row.kind === RevisionCard.kind)).toBe(false)
+    const active = (await server.harness.conversation(id, ctx))!
+    await active.submit({ type: 'input', content: 'retain an unrelated follow-up' }, ctx)
+    await hold.promise
+    await active.submit(
+      { type: 'input', content: 'retained follow-up sentinel', whenBusy: 'followUp' },
+      ctx,
+    )
+    expect((await post(server, `/api/conversations/${id}/abort`)).status).toBe(200)
+    const inbox = async () => (await server.harness.snapshot(InboxDoc, id, ctx))?.items
+    const pending = await inbox()
+    expect(pending).toHaveLength(1)
+    const beforeSend = coordinatorCalls
     for (const _ of [1, 2])
       expect((await action('sendRevision', { fork, revision: 1 })).status).toBe(200)
     await until(async () => (await thread())?.sent === 1)
+    expect(await inbox()).toEqual(pending)
+    expect((await server.harness.snapshot(LiveDoc, id, ctx))?.run).toBeUndefined()
+    expect(coordinatorCalls).toBe(beforeSend)
     expect((await entries()).filter((row) => row.kind === RevisionCard.kind)).toHaveLength(1)
     expect(requests).toHaveLength(2)
     expect(requests[1].effort).toBe('low')
