@@ -1,0 +1,78 @@
+name: Verify benchmark
+
+on:
+  push:
+    branches: [scratch/verify-benchmark-2075]
+
+permissions:
+  contents: read
+
+jobs:
+  serial:
+    name: benchmark-serial
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - &checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: e2a35dcbc195f3ebd060c1ffef8eeb05419126a0
+      - &pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - &node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '26'
+          cache: pnpm
+      - &sandbox
+        name: Allow Chromium's user-namespace sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - &identity
+        name: Record exact workload and runtime
+        run: |
+          git rev-parse HEAD 'HEAD^{tree}'
+          test "$(git rev-parse HEAD)" = e2a35dcbc195f3ebd060c1ffef8eeb05419126a0
+          test "$(git rev-parse 'HEAD^{tree}')" = 9345899c07d5c095bdca1172cb9fc6da14c7476a
+          node --version
+          pnpm --version
+      - run: pnpm verify
+
+  fast:
+    name: benchmark-fast
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - *checkout
+      - *pnpm
+      - *node
+      - *sandbox
+      - *identity
+      - run: pnpm verify fast
+
+  e2e:
+    name: benchmark-e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - *checkout
+      - *pnpm
+      - *node
+      - *sandbox
+      - *identity
+      - run: pnpm verify e2e
+
+  aggregate:
+    name: benchmark-split
+    needs: [fast, e2e]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require both verification lanes to succeed
+        env:
+          FAST_RESULT: ${{ needs.fast.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+        run: |
+          printf 'verify-fast: %s\nverify-e2e: %s\n' "$FAST_RESULT" "$E2E_RESULT"
+          test "$FAST_RESULT" = success && test "$E2E_RESULT" = success
