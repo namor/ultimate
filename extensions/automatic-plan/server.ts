@@ -28,7 +28,7 @@ import {
   SendRevision,
   SetPlan,
 } from './refs.ts'
-import { linkedFamily, linkPlan, planOptions } from './settings.ts'
+import { admitWithPlanLink, linkedFamily, linkPlan, planOptions, readPlanLink } from './settings.ts'
 import type { Thread } from './refs.ts'
 
 export const Planning = defineDoc<Thread & { packet?: string }>({
@@ -86,13 +86,13 @@ function checkPreviewPin(model: { provider: string; id: string }) {
 
 async function selection(host: ExtensionHost) {
   if (projectDecision(host.projectRoot, host.userHome) !== true) return undefined
-  const family = await linkedFamily(host)
+  const { family, revision } = await readPlanLink(host)
   if (!family) return undefined
   const model = (await planOptions(host)).find((option) => option.family === family)
   if (!model)
     throw new Error('The linked Plan family is missing or unavailable. No fallback is used.')
   checkPreviewPin(model)
-  return { provider: model.provider, id: model.id, thinking: model.effort }
+  return { provider: model.provider, id: model.id, thinking: model.effort, revision }
 }
 
 function requestTask(host: ExtensionHost) {
@@ -290,34 +290,36 @@ async function plan(host: ExtensionHost, id: ConversationId, caller: TaskId) {
     .join('\n\n')
     .slice(-packetLimit)
   if (!text.trim()) return undefined
-  return harness.commit(async (tx) => {
-    const admission = await tx.doc(Admission, id)
-    if (admission.fork) return admission.caller === caller ? admission.task : undefined
-    const fork = await tx.forkConversation(id, cutoff, {
-      ownership: { kind: 'ownerless' },
-      sealed: true,
-    })
-    Object.assign(await tx.doc(host.metadata, fork.id), {
-      title: 'Planning thread',
-      label: 'planning-thread',
-      listed: false,
-    })
-    await host.need(ConversationsApi).setAutomaticSummaries(tx, fork.id, false)
-    Object.assign(await tx.doc(Planning, fork.id), {
-      coordinator: id,
-      model: `${model.provider}/${model.id}`,
-      effort: model.thinking,
-      turns: [{}],
-      packet: text,
-    })
-    const task = await tx.createTask(
-      requestTask(host),
-      { fork: fork.id, index: 0 },
-      { conversationId: id, ownership: { kind: 'task', taskId: caller } },
-    )
-    Object.assign(admission, { fork: fork.id, caller, task })
-    return task
-  }, background)
+  return admitWithPlanLink(host, model.revision, () =>
+    harness.commit(async (tx) => {
+      const admission = await tx.doc(Admission, id)
+      if (admission.fork) return admission.caller === caller ? admission.task : undefined
+      const fork = await tx.forkConversation(id, cutoff, {
+        ownership: { kind: 'ownerless' },
+        sealed: true,
+      })
+      Object.assign(await tx.doc(host.metadata, fork.id), {
+        title: 'Planning thread',
+        label: 'planning-thread',
+        listed: false,
+      })
+      await host.need(ConversationsApi).setAutomaticSummaries(tx, fork.id, false)
+      Object.assign(await tx.doc(Planning, fork.id), {
+        coordinator: id,
+        model: `${model.provider}/${model.id}`,
+        effort: model.thinking,
+        turns: [{}],
+        packet: text,
+      })
+      const task = await tx.createTask(
+        requestTask(host),
+        { fork: fork.id, index: 0 },
+        { conversationId: id, ownership: { kind: 'task', taskId: caller } },
+      )
+      Object.assign(admission, { fork: fork.id, caller, task })
+      return task
+    }, background),
+  )
 }
 
 const argsOf = (value: unknown) => {
