@@ -51,32 +51,36 @@ it('resets the stall timer on output but stops continuous output at the total li
   expect(vi.getTimerCount()).toBe(0)
 })
 
-it('keeps the active verify phase at cutoff after its marker leaves the tail', async () => {
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
-  vi.mocked(runGroup).mockImplementation(async (_program, _args, options) => {
-    expect(options.env?.ULTIMATE_VERIFY_PHASES).toBe('1')
-    options.onOutput('Verification phase: fast\n')
-    const start = setTimeout(() => {
-      options.onOutput('Verification phase: ')
-      options.onOutput('e2e\nVerifying: pnpm test\n' + 'progress\n'.repeat(400))
-    }, 50)
-    await new Promise<void>((resolve) =>
-      options.signal!.addEventListener('abort', () => resolve(), { once: true }),
-    )
-    clearTimeout(start)
-    options.onOutput('Verification phase: check\n')
-    return { code: 137, outOfMemory: false }
-  })
-  const ran = runLanderCheck('.', 'pnpm verify', context, { stall: 1, total: 0.2 })
-  await vi.advanceTimersByTimeAsync(200)
-  const result = await ran
-  expect(result).toMatchObject({ timedOut: true, cause: 'Timed out after 0.2 s' })
-  expect(result.failure?.split('\n').slice(0, 2)).toEqual([
-    'Timed out after 0.2 s',
-    'Verify phase at cutoff: e2e (150 ms elapsed)',
-  ])
-  expect(result.failure?.includes('Verification phase: e2e')).toBe(false)
-})
+it.each([false, true])(
+  'keeps the verify phase at cutoff (stop rejects: %s)',
+  async (stopRejects) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+    vi.mocked(runGroup).mockImplementation(async (_program, _args, options) => {
+      expect(options.env?.ULTIMATE_VERIFY_PHASES).toBe('1')
+      options.onOutput('Verification phase: fast\n')
+      const start = setTimeout(() => {
+        options.onOutput('Verification phase: ')
+        options.onOutput('e2e\nVerifying: pnpm test\n' + 'progress\n'.repeat(400))
+      }, 50)
+      await new Promise<void>((resolve) =>
+        options.signal!.addEventListener('abort', () => resolve(), { once: true }),
+      )
+      clearTimeout(start)
+      options.onOutput('Verification phase: check\n')
+      if (stopRejects) throw new Error('Process group did not exit')
+      return { code: 137, outOfMemory: false }
+    })
+    const ran = runLanderCheck('.', 'pnpm verify', context, { stall: 1, total: 0.2 })
+    await vi.advanceTimersByTimeAsync(200)
+    const result = await ran
+    const cause = stopRejects ? 'Error: Process group did not exit' : 'Timed out after 0.2 s'
+    expect(result).toMatchObject({ cause })
+    expect('timedOut' in result ? result.timedOut : undefined).toBe(stopRejects ? undefined : true)
+    expect(result.failure).toContain(cause)
+    expect(result.failure).toContain('Verify phase at cutoff: e2e (150 ms elapsed)')
+    expect(result.failure?.includes('Verification phase: e2e')).toBe(false)
+  },
+)
 
 it('defaults to a 2-minute stall and a 10-minute total cap', async () => {
   hanging()

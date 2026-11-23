@@ -257,7 +257,10 @@ export async function runLanderCheck(
       })
     } catch (error) {
       context.abortSignal?.throwIfAborted()
-      return { failure: `${output}\n${String(error)}`.trim(), cause: String(error) }
+      return {
+        failure: [phaseAtCutoff, output, String(error)].filter(Boolean).join('\n').trim(),
+        cause: String(error),
+      }
     }
     context.abortSignal?.throwIfAborted()
     if (stopped) return { ...report(stopped, 'Failed tests so far:'), timedOut: true }
