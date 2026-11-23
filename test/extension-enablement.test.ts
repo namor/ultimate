@@ -252,8 +252,10 @@ it('layers settings live, installs and uninstalls tools and web facets, and noti
   await writeFile(settings, JSON.stringify({ extensions: { disable: ['browser'] } }))
   await until(async () => !(await tools(server)).includes('browser'))
   await until(async () => !(await web(server)).some((path) => path.includes('/browser/')))
-  await until(() => server.host.build().id !== initialBuild)
-  expect(server.host.build().extensions.browser).toBeUndefined()
+  await until(() => {
+    const build = server.host.build()
+    return build.id !== initialBuild && build.extensions.browser === undefined
+  })
   expect(server.extensions.info().find((entry) => entry.name === 'prompt')?.server?.loadedAt).toBe(
     promptLoaded,
   )
