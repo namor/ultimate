@@ -171,13 +171,17 @@ it('answers a decisions card with letters, arrows and Enter', async () => {
   const next = page.locator(`[data-questions-card="message:${second.id}"]`)
   await next.locator('fieldset').nth(2).waitFor()
   const send = next.getByRole('button', { name: 'Send', exact: true })
+  await page.clock.install()
+  const browserNow = await page.evaluate(() => Date.now())
+  await page.clock.pauseAt(browserNow + 10_000)
   const box = (await send.boundingBox())!
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-  // Released early, the hold is an ordinary click: Send with its undo window.
+  // Let exactly 400 ms of browser time pass, even if the test driver stalls.
   await page.mouse.down()
-  await page.waitForTimeout(400)
+  await page.clock.runFor(400)
   await page.mouse.up()
   await next.getByRole('button', { name: 'Undo' }).click()
+  await page.clock.resume()
   await send.waitFor()
   const picked = async () =>
     (await log())?.messages.find((m) => m.re === second.id && m.from === 'user')
