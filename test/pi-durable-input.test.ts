@@ -10,10 +10,77 @@ import {
   GenerationTask,
   hook,
   InboxDoc,
+  ROOT_CONVERSATION_ID,
 } from '@earendil-works/pi-durable'
 import { expect, it } from 'vitest'
 import { prepareHarness } from '../server/harness.ts'
 import { temp, until } from './helpers.ts'
+
+it('keeps a sealed fork readable but denies work and mutation after reopen', async () => {
+  const home = await temp()
+  const open = async () =>
+    (
+      await prepareHarness({ ultimateRoot: home, userHome: home, home, faux: fauxProvider() })
+    ).open()
+  let fixture = await open()
+  try {
+    const at = await fixture.harness.commit(
+      (tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: 'probe.context' }),
+      context,
+    )
+    const fork = await fixture.harness.commit(
+      (tx) =>
+        tx.forkConversation(ROOT_CONVERSATION_ID, at.id, {
+          ownership: { kind: 'ownerless' },
+          sealed: true,
+        }),
+      context,
+    )
+    await fixture.close()
+    fixture = await open()
+    const conversation = (await fixture.harness.conversation(fork.id, context))!
+    for (const submission of [
+      { type: 'continue' },
+      { type: 'input', content: 'No generation' },
+      { type: 'write', entry: { kind: 'probe.internal' } },
+    ] as const)
+      await expect(conversation.submit(submission, context)).rejects.toThrow('sealed')
+    await expect(conversation.configure({ thinkingLevel: 'off' }, context)).rejects.toThrow(
+      'sealed',
+    )
+    await expect(conversation.compact(undefined, context)).rejects.toThrow('sealed')
+    for (const operation of [
+      () =>
+        fixture.harness.commit(
+          (tx) => tx.appendEntry(fork.id, { kind: 'probe.internal' }),
+          context,
+        ),
+      () =>
+        fixture.harness.commit(
+          (tx) => tx.forkConversation(fork.id, at.id, { ownership: { kind: 'ownerless' } }),
+          context,
+        ),
+    ])
+      await expect(operation()).rejects.toThrow('sealed')
+    const visible = await fixture.harness.commit(
+      async (tx) => ({
+        fork: await tx.conversation(fork.id),
+        entries: (await tx.scanEntries({ conversationId: fork.id }, 5)).items.map(
+          (entry) => entry.id,
+        ),
+        tasks: (await tx.scanTasks({ conversationId: fork.id }, 5)).items,
+      }),
+      context,
+    )
+    expect(visible).toMatchObject({
+      fork: { sealed: true, parent: { conversationId: ROOT_CONVERSATION_ID, at: at.id } },
+      entries: [at.id],
+      tasks: [],
+    })
+  } finally {
+    await fixture.close()
+  }
+})
 
 const Placed = defineDoc<{ count: number }>({
   kind: 'input-test.placed',

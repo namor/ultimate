@@ -60,6 +60,18 @@ index 120ff2015d81eb795a090eae897910a58768373f..379ed6defc0eb0a840cae7e84f68324c
                  if (stdinCommand !== undefined) {
                      child.stdin?.on("error", () => { });
                      child.stdin?.end(stdinCommand);
+diff --git a/dist/harness/agent.js b/dist/harness/agent.js
+index dbae2ff3bd5ded4db56c1fa3f5c4a58eee2af315..06650e55c8852944871051ddd97e4305a3f686f5 100644
+--- a/dist/harness/agent.js
++++ b/dist/harness/agent.js
+@@ -63,6 +63,7 @@ export function resolveSettings(settings) {
+ }
+ /** Apply one change to `pi.agent`: a given field replaces the stored one, `null` clears it, `undefined` changes nothing. */
+ export async function configure(tx, conversationId, change) {
++    await tx.assertWritableConversation(conversationId);
+     const state = await tx.doc(AgentDoc, conversationId);
+     applyChange(state, change);
+ }
 diff --git a/dist/harness/compaction.js b/dist/harness/compaction.js
 index 54f3ef34ddf1bf85e3ad9c41bdbd216c081a476f..8a63b529154f0e896edb585fc20d3d43ef7a7827 100644
 --- a/dist/harness/compaction.js
@@ -302,7 +314,7 @@ index df651a4f8f0769d10daee02292ea91380b158d5e..9096ca6c2b59a1cad3a1d61ae8819c76
          const next = state.snapshot.task(current.kind);
          if (next === state.task)
 diff --git a/dist/harness/submissions.js b/dist/harness/submissions.js
-index 512b2477c29b83c03a1c239ee427d928ce553caa..b86d5ac98c07f3af2ff5b64ebe987c6e2dc889d8 100644
+index 512b2477c29b83c03a1c239ee427d928ce553caa..01e888d4f8acd9a0987a3c74e446df97f7ce3ec5 100644
 --- a/dist/harness/submissions.js
 +++ b/dist/harness/submissions.js
 @@ -3,7 +3,7 @@ import { copyJson } from "@earendil-works/chord/json";
@@ -314,7 +326,15 @@ index 512b2477c29b83c03a1c239ee427d928ce553caa..b86d5ac98c07f3af2ff5b64ebe987c6e
  import { LiveDoc } from "./live.js";
  import { DURABLE_TELEMETRY_SCHEMA } from "./telemetry.js";
  import { closedError, Waiters } from "./util.js";
-@@ -205,7 +205,7 @@ export async function admitSubmission(tx, conversationId, draft, now, queueModes
+@@ -168,6 +168,7 @@ function checkInputEntry(entry) {
+  * reaches before the active range.
+  */
+ export async function admitSubmission(tx, conversationId, draft, now, queueModes, span) {
++    await tx.assertWritableConversation(conversationId);
+     if (draft.type === "input" && draft.entry !== undefined)
+         checkInputEntry(draft.entry);
+     if (draft.requestId !== undefined) {
+@@ -205,7 +206,7 @@ export async function admitSubmission(tx, conversationId, draft, now, queueModes
          // Never queued: whether a run can continue depends on how the current one ends. Rejected before any write.
          if (busy)
              throw new ConversationBusy(conversationId);
@@ -323,7 +343,7 @@ index 512b2477c29b83c03a1c239ee427d928ce553caa..b86d5ac98c07f3af2ff5b64ebe987c6e
          const { id } = await tx.createSubmission({ ...fields, type: "continue", status: "placed" });
          // Items an earlier failed run left queued (`afterFailedRun: "keep"`) are placed first and join the run. Its history
          // starts with the failed run's, so `afterRun` hooks see what that run did.
-@@ -214,7 +214,7 @@ export async function admitSubmission(tx, conversationId, draft, now, queueModes
+@@ -214,7 +215,7 @@ export async function admitSubmission(tx, conversationId, draft, now, queueModes
          return { id, status: "placed" };
      }
      // A boundary reads the table, so it is prepared before the first table write; a busy one needs none.
@@ -332,7 +352,7 @@ index 512b2477c29b83c03a1c239ee427d928ce553caa..b86d5ac98c07f3af2ff5b64ebe987c6e
      if (boundary === undefined || boundary.inbox.items.length > 0) {
          const { id } = await tx.createSubmission({
              ...fields,
-@@ -253,6 +253,8 @@ export async function admitSubmission(tx, conversationId, draft, now, queueModes
+@@ -253,6 +254,8 @@ export async function admitSubmission(tx, conversationId, draft, now, queueModes
          const write = { ...fields, type: "write", status: "done", entry: entry.id };
          return { id: (await tx.createSubmission(write)).id, status: "done" };
      }
@@ -408,7 +428,7 @@ index 86978d80b597c7cd059f36ab23cd4fa115da55f5..91908faa121166a87af8bb1b4874b942
       * Runs inside every transaction that creates or forks a conversation, after the conversation record is staged. A
       * plain Session stages nothing; a Harness stages its built-in documents.
 diff --git a/dist/session/transaction.d.ts b/dist/session/transaction.d.ts
-index b2f88d02e3f5d0380dba7b2cbdedb6898c8bf94e..5fd906014a59674445e5d7fe77d24a9f19189183 100644
+index b2f88d02e3f5d0380dba7b2cbdedb6898c8bf94e..6422e670f4178bcb92bbff99c2b3684aa3358a85 100644
 --- a/dist/session/transaction.d.ts
 +++ b/dist/session/transaction.d.ts
 @@ -49,6 +49,7 @@ export interface TransactionHost {
@@ -419,19 +439,61 @@ index b2f88d02e3f5d0380dba7b2cbdedb6898c8bf94e..5fd906014a59674445e5d7fe77d24a9f
      /** Stage writes that belong to every newly created or forked conversation, in its creating transaction. */
      conversationCreated(tx: Transaction, record: ConversationRecord): Promise<void>;
      /** The newest entry ID visible from a conversation, known from the Session's commits. */
-@@ -113,6 +114,7 @@ export declare class Transaction implements Tx {
+@@ -110,9 +111,12 @@ export declare class Transaction implements Tx {
+     }): Promise<ConversationRecord>;
+     /** Internal final-form bootstrap path for the reserved root identity. */
+     createRootConversation(): Promise<ConversationRecord>;
++    assertWritableConversation(id: ConversationId): Promise<void>;
      forkConversation(parentConversationId: ConversationId, at: EntryId, options: {
          readonly ownership: ConversationOwnership;
++        readonly sealed?: true;
      }): Promise<ConversationRecord>;
 +    beforeInput(conversationId: ConversationId, input: EntryDraft): Promise<readonly EntryDraft[]>;
      appendEntry(conversationId: ConversationId, value: EntryDraft): Promise<EntryRecord>;
      appendEntry<D extends JsonValue>(token: Entry<D>, conversationId: ConversationId, value: TypedEntryDraft<NoInfer<D>>): Promise<TypedEntry<D>>;
      createTask<I, S extends {
 diff --git a/dist/session/transaction.js b/dist/session/transaction.js
-index 1ddb158ebf5569c20080d135cb5e9b89bbb07509..c2ada97639f65863ce4cfb2b4a9b373ae7536c89 100644
+index 1ddb158ebf5569c20080d135cb5e9b89bbb07509..47175b428e0c44b8386081a09d8f8b6d93bda46b 100644
 --- a/dist/session/transaction.js
 +++ b/dist/session/transaction.js
-@@ -167,6 +167,9 @@ export class Transaction {
+@@ -44,6 +44,7 @@ export class Transaction {
+     /** Atomic batch; conversation and entry writes stage eagerly, while task and document writes assemble later. */
+     #writes = [];
+     #createdConversationIds = new Set();
++    #sealedConversationIds = new Set();
+     #forkSourceConversationIds = new Set();
+     #forkSourceDocumentIds = new Set();
+     /** One entry per task touched by a public read, candidate write, or document-owner lookup. */
+@@ -125,9 +126,12 @@ export class Transaction {
+         return this.#write(() => this.#stageConversation(undefined, { kind: "ownerless" }, ROOT_CONVERSATION_ID));
+     }
+     forkConversation(parentConversationId, at, options) {
+-        return this.#write(() => this.#stageConversation({ conversationId: parentConversationId, at }, options.ownership));
++        return this.#write(async () => {
++            await this.assertWritableConversation(parentConversationId);
++            return this.#stageConversation({ conversationId: parentConversationId, at }, options.ownership, undefined, options.sealed === true);
++        });
+     }
+-    async #stageConversation(parent, ownership, reservedId) {
++    async #stageConversation(parent, ownership, reservedId, sealed = false) {
+         const ownerTaskId = ownership.kind === "task" ? ownership.taskId : undefined;
+         const id = reservedId ?? (await this.#host.storage.mintId());
+         this.#assertOpen();
+@@ -141,6 +145,7 @@ export class Transaction {
+         }
+         const record = {
+             id,
++            ...(sealed ? { sealed: true } : {}),
+             ...(parent === undefined ? {} : { parent }),
+             ...(owner === undefined ? {} : { owner }),
+         };
+@@ -162,11 +167,15 @@ export class Transaction {
+         if (parent !== undefined)
+             this.#forkSourceConversationIds.add(parent.conversationId);
+         this.#createdConversationIds.add(id);
++        if (sealed) this.#sealedConversationIds.add(id);
+         this.#writes.push({ type: "conversation", value: record });
+         await this.#host.conversationCreated(this, record);
          this.#assertOpen();
          return record;
      }
@@ -441,11 +503,63 @@ index 1ddb158ebf5569c20080d135cb5e9b89bbb07509..c2ada97639f65863ce4cfb2b4a9b373a
      appendEntry(first, second, third) {
          if (typeof first === "number")
              return this.#appendEntry(first, second);
+@@ -174,7 +183,7 @@ export class Transaction {
+     }
+     #appendEntry(conversationId, value) {
+         return this.#write(async () => {
+-            await this.#requireConversation(conversationId);
++            await this.assertWritableConversation(conversationId);
+             this.#assertOpen();
+             const id = await this.#host.storage.mintId();
+             this.#assertOpen();
+@@ -225,7 +234,7 @@ export class Transaction {
+             const conversationId = owner?.conversationId ?? options.conversationId ?? this.#scope.conversationId;
+             if (conversationId === undefined)
+                 throw new TypeError("Tx.createTask() requires options.conversationId");
+-            await this.#requireConversation(conversationId);
++            await this.assertWritableConversation(conversationId);
+             this.#assertOpen();
+             const definition = task.definition;
+             const checkpoint = definition.initial(input);
+@@ -254,7 +263,7 @@ export class Transaction {
+     /** Create a raw submission record with a fresh ID; no admission rules apply. */
+     createSubmission(create) {
+         return this.#write(async () => {
+-            await this.#requireConversation(create.conversationId);
++            await this.assertWritableConversation(create.conversationId);
+             this.#assertOpen();
+             const id = await this.#host.storage.mintId();
+             this.#assertOpen();
+@@ -870,6 +879,15 @@ export class Transaction {
+             return Promise.reject(error);
+         }
+     }
++    async assertWritableConversation(id) {
++        if (this.#createdConversationIds.has(id)) {
++            if (this.#sealedConversationIds.has(id)) throw new Error(`Conversation ${id} is sealed`);
++            return;
++        }
++        const record = await this.#host.storage.conversation(id, this.#context);
++        if (!record) throw new Error(`Conversation ${id} does not exist`);
++        if (record.sealed) throw new Error(`Conversation ${id} is sealed`);
++    }
+     async #requireConversation(id) {
+         if (this.#createdConversationIds.has(id))
+             return;
 diff --git a/dist/types.d.ts b/dist/types.d.ts
-index 783d56468bdd1c4d2f07e1e58a38b9ae004c2e97..3faebea59537825b98443896226ff3b75b763fbf 100644
+index 783d56468bdd1c4d2f07e1e58a38b9ae004c2e97..fd09690257fcbd1bd2f9c500302aabedf15311e3 100644
 --- a/dist/types.d.ts
 +++ b/dist/types.d.ts
-@@ -411,6 +411,8 @@ export type ContextEdit = {
+@@ -386,6 +386,8 @@ export type ConversationOwnership = {
+ /** Immutable identity, history ancestry, and task ownership of a transcript scope. */
+ export type ConversationRecord = {
+     readonly id: ConversationId;
++    /** Immutable history view; no entries, submissions, tasks, configuration, or descendants. */
++    readonly sealed?: true;
+     /** Fork source and inclusive parent entry through which history is inherited. */
+     readonly parent?: {
+         readonly conversationId: ConversationId;
+@@ -411,6 +413,8 @@ export type ContextEdit = {
  });
  /** Immutable transcript event with separate model-facing and application-facing payloads. */
  export type EntryRecord = {
@@ -454,7 +568,7 @@ index 783d56468bdd1c4d2f07e1e58a38b9ae004c2e97..3faebea59537825b98443896226ff3b7
      readonly id: EntryId;
      readonly conversationId: ConversationId;
      /** Application-defined entry discriminator. */
-@@ -893,6 +895,8 @@ export type CommitPublication = {
+@@ -893,6 +897,8 @@ export type CommitPublication = {
   * Session may freeze them (its caches and context ranges keep them), so mutating one can throw.
   */
  export interface Tx {
@@ -463,3 +577,11 @@ index 783d56468bdd1c4d2f07e1e58a38b9ae004c2e97..3faebea59537825b98443896226ff3b7
      conversation(id: ConversationId): Promise<ConversationRecord | undefined>;
      entry(id: EntryId): Promise<EntryRecord | undefined>;
      /** Undefined when the entry is absent or has another kind. */
+@@ -918,6 +924,7 @@ export interface Tx {
+     /** Create a history fork at one concrete visible entry with explicitly selected ownership. */
+     forkConversation(parentConversationId: ConversationId, at: EntryId, options: {
+         readonly ownership: ConversationOwnership;
++        readonly sealed?: true;
+     }): Promise<ConversationRecord>;
+     /** Returned records are Session-owned immutable values and may be shared with commit listeners. */
+     appendEntry(conversationId: ConversationId, value: EntryDraft): Promise<EntryRecord>;

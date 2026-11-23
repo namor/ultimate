@@ -997,63 +997,71 @@ export const actions = { list: async (_args, ctx) => ctx.host.conversations() }`
       },
     )
     const stream = await attach(server, { docs: ['models.login'] })
-    const action = (name: string, args: unknown, conversationId = 1) =>
-      post(server, `/api/extensions/models/actions/${name}`, { args, conversationId })
-    const flows = async (id = 1) =>
-      (await server.harness.snapshot(Logins, id as ConversationId, context))?.flows ?? {}
-    const login = async (conversationId = 1) => {
-      const response = await action('login', { provider: 'stub', type: 'api_key' }, conversationId)
-      expect(response.status).toBe(200)
-      const flowId = String(response.data.result.flowId)
-      await until(async () => (await flows(conversationId))[flowId]?.prompt?.type === 'secret')
-      return flowId
+    try {
+      const action = (name: string, args: unknown, conversationId = 1) =>
+        post(server, `/api/extensions/models/actions/${name}`, { args, conversationId })
+      const flows = async (id = 1) =>
+        (await server.harness.snapshot(Logins, id as ConversationId, context))?.flows ?? {}
+      const login = async (conversationId = 1) => {
+        const response = await action(
+          'login',
+          { provider: 'stub', type: 'api_key' },
+          conversationId,
+        )
+        expect(response.status).toBe(200)
+        const flowId = String(response.data.result.flowId)
+        await until(async () => (await flows(conversationId))[flowId]?.prompt?.type === 'secret')
+        return flowId
+      }
+      const first = await login()
+      expect(
+        (await action('answer', { flowId: first, value: 'not-a-real-credential' })).status,
+      ).toBe(200)
+      await until(async () => (await flows())[first].status === 'complete')
+      expect(answered).toBe('not-a-real-credential')
+      expect((await flows())[first]).toEqual({
+        provider: 'stub',
+        type: 'api_key',
+        status: 'complete',
+        events: [{ type: 'info', message: 'Stub login' }],
+      })
+      const blank = await login()
+      expect((await action('answer', { flowId: blank, value: '' })).status).toBe(200)
+      await until(async () => (await flows())[blank].status === 'complete')
+      expect(answered).toBe('')
+      // A flow lives in the document of the conversation that started it.
+      const other = Number((await post(server, '/api/conversations', {})).data.id)
+      const second = await login(other)
+      expect((await action('cancel', { flowId: second })).status).toBe(200)
+      await until(async () => (await flows(other))[second].status === 'cancel')
+      expect((await flows(other))[second].prompt).toBeUndefined()
+      expect((await action('answer', { flowId: second, value: 'late-credential' })).data).toEqual({
+        error: 'Unknown login flow',
+      })
+      // The call trace records answers, accepted or rejected, without their credentials.
+      const answers = server.extensions.trace
+        .query({ limit: 1000 })
+        .filter((row) => row.name === 'models/answer')
+      expect(answers.map(({ ok, args, result, error }) => ({ ok, args, result, error }))).toEqual([
+        { ok: true, args: undefined, result: undefined, error: undefined },
+        { ok: true, args: undefined, result: undefined, error: undefined },
+        { ok: false, args: undefined, result: undefined, error: 'Error' },
+      ])
+      const trace = JSON.stringify(server.extensions.trace.query({ limit: 1000 }))
+      expect(trace).not.toContain('not-a-real-credential')
+      expect(trace).not.toContain('late-credential')
+      expect(
+        stream.events.some(
+          (event) =>
+            event.name === 'docOps' &&
+            (event.data as ServerEvents['docOps']).kind === 'models.login',
+        ),
+      ).toBe(true)
+      expect(JSON.stringify(stream.events)).not.toContain('not-a-real-credential')
+      expect(JSON.stringify(await flows())).not.toContain('not-a-real-credential')
+    } finally {
+      await stream.close()
     }
-    const first = await login()
-    expect((await action('answer', { flowId: first, value: 'not-a-real-credential' })).status).toBe(
-      200,
-    )
-    await until(async () => (await flows())[first].status === 'complete')
-    expect(answered).toBe('not-a-real-credential')
-    expect((await flows())[first]).toEqual({
-      provider: 'stub',
-      type: 'api_key',
-      status: 'complete',
-      events: [{ type: 'info', message: 'Stub login' }],
-    })
-    const blank = await login()
-    expect((await action('answer', { flowId: blank, value: '' })).status).toBe(200)
-    await until(async () => (await flows())[blank].status === 'complete')
-    expect(answered).toBe('')
-    // A flow lives in the document of the conversation that started it.
-    const other = Number((await post(server, '/api/conversations', {})).data.id)
-    const second = await login(other)
-    expect((await action('cancel', { flowId: second })).status).toBe(200)
-    await until(async () => (await flows(other))[second].status === 'cancel')
-    expect((await flows(other))[second].prompt).toBeUndefined()
-    expect((await action('answer', { flowId: second, value: 'late-credential' })).data).toEqual({
-      error: 'Unknown login flow',
-    })
-    // The call trace records answers, accepted or rejected, without their credentials.
-    const answers = server.extensions.trace
-      .query({ limit: 1000 })
-      .filter((row) => row.name === 'models/answer')
-    expect(answers.map(({ ok, args, result, error }) => ({ ok, args, result, error }))).toEqual([
-      { ok: true, args: undefined, result: undefined, error: undefined },
-      { ok: true, args: undefined, result: undefined, error: undefined },
-      { ok: false, args: undefined, result: undefined, error: 'Error' },
-    ])
-    const trace = JSON.stringify(server.extensions.trace.query({ limit: 1000 }))
-    expect(trace).not.toContain('not-a-real-credential')
-    expect(trace).not.toContain('late-credential')
-    expect(
-      stream.events.some(
-        (event) =>
-          event.name === 'docOps' && (event.data as ServerEvents['docOps']).kind === 'models.login',
-      ),
-    ).toBe(true)
-    expect(JSON.stringify(stream.events)).not.toContain('not-a-real-credential')
-    expect(JSON.stringify(await flows())).not.toContain('not-a-real-credential')
-    await stream.close()
     // A flow that dies with its process reads cancelled on the next start.
     await server.harness.commit(async (tx) => {
       ;(await tx.doc(Logins, 1 as ConversationId)).flows.dead = {
