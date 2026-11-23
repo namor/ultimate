@@ -84,15 +84,13 @@ function checkPreviewPin(model: { provider: string; id: string }) {
     throw new Error('Automatic Plan differs from this preview’s model pin')
 }
 
-async function selection(host: ExtensionHost) {
+async function selection(host: ExtensionHost, family: string) {
   if (projectDecision(host.projectRoot, host.userHome) !== true) return undefined
-  const { family, revision } = await readPlanLink(host)
-  if (!family) return undefined
   const model = (await planOptions(host)).find((option) => option.family === family)
   if (!model)
     throw new Error('The linked Plan family is missing or unavailable. No fallback is used.')
   checkPreviewPin(model)
-  return { provider: model.provider, id: model.id, thinking: model.effort, revision }
+  return { provider: model.provider, id: model.id, thinking: model.effort }
 }
 
 function requestTask(host: ExtensionHost) {
@@ -252,8 +250,8 @@ async function plan(host: ExtensionHost, id: ConversationId, caller: TaskId) {
   const previous = await harness.snapshot(Admission, id, background)
   if (previous?.caller === caller) return previous.task
   if (previous?.fork || !(await harness.snapshot(Branch, id, background))?.branch) return undefined
-  const model = await selection(host)
-  if (!model) return undefined
+  const link = await readPlanLink(host)
+  if (!link.family || projectDecision(host.projectRoot, host.userHome) !== true) return undefined
   const conversation = await harness.conversation(id, background)
   const view = await conversation?.context(background)
   const cutoff = view?.entries.at(-1)?.id
@@ -290,10 +288,12 @@ async function plan(host: ExtensionHost, id: ConversationId, caller: TaskId) {
     .join('\n\n')
     .slice(-packetLimit)
   if (!text.trim()) return undefined
-  return admitWithPlanLink(host, model.revision, () =>
+  return admitWithPlanLink(host, link.revision, (family) =>
     harness.commit(async (tx) => {
       const admission = await tx.doc(Admission, id)
       if (admission.fork) return admission.caller === caller ? admission.task : undefined
+      const model = await selection(host, family)
+      if (!model) return undefined
       const fork = await tx.forkConversation(id, cutoff, {
         ownership: { kind: 'ownerless' },
         sealed: true,
@@ -432,7 +432,11 @@ export default (host: ExtensionHost) =>
       section('automatic-plan', async ({ conversationId }, ctx) => {
         if (!(await host.harness().snapshot(Branch, conversationId, ctx))?.branch) return undefined
         try {
-          if (!(await selection(host))) return undefined
+          if (
+            projectDecision(host.projectRoot, host.userHome) !== true ||
+            !(await linkedFamily(host))
+          )
+            return undefined
         } catch {
           return 'Automatic Plan is unavailable. Check the project model family and provider login. Do not substitute another model.'
         }

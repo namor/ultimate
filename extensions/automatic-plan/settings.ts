@@ -33,11 +33,12 @@ async function serializeProjectLink<T>(host: ExtensionHost, change: () => Promis
 export function admitWithPlanLink<T>(
   host: ExtensionHost,
   revision: number,
-  admit: () => Promise<T>,
+  admit: (family: string) => Promise<T>,
 ) {
-  return serializeProjectLink(host, async () =>
-    (await readPlanLink(host)).revision === revision ? admit() : undefined,
-  )
+  return serializeProjectLink(host, async () => {
+    const link = await readPlanLink(host)
+    return link.family && link.revision === revision ? admit(link.family) : undefined
+  })
 }
 
 export async function planOptions(host: ExtensionHost): Promise<PlanSelection[]> {
