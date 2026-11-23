@@ -157,6 +157,8 @@ export const limitsFor = (check: Check, limits: CheckLimits): CheckLimits =>
     ? limits
     : { stall: Math.min(limits.stall, check.timeout), total: check.timeout }
 const vitestFailureLine = /^\s*(FAIL|×|✗)\s/
+const verifyPhaseLine =
+  /^Verification phase: (install|install-deepwiki|install-public-docs|check|fast|e2e|cursor-runner|cursor-tests|deepwiki|public-docs)$/
 const seconds = (value: number) => (value < 60 ? `${value} s` : `${+(value / 60).toFixed(1)} min`)
 
 export const checkPids = (home: string) => join(home, 'lander-checks')
@@ -186,6 +188,9 @@ export async function runLanderCheck(
   let partial = ''
   const failed = new Set<string>()
   let stopped: string | undefined
+  const trackVerifyPhase = command.trim() === 'pnpm verify'
+  let verifyPhase: { name: string; started: number } | undefined
+  let phaseAtCutoff: string | undefined
   const watchdog = new AbortController()
   const signal = AbortSignal.any([
     watchdog.signal,
@@ -194,6 +199,10 @@ export async function runLanderCheck(
   const stop = (reason: string) => {
     if (signal.aborted) return
     stopped = reason
+    if (verifyPhase) {
+      const elapsed = Math.round(performance.now() - verifyPhase.started)
+      phaseAtCutoff = `Verify phase at cutoff: ${verifyPhase.name} (${elapsed} ms elapsed)`
+    }
     watchdog.abort()
   }
   const stalled = () => stop(`Stalled: no output for ${seconds(limits.stall)}, stopped`)
@@ -208,7 +217,14 @@ export async function runLanderCheck(
       .filter((test) => test.startsWith('FAIL'))
       .map((test) => test.slice('FAIL'.length).replace(/\s+/g, ' ').trim())
     return {
-      failure: [reason, ...(tests.length ? [heading, ...tests] : []), output].join('\n').trim(),
+      failure: [
+        reason,
+        ...(phaseAtCutoff ? [phaseAtCutoff] : []),
+        ...(tests.length ? [heading, ...tests] : []),
+        output,
+      ]
+        .join('\n')
+        .trim(),
       cause: [reason, ...failedFiles.slice(0, 5)].join(': '),
     }
   }
@@ -218,6 +234,8 @@ export async function runLanderCheck(
     partial = split.pop()!.slice(-1000)
     for (const line of split) {
       const plain = stripVTControlCharacters(line).trim()
+      const phase = trackVerifyPhase && !stopped && verifyPhaseLine.exec(plain)?.[1]
+      if (phase) verifyPhase = { name: phase, started: performance.now() }
       if (vitestFailureLine.test(plain)) failed.add(plain.slice(0, 300))
     }
     stallDeadline()
@@ -227,7 +245,11 @@ export async function runLanderCheck(
     try {
       exit = await runGroup('/bin/bash', ['-c', command], {
         cwd: path,
-        env: { ...process.env, TMPDIR: tmp },
+        env: {
+          ...process.env,
+          TMPDIR: tmp,
+          ...(trackVerifyPhase ? { ULTIMATE_VERIFY_PHASES: '1' } : {}),
+        },
         pidFile: join(pids, `${process.pid}-${randomUUID()}.pid`),
         signal,
         grace: 2000,
