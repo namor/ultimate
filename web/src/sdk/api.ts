@@ -19,6 +19,7 @@ import { writerNow } from './writer.ts'
 import type { UiWho } from './writer.ts'
 import type { ActionRef } from '../../../shared/extension-api.ts'
 import { errorMessage } from './format.ts'
+import { fitsKeepalive } from './keepalive.ts'
 import type { Store } from './store.ts'
 
 /** Per-call options of `api.action`. */
@@ -72,15 +73,15 @@ export function createApi(store: Store, options: { fetch?: typeof fetch } = {}) 
       who = writerNow(),
     }: { keepalive?: boolean; signal?: AbortSignal; who?: UiWho } = {},
   ): Promise<T> {
+    const encoded = JSON.stringify(body)
     const response = await request(path, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         [SOURCE_HEADER]: who,
       },
-      body: JSON.stringify(body),
-
-      keepalive,
+      body: encoded,
+      keepalive: keepalive && fitsKeepalive(encoded),
       signal,
     })
     const data: unknown = await response.json().catch(() => ({}))
