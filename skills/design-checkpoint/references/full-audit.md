@@ -257,11 +257,13 @@ product `base..head`:
    automatic `reviewer-*` fan-out. Available specialists are a catalog, not a
    launch requirement. A conflicting effective mandate needs a configuration
    decision before dispatch; no silent extra final reviewer.
-2. `subagent start { agent: 'reviewer', task: <range + acceptance/evidence>,
-   fork: false }`
+2. Start `reviewer` with `fork: false`. Send only the request, agreed scope,
+   acceptance criteria, source locations and full base, head and tree SHAs.
+   Share raw receipts by reference after the reviewer chooses its checks.
 3. Verify returned model and lone-review report. Unexpected model/team →
    requirement unmet.
-4. Corrections use **that same** reviewer conversation and a new immutable head.
+4. Send corrections to **that same** reviewer with the new range, tree, delta,
+   finding IDs and receipts.
 
 ## Artifacts and authority
 
