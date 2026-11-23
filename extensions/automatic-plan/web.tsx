@@ -69,14 +69,14 @@ function PlanPreferences() {
             )}
             {options.map((choice) => (
               <option key={choice.family} value={choice.family}>
-                {choice.family} · {choice.id} · {choice.effort}
+                {choice.family} · {choice.provider}/{choice.id} · {choice.effort}
               </option>
             ))}
           </select>
         </label>
-        {error && (
+        {(error || preferences.data?.problem) && (
           <p role="alert" className="text-sm text-destructive">
-            {error}
+            {error || preferences.data?.problem}
           </p>
         )}
       </DialogContent>

@@ -1,20 +1,27 @@
 import { join } from 'node:path'
+import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
+import { defineDoc, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import { clampThinkingLevel } from '@earendil-works/pi-ai'
-import { mergeLayers, projectKey, readFamilyLayers } from '../../lib/families-settings.ts'
+import { mergeLayers, readFamilyLayers } from '../../lib/families-settings.ts'
 import { refOf } from '../../lib/families.ts'
-import { readJson, updateJson } from '../../lib/json-file.ts'
 import { projectDecision } from '../../lib/project-setup.ts'
 import { readSettings } from '../../lib/settings.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import type { PlanSelection } from './refs.ts'
 
-const path = (host: ExtensionHost) => join(host.userHome, '.ultimate/automatic-plan.json')
-const selections = (file: string) => readJson<Record<string, string | null>>(file, {})
+const PlanLink = defineDoc<{ family: string | null; revision: number }>({
+  kind: 'automatic-plan.link',
+  scope: 'conversation',
+  version: 1,
+  history: 'latest',
+  fork: 'initial',
+  checkpointWhen: () => false,
+  initial: () => ({ family: null, revision: 0 }),
+})
+const readLink = (host: ExtensionHost) =>
+  host.harness().snapshot(PlanLink, ROOT_CONVERSATION_ID, context)
 export async function linkedFamily(host: ExtensionHost) {
-  const family = (await selections(path(host)))[projectKey(host.projectRoot)]
-  if (family === undefined || family === null) return null
-  if (typeof family !== 'string' || !family) throw new Error('Invalid Automatic Plan family link')
-  return family
+  return (await readLink(host))?.family ?? null
 }
 
 export async function planOptions(host: ExtensionHost): Promise<PlanSelection[]> {
@@ -44,13 +51,18 @@ export async function planOptions(host: ExtensionHost): Promise<PlanSelection[]>
 }
 
 export async function linkPlan(host: ExtensionHost, family: string | null) {
+  const previous = family === null ? undefined : ((await readLink(host))?.revision ?? 0)
   if (family && projectDecision(host.projectRoot, host.userHome) !== true)
     throw new Error('Enable project-local setup before turning on Automatic Plan')
   if (family && !(await planOptions(host)).some((option) => option.family === family))
     throw new Error(
       'That family is missing or its model is unavailable. No replacement was selected.',
     )
-  await updateJson(path(host), selections, (stored) => {
-    stored[projectKey(host.projectRoot)] = family
-  })
+  await host.harness().commit(async (tx) => {
+    const stored = await tx.doc(PlanLink, ROOT_CONVERSATION_ID)
+    if (previous !== undefined && stored.revision !== previous)
+      throw new Error('The Plan setting changed. Choose again to enable it.')
+    stored.family = family
+    stored.revision++
+  }, context)
 }

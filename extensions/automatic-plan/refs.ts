@@ -11,10 +11,10 @@ export type PlanSelection = {
   effort: ModelThinkingLevel
 }
 /** Read the project's linked family and the eligible family choices. */
-export const PlanSettings = actionRef<null, { family: string | null; options: PlanSelection[] }>(
-  'automatic-plan',
-  'settings',
-)
+export const PlanSettings = actionRef<
+  null,
+  { family: string | null; options: PlanSelection[]; problem?: string }
+>('automatic-plan', 'settings')
 /** Link Automatic Plan to one model family in this project, or turn planning off. Person-only. */
 export const SetPlan = actionRef<string | null, null>('automatic-plan', 'setPlan')
 

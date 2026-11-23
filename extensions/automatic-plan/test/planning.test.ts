@@ -209,6 +209,16 @@ test('plans on a sealed fork and sends only the explicit revision', async () => 
       })
       expect((await thread())?.turns[after]?.answer).toBeUndefined()
     }
+    const settingsPath = join(projectRoot, '.ultimate/settings.json')
+    await writeFile(settingsPath, '{')
+    expect((await action('settings', null)).data.result).toMatchObject({
+      family: 'plan',
+      options: [],
+      problem: expect.any(String),
+    })
+    expect((await action('setPlan', null)).status).toBe(200)
+    await writeFile(settingsPath, '{}')
+    expect((await action('settings', null)).data.result.family).toBeNull()
   } finally {
     await server.close()
   }

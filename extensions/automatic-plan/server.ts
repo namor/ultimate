@@ -78,6 +78,12 @@ const finish = <T>(result: T) => ({
   outcome: { status: 'completed' as const, result },
 })
 
+function checkPreviewPin(model: { provider: string; id: string }) {
+  const pin = previewModel()
+  if (pin && (pin.provider !== model.provider || pin.modelId !== model.id))
+    throw new Error('Automatic Plan differs from this preview’s model pin')
+}
+
 async function selection(host: ExtensionHost) {
   if (projectDecision(host.projectRoot, host.userHome) !== true) return undefined
   const family = await linkedFamily(host)
@@ -85,9 +91,7 @@ async function selection(host: ExtensionHost) {
   const model = (await planOptions(host)).find((option) => option.family === family)
   if (!model)
     throw new Error('The linked Plan family is missing or unavailable. No fallback is used.')
-  const pin = previewModel()
-  if (pin && (pin.provider !== model.provider || pin.modelId !== model.id))
-    throw new Error('Automatic Plan differs from this preview’s model pin')
+  checkPreviewPin(model)
   return { provider: model.provider, id: model.id, thinking: model.effort }
 }
 
@@ -127,6 +131,7 @@ function requestTask(host: ExtensionHost) {
               throw new Error(
                 'The planning thread’s pinned model or effort is unavailable. No replacement was used.',
               )
+            checkPreviewPin(current)
             const model = { provider: current.provider, id: current.id, thinking }
             if (await runtime.memo<boolean>('attempted', ctx))
               throw new Error(
@@ -334,10 +339,18 @@ const argsOf = (value: unknown) => {
 }
 
 export const actions = {
-  settings: implementAction(PlanSettings, async (_args, { host }) => ({
-    family: await linkedFamily(host),
-    options: await planOptions(host),
-  })),
+  settings: implementAction(PlanSettings, async (_args, { host }) => {
+    const family = await linkedFamily(host)
+    try {
+      return { family, options: await planOptions(host) }
+    } catch {
+      return {
+        family,
+        options: [],
+        problem: 'Model families are unavailable. You can still turn Automatic Plan off.',
+      }
+    }
+  }),
   setPlan: implementAction(SetPlan, async (family, { host }) => {
     if (family !== null && (typeof family !== 'string' || !family))
       throw new Error('Choose a family or Off')
