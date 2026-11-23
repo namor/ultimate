@@ -2,7 +2,7 @@ import { fauxAssistantMessage } from '@earendil-works/pi-ai/providers/faux'
 import type { ConversationId } from '@earendil-works/pi-durable'
 import { writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { chromium } from 'playwright-core'
+import { chromium, type Locator } from 'playwright-core'
 import { afterEach, expect, it } from 'vitest'
 import { browserBinary } from '../../extensions/browser/server.ts'
 import { context } from '../../server/harness.ts'
@@ -164,6 +164,13 @@ it('opens a local Markdown chat link only through the chooser and renders the se
     const line = (await dialog.getByText(text, { exact: true }).boundingBox())!
     return pane.y - 1 <= line.y && line.y + line.height <= pane.y + pane.height + 1
   }
+  const scrollIntoView = (target: Locator) =>
+    target.evaluate((line) => {
+      line.scrollIntoView({ block: 'start', behavior: 'instant' })
+      const pane = line.closest('[data-markdown-scroll]')!.getBoundingClientRect()
+      const rect = line.getBoundingClientRect()
+      return pane.top - 1 <= rect.top && rect.bottom <= pane.bottom + 1
+    })
   const wideCode = dialog.getByText('wide code '.repeat(100).trim(), { exact: true })
   expect(
     await wideCode.evaluate((line) => {
@@ -188,7 +195,7 @@ it('opens a local Markdown chat link only through the chooser and renders the se
   expect(await visible('Report final line')).toBe(true)
   expect(await top()).toBeGreaterThan(1000)
   const passage = dialog.getByRole('heading', { name: 'Report passage 35', exact: true })
-  await passage.evaluate((el) => el.scrollIntoView({ block: 'start' }))
+  expect(await scrollIntoView(passage), 'Report passage 35 is visible before expand').toBe(true)
   await expand.click()
   expect(await visible('Report passage 35')).toBe(true)
   await restore.click()
@@ -219,9 +226,10 @@ it('opens a local Markdown chat link only through the chooser and renders the se
       return pane.scrollTop > 0
     }),
   ).toBe(true)
-  await dialog
-    .getByText('Report after the table', { exact: true })
-    .evaluate((element) => element.scrollIntoView({ block: 'start' }))
+  expect(
+    await scrollIntoView(dialog.getByText('Report after the table', { exact: true })),
+    'Report after the table is visible before expand',
+  ).toBe(true)
   await expand.click()
   expect(await visible('Report after the table')).toBe(true)
   await select(otherFile)
