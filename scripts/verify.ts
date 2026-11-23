@@ -3,6 +3,10 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { availableParallelism, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+const lane = process.argv[2]
+if (process.argv.length > 3 || (lane !== undefined && lane !== 'fast' && lane !== 'e2e'))
+  throw new Error('Usage: pnpm verify [fast|e2e]')
+
 const store = spawnSync('pnpm', ['store', 'path', '--silent'], {
   cwd: tmpdir(),
   env: { PATH: process.env.PATH, HOME: process.env.HOME, CI: '1' },
@@ -17,8 +21,8 @@ const env = {
   CI: '1',
   PNPM_CONFIG_STORE_DIR: store.stdout.trim(),
 }
-const commands: [string, string[]][] = [
-  ['pnpm', ['install', '--frozen-lockfile', '--prefer-offline']],
+const commands: [string, string[], ('setup' | 'e2e')?][] = [
+  ['pnpm', ['install', '--frozen-lockfile', '--prefer-offline'], 'setup'],
   [
     'pnpm',
     [
@@ -29,6 +33,7 @@ const commands: [string, string[]][] = [
       '--ignore-scripts',
       '--ignore-workspace',
     ],
+    'setup',
   ],
   [
     'pnpm',
@@ -40,10 +45,11 @@ const commands: [string, string[]][] = [
       '--ignore-scripts',
       '--ignore-workspace',
     ],
+    'setup',
   ],
   ['pnpm', ['check']],
   ['pnpm', ['test']],
-  ['pnpm', ['test:e2e']],
+  ['pnpm', ['test:e2e'], 'e2e'],
   [process.execPath, ['--test', '.ultimate/extensions/cursor-task/test/e2e/runner.test.ts']],
   [
     'pnpm',
@@ -56,7 +62,8 @@ try {
   console.log(
     `Verification runtime: ${process.version} ${process.platform}/${process.arch}; ${availableParallelism()} CPUs`,
   )
-  for (const [command, args] of commands) {
+  for (const [command, args, group = 'fast'] of commands) {
+    if (lane && group !== 'setup' && group !== lane) continue
     console.log(`\nVerifying: ${command} ${args.join(' ')}`)
     const result = spawnSync(command, args, { env, stdio: 'inherit', timeout: 10 * 60 * 1000 })
     if (result.error) throw result.error

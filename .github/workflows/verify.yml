@@ -15,24 +15,54 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
-    name: verify
+  fast:
+    name: verify-fast
     # #54086: the 3-CPU macos-latest runner timed out fixture-heavy tests at 30 s on every delivery (PRs 19-21).
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - &checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - &pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - &node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '26'
           cache: pnpm
       # #54086: Ubuntu 24.04 restricts unprivileged user namespaces, so Chromium's sandbox (kept on by the browser
       # extension) aborts with "No usable sandbox!"; allow them instead of turning the sandbox off.
-      - name: Allow Chromium's user-namespace sandbox
+      - &sandbox
+        name: Allow Chromium's user-namespace sandbox
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - name: Frozen installs, lint, types and all test suites
-        run: pnpm verify
+      - run: pnpm verify fast
+
+  e2e:
+    name: verify-e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - *checkout
+      - *pnpm
+      - *node
+      - *sandbox
+      - run: pnpm verify e2e
+
+  verify:
+    name: verify
+    needs: [fast, e2e]
+    # A skipped required check can permit a merge. Run this even if a lane did not succeed.
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require both verification lanes to succeed
+        env:
+          FAST_RESULT: ${{ needs.fast.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+        run: |
+          printf 'verify-fast: %s\nverify-e2e: %s\n' "$FAST_RESULT" "$E2E_RESULT"
+          test "$FAST_RESULT" = success && test "$E2E_RESULT" = success
