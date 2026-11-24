@@ -13,7 +13,8 @@ import { Family } from '../models/api.ts'
 import { readFamilies } from '../../lib/families-settings.ts'
 import { LineageApi, Roots } from '../lineage/api.ts'
 import { actingAs } from '../../lib/acting-as.ts'
-import { imagesParameter } from './images.ts'
+import { imagesParameter, resolveImages } from './images.ts'
+import type { ImagesRef } from './images.ts'
 import { send } from './send.ts'
 import { Started } from './addresses.ts'
 import { safeToRerun } from '../../lib/replay.ts'
@@ -38,7 +39,14 @@ export const branchTool = (host: ExtensionHost) =>
     async execute(input, api, ctx) {
       const from = await actingAs(host, api.conversationId, ctx)
       let id = await api.memo<number>('branch-id', ctx)
+      let images: ImagesRef | undefined =
+        typeof input.images === 'number' ? parseEntryId(input.images) : input.images
       if (id === undefined) {
+        const ref = images
+        if (ref !== undefined)
+          images = (
+            await host.harness().commit((tx) => resolveImages(tx, api.conversationId, ref), ctx)
+          ).entry
         const lineage = host.need(LineageApi)
         const roots = (await host.harness().snapshot(Roots, ROOT_CONVERSATION_ID, ctx))?.roots ?? []
         const root =
@@ -111,12 +119,7 @@ export const branchTool = (host: ExtensionHost) =>
           to: `#${id}`,
           text: input.prompt,
           reply: true,
-          ...(input.images === undefined
-            ? {}
-            : {
-                images:
-                  typeof input.images === 'number' ? parseEntryId(input.images) : input.images,
-              }),
+          ...(images === undefined ? {} : { images }),
           imagesFrom: api.conversationId,
         },
         ctx,

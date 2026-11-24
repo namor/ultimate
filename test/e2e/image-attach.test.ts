@@ -4,13 +4,13 @@
 // file instead. Open the standing conversation explicitly: on bare / the enabled fallback root composer can still
 // be replaced by the shared UI's initial selection. Pick only once that conversation's paperclip is enabled.
 import { readFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { fauxAssistantMessage } from '@earendil-works/pi-ai/providers/faux'
 import { chromium } from 'playwright-core'
 import { afterEach, expect, it } from 'vitest'
 import { browserBinary } from '../../extensions/browser/server.ts'
 import { context } from '../../server/harness.ts'
-import { fauxServer, post, removeTemp, temp, until } from '../helpers.ts'
+import { prebuiltServer, post, removeTemp, temp, until } from '../helpers.ts'
 
 const cleanup: (() => Promise<void>)[] = []
 afterEach(async () => {
@@ -26,9 +26,7 @@ const png = Buffer.from(
 it('attaches an image picked with the paperclip and sends it', async () => {
   const home = await temp('ultimate-image-attach-')
   cleanup.push(() => removeTemp(home))
-  const server = await fauxServer({
-    ultimateRoot: resolve('.'),
-    projectRoot: resolve('.'),
+  const server = await prebuiltServer({
     userHome: home,
     localSetup: false,
     home: join(home, 'state'),
@@ -67,7 +65,7 @@ it('attaches an image picked with the paperclip and sends it', async () => {
     )
     .setInputFiles({ name: 'shot.png', mimeType: 'image/png', buffer: png })
   await page.locator('#app [data-ui="composer"] [aria-label="Remove image 1"]').waitFor()
-  await page.locator('#app [data-ui="composer"] button[aria-label="Send"]:enabled').waitFor()
+  await page.locator('#app [data-ui="composer"] button[type="submit"]:enabled').waitFor()
   await editor.press('Enter')
   await until(async () => !!received)
   expect(received!.mimeType).toBe('image/png')
@@ -77,9 +75,7 @@ it('attaches an image picked with the paperclip and sends it', async () => {
 it('uploads a PDF picked with the paperclip and sends its path, not its bytes', async () => {
   const home = await temp('ultimate-file-attach-')
   cleanup.push(() => removeTemp(home))
-  const server = await fauxServer({
-    ultimateRoot: resolve('.'),
-    projectRoot: resolve('.'),
+  const server = await prebuiltServer({
     userHome: home,
     localSetup: false,
     home: join(home, 'state'),
@@ -127,11 +123,11 @@ it('uploads a PDF picked with the paperclip and sends its path, not its bytes', 
     .waitFor()
   await editor.fill('Summarise this')
   // #45669: the filename already matches "PDF" while uploading; the chip alone made Enter race the upload.
-  expect(
-    await page.locator('#app [data-ui="composer"] button[aria-label="Send"]').isDisabled(),
-  ).toBe(true)
+  expect(await page.locator('#app [data-ui="composer"] button[type="submit"]').isDisabled()).toBe(
+    true,
+  )
   upload.resolve()
-  await page.locator('#app [data-ui="composer"] button[aria-label="Send"]:enabled').waitFor()
+  await page.locator('#app [data-ui="composer"] button[type="submit"]:enabled').waitFor()
   await editor.press('Enter')
   await until(async () => received !== undefined)
   const text = typeof received === 'string' ? received : JSON.stringify(received)

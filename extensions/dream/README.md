@@ -14,7 +14,7 @@ A dream is ordinary work; code keeps only which branch is the dream, so its end 
    to the turn's start) becomes `dream.next.dream { branch, requested, at }`.
 3. **Decided.** @ultimate weighs in and the dream branch asks the user with a questions card; approved ones become ordinary branches or
    `remember` batches.
-4. **Woke.** Once the dream branch is concluded, the sidebar (`awake.tsx`) and the status line show "The dream is
+4. **Woke.** Once the dream branch is concluded, the sidebar (`awake.solid.tsx`) and the status line show "The dream is
    done" with **Fall asleep…**, until a chapter is prepared after it or the user dismisses it (user-only `dismiss`).
    Fall asleep calls user-only `ready`, which wakes @ultimate with a `dream.ready` input asking it to prepare.
 5. **Prepared.** @ultimate calls `prepare {chapter, learned, handoff}`: the chapter's name, three learned lines and a fresh handover (at most 12,000 characters). It is kept in
@@ -33,7 +33,10 @@ thresholds are edited there, pausing one stops its dreams, deleting one is remem
 and a new chapter makes them again as the seed carried them (`builtIn`, `builtInPause`: paused stays paused, and an
 edited threshold, pause or cooldown stays edited; a seed without a condition gets the defaults above). A lost
 create's receipt is found by name and trigger target, never by threshold or subscribers, so none is made twice. As
-any condition, each fires once, re-arms 10 points below its threshold and waits an hour between fires.
+any condition, each fires once, re-arms 10 points below its threshold and waits an hour between fires. A chapter
+dreams automatically once: after a dream branch was marked or a chapter prepared (`dream.next.dream` or `prepared`),
+dream holds both through the `automations.hold` extension point, so a crossing neither wakes @ultimate nor asks for a
+dream. The Dream button still does; the next chapter starts with an empty `dream.next`.
 
 A fire's own input wakes @ultimate; reactor `dream/requested` adds a passive `dream.requested` entry beside it (request
 id `dream.requested:<automation>:<fire>`), which says what a dream is and where its workflow lives, so the fire costs
@@ -71,8 +74,8 @@ records keep name, optional prompt, schedule and run profile, but no subscribers
 chapter. Schedules without a prompt become recreation to-dos.
 
 On open, dream applies a chapter's seed in one commit with `dream.seed.applied` on conversation 1: memories keep
-their sources, to-dos get fresh ids, questions become user-owned to-dos naming the old chapter and message id, and a
-`dream.deliver` task wakes @ultimate with one `dream.chapter` input (the morning card). Its text names the old
+their sources, to-dos get fresh ids, questions become user-owned to-dos naming the old chapter and message id, and the
+same commit wakes @ultimate with one `dream.chapter` input (the morning card). Its text names the old
 chapter's read APIs, the three learned lines, the carried counts and the handover, and tells @ultimate to continue
 that work. Reopening does not reapply those documents.
 
@@ -84,7 +87,7 @@ automations' own open hook; each enabled user script becomes an @ultimate-owned 
 
 ### Fall asleep and switch
 
-User-only `asleep { name? }` refuses without a prepared chapter, while any top-level conversation is busy (@ultimate
+User-only `asleep { name? }` refuses without a prepared chapter, while any conversation is busy (@ultimate and branches
 included: a switch parks whatever is live, and parked work keeps the chapter left behind from being switched back to),
 or when the name (default: the prepared one) already exists; an existing chapter is reached with `switch`. Chapter
 changes are serialized. Each step commits as `sleep` in `dream.next`: `seeding`, `backing up`, `switching`, or

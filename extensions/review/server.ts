@@ -4,7 +4,7 @@ import type { Context } from '@earendil-works/chord/context'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import { AgentDoc, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import { implementAction } from '../../lib/actions.ts'
-import { formatAgo } from '../../lib/ago.ts'
+import { formatAgo } from '../../lib/format.ts'
 import { UserInputEvent } from '../../shared/events.ts'
 import { git, isolatable } from '../../lib/git.ts'
 import { meansNone } from '../../lib/errors.ts'
@@ -217,7 +217,7 @@ export const actions = {
     const cwd = await sourceCheckout(host, conversationOf(input.conversation))
     return { conversation: await recipient(host, input.spec, cwd) }
   }),
-  send: implementAction(SendAction, async (args, { host, device }) => {
+  send: implementAction(SendAction, async (args, { host, device, origin, source }) => {
     const value =
       args && typeof args === 'object' && !Array.isArray(args) ? args.conversation : undefined
     const id = typeof value === 'number' ? parseConversationId(value) : undefined
@@ -249,6 +249,7 @@ export const actions = {
             : { entry: admittedInput.entry }),
           length: content.length,
           ...device,
+          ...(origin === 'ui' ? { source } : {}),
         }),
       context,
     )

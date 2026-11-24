@@ -118,7 +118,13 @@ async function typedInstruction(
   let typed: (typeof events)[number] | undefined
   for (const event of events) {
     const { data } = event
-    if (data.conversation !== ultimate || !data.device || data.kind === 'dismiss') continue
+    if (
+      data.conversation !== ultimate ||
+      data.source !== 'person' ||
+      !data.device ||
+      data.kind === 'dismiss'
+    )
+      continue
     if (data.entry === entry.id || (message !== undefined && data.message === message))
       typed = event
     else if (data.submission !== undefined) {
@@ -165,8 +171,16 @@ async function approver(
 const standingMaxHours = 7 * 24
 const grantWindow = 10 * 60_000
 
+function deliveryDevice(ctx: ActionContext) {
+  if (ctx.origin === 'agent') return undefined
+  if (ctx.origin === 'ui' && ctx.source === 'person' && ctx.device) return ctx.device
+  throw new Error('This delivery action requires a person or the responsible conversation agent')
+}
+
 export const actions = {
-  delivery: implementAction(DeliveryAction, async (args, { host, conversationId, device }) => {
+  delivery: implementAction(DeliveryAction, async (args, ctx) => {
+    const { host, conversationId } = ctx
+    const device = deliveryDevice(ctx)
     if (
       !args ||
       typeof args !== 'object' ||
@@ -293,7 +307,9 @@ export const actions = {
     host.harness().resume()
     return { ok: true as const }
   }),
-  standing: implementAction(StandingAction, async (args, { host, conversationId, device }) => {
+  standing: implementAction(StandingAction, async (args, ctx) => {
+    const { host, conversationId } = ctx
+    const device = deliveryDevice(ctx)
     if (!args || typeof args !== 'object' || Array.isArray(args))
       throw new Error('Expected { grant } or { revoke }')
     if (args.revoke === true) {
@@ -346,7 +362,11 @@ export const actions = {
       throw new Error(`hours must be more than 0 and at most ${standingMaxHours}`)
     const { id: instruction, event } = await typedInstruction(host, ultimate, args.instruction)
     const latest = (await host.eventLog.recent({ events: [UserInputEvent], limit: 1000 })).find(
-      ({ data }) => data.conversation === ultimate && data.device && data.kind !== 'dismiss',
+      ({ data }) =>
+        data.conversation === ultimate &&
+        data.source === 'person' &&
+        data.device &&
+        data.kind !== 'dismiss',
     )
     if (latest?.id !== event.id || Date.now() - Date.parse(event.at) > grantWindow)
       throw new Error(
@@ -456,25 +476,25 @@ export default function workspaceExtension(host: ExtensionHost) {
     service.resume(context).catch((error: unknown) => {
       host.notice(`Lander resume failed: ${String(error)}`)
     })
-  let unsubscribe: (() => void) | undefined
-  let releasing: Promise<unknown> | undefined
-  let releaseController: AbortController | undefined
   const stand = () =>
     service.standLander(context).catch((error: unknown) => {
       host.notice(`Lander setup failed: ${String(error)}`)
     })
-  host.onOpen(async () => {
-    releaseController = new AbortController()
+  host.onOpen(async (opened) => {
+    const releaseController = new AbortController()
     const { signal } = releaseController
-    releasing = conversations
+    const releasing = conversations
       .concluded(context)
       .then((ids) => service.release([...ids], context, signal))
       .then(() => service.sweep(context, signal))
       .catch((error: unknown) => {
         host.notice(`Workspace release failed: ${String(error)}`)
       })
-    unsubscribe?.()
-    unsubscribe = onCommit(host.harness(), (publication) => {
+    opened.defer(async () => {
+      releaseController.abort()
+      await releasing
+    })
+    const unsubscribe = onCommit(host.harness(), (publication) => {
       for (const change of publication.changes) {
         if (
           change.type !== 'task' ||
@@ -491,17 +511,12 @@ export default function workspaceExtension(host: ExtensionHost) {
         else rebuiltOnOpen('open resumes every lander queue', resume())
       }
     })
+    opened.defer(unsubscribe)
     await stand()
     await sweepChecks(host.home).catch((error: unknown) => {
       host.notice(`Lander check sweep failed: ${String(error)}`)
     })
     await resume()
-  })
-  host.onClose(async () => {
-    releaseController?.abort()
-    await releasing
-    unsubscribe?.()
-    unsubscribe = undefined
   })
   return defineExtension({
     name: 'workspaces',

@@ -6,6 +6,8 @@ import { EventFeed, eventLog } from '../../../server/events.ts'
 import type { ExtensionHost } from '../../../server/extensions.ts'
 import { temp, until, apis } from '../../../test/helpers.ts'
 import { Concluded } from '../../conversations/api.ts'
+import { SubmitAfter, submitAfter } from '../../conversations/submit.ts'
+import { defineExtension } from '@earendil-works/pi-durable'
 import { Messages, MessageSent } from '../../messages/api.ts'
 import { Standing } from '../../subagents/api.ts'
 import goalExtension, { act, actions } from '../server.ts'
@@ -49,10 +51,11 @@ it('wakes an active goal once for related work and never replays paused, finishe
           'messages',
           { starterIn: async (_tx: unknown, id: number) => (id === branch ? target : ROOT) },
         ],
-        ['conversations', { concludedIn: async () => new Set([branch]) }],
+        ['conversations', { concludedIn: async () => new Set([branch]), submitAfter }],
       ]),
     ),
   } as unknown as ExtensionHost
+  prepared.registry.install(defineExtension({ name: 'conversations', tasks: [SubmitAfter] }))
   prepared.registry.install(goalExtension(host))
   const ready = async () => {
     await until(async () => (await log.eventLog.reactors()).some((r) => r.lag === 0 && !r.failure))
@@ -87,7 +90,9 @@ it('wakes an active goal once for related work and never replays paused, finishe
     await ready()
     await reactor!.stop()
     await ask()
-    await actions.start({ text: 'Ship the sidebar' }, { host } as never)
+    await expect(
+      actions.start({ text: 'Ship the sidebar', proposal: 'call-1' }, { host } as never),
+    ).resolves.toMatchObject({ proposal: 'call-1', workEvents: true })
     await reactor!.start()
     await ask(other)
     await opened.harness.commit(

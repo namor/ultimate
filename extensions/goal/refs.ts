@@ -40,8 +40,10 @@ export type Goal = {
   afterEvent?: EntryId
   /** Legacy scheduled reminder ID, retained for upgrade cleanup. */
   reminder?: string
-  /** Set while @ultimate is blocked on the user: the reminder is paused until it resumes. */
+  /** Set while @ultimate is blocked on the user: goal wakeups pause until it resumes. */
   waiting?: { reason: string; at: number }
+  /** The id of the `goal {action: 'propose'}` tool call whose card started it. */
+  proposal?: string
   ended?: Ending
 }
 
@@ -51,8 +53,8 @@ export const GoalDoc = docRef<{ next: number; goals: Goal[] }>('goal')
 /** `goal.started` and `goal.report` entries in @ultimate's conversation name their goal. */
 export type GoalEntry = { goal: number }
 
-/** `{ text }` → the new goal. User-only: puts @ultimate hands-off on it. */
-export const StartAction = actionRef<{ text: string }, Goal>('goal', 'start')
+/** `{ text, proposal? }` → the new goal. User-only: puts @ultimate hands-off on it; `proposal` names the proposal card's tool call. */
+export const StartAction = actionRef<{ text: string; proposal?: string }, Goal>('goal', 'start')
 /** No arguments → the ended goal. User-only: ends the open goal; @ultimate asks again as usual. */
 export const EndAction = actionRef<null, Goal>('goal', 'end')
 /** `{ goal, entry }` → the images of a decision's screenshot entry. */
