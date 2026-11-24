@@ -112,7 +112,7 @@ export type WorkspaceIndex = {
     tries?: number
   }[]
   standing?: StandingGrant
-  instructionFloor?: EntryId
+  instructionFloor?: number
   results: Record<
     string,
     LanderOutcome & {

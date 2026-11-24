@@ -38,7 +38,7 @@ import {
 import type { GithubRepo } from './refs.ts'
 import { githubRepo, readGithubRepo } from '../../lib/project-identity.ts'
 import { UserInputEvent } from '../../shared/events.ts'
-import { authorize, park, spent } from './delivery.ts'
+import { authorize, legacyPublicationWithdrawn, park, spent, standingFor } from './delivery.ts'
 import type { Actor, Approval } from './delivery.ts'
 import { deliveryRuntime } from './advance.ts'
 import { sweepChecks } from './lander.ts'
@@ -168,6 +168,26 @@ async function approver(
   return { action, at: Date.now(), by: 'ultimate', conversation: ultimate, instruction }
 }
 
+export async function initializeApprovalHistory(host: ExtensionHost) {
+  const standing = host.doc('ultimate.standing-agents')
+  await host.harness().commit(async (tx) => {
+    const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+    if (index.instructionFloor === undefined) {
+      const primary = standing && (await tx.doc(standing, ROOT_CONVERSATION_ID)).ultimate
+      index.instructionFloor =
+        typeof primary === 'number'
+          ? ((await tx.scanEntries({ conversationId: primary as ConversationId }, 1)).items[0]
+              ?.id ?? 0)
+          : 0
+    }
+    for (const item of index.queue) {
+      if (!item.delivery || !legacyPublicationWithdrawn(item.delivery, index.standing)) continue
+      delete item.delivery.publishApproved
+      if (item.state !== 'landing') park(item)
+    }
+  }, context)
+}
+
 const standingMaxHours = 7 * 24
 const grantWindow = 10 * 60_000
 
@@ -250,7 +270,7 @@ export const actions = {
       if (approval.standing !== undefined) approval.standing = index.standing!.instruction
       const instruction = approval.instruction
       if (instruction !== undefined) {
-        if (instruction <= (index.instructionFloor ?? 0))
+        if (index.instructionFloor === undefined || instruction <= index.instructionFloor)
           throw new Error('Instruction is too old to approve this delivery; ask the user again')
         if (
           (action === 'approve-pr' || action === 'publish' || action === 'merge') &&
@@ -339,13 +359,6 @@ export const actions = {
         grant.boundary = (
           await tx.scanEntries({ conversationId: grant.conversation }, 1)
         ).items[0]?.id
-        const standingLast = (
-          d: NonNullable<(typeof index.queue)[number]['delivery']>,
-          action: 'publish' | 'merge',
-        ) =>
-          d.approvals?.findLast(
-            (approval) => approval.action === action || approval.action === 'approve-pr',
-          )?.standing !== undefined
         for (const item of index.queue) {
           const d = item.delivery
           if (!d) continue
@@ -355,14 +368,14 @@ export const actions = {
             (stage === 'publish' || (stage === 'pr' && !d.createIntent)) &&
             d.publishApproved &&
             !d.publishIntent &&
-            standingLast(d, 'publish')
+            standingFor(d, 'publish') !== undefined
           )
             delete d.publishApproved
           if (
             (stage === 'ci' || stage === 'merge') &&
             d.mergeApproved &&
             !d.mergeIntent &&
-            standingLast(d, 'merge')
+            standingFor(d, 'merge') !== undefined
           )
             delete d.mergeApproved
           if (item.state !== 'landing') park(item)
@@ -398,7 +411,8 @@ export const actions = {
       if (previous && Math.max(previous.instruction, previous.boundary ?? 0) >= instruction)
         throw new Error('Renewing a standing approval needs a newer instruction from the user')
       if (
-        instruction <= (index.instructionFloor ?? 0) ||
+        index.instructionFloor === undefined ||
+        instruction <= index.instructionFloor ||
         [...index.queue, ...Object.values(index.results)].some((item) =>
           spent(item).some((a) => a.instruction === instruction),
         )
@@ -500,6 +514,7 @@ export default function workspaceExtension(host: ExtensionHost) {
       host.notice(`Lander setup failed: ${String(error)}`)
     })
   host.onOpen(async (opened) => {
+    await initializeApprovalHistory(host)
     const releaseController = new AbortController()
     const { signal } = releaseController
     const releasing = conversations

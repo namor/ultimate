@@ -30,6 +30,7 @@ import {
   askedUnderStanding,
   authorize,
   BRANCH_WAKES,
+  legacyPublicationWithdrawn,
   MAX_REBUILDS,
   needsSlot,
   needsUser,
@@ -52,7 +53,11 @@ const maxCloseTries = 3
 export function pruneLanderResults(index: Pick<WorkspaceIndex, 'results' | 'instructionFloor'>) {
   for (const old of Object.keys(index.results).slice(0, -recentSubmitCardOutcomeLimit)) {
     for (const { instruction } of spent(index.results[old]))
-      if (instruction !== undefined && instruction > (index.instructionFloor ?? 0))
+      if (
+        instruction !== undefined &&
+        index.instructionFloor !== undefined &&
+        instruction > index.instructionFloor
+      )
         index.instructionFloor = instruction
     delete index.results[old]
   }
@@ -961,9 +966,8 @@ export function createLander(
             const previous = entry.delivery
             const save = (delivery: NonNullable<QueueEntry['delivery']>) =>
               runtime.commit(async (tx) => {
-                const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
-                  (item) => item.id === id,
-                )
+                const draft = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+                const saved = draft.queue.find((item) => item.id === id)
                 if (!saved) throw new Error('Delivery was withdrawn while the lander advanced it')
                 const current = saved.delivery
                 if (
@@ -977,7 +981,7 @@ export function createLander(
                   delivery.publishIntent &&
                   !current?.publishIntent &&
                   delivery.risk === 'high' &&
-                  !current?.publishApproved
+                  (!current?.publishApproved || legacyPublicationWithdrawn(current, draft.standing))
                 )
                   throw new Error('Publish approval was withdrawn; approve again to publish')
                 const {

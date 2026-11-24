@@ -88,6 +88,18 @@ export const spent = (item: {
   approvals?: Approval[]
 }): Approval[] => [...(item.delivery?.approvals ?? []), ...(item.approvals ?? [])]
 
+export const standingFor = (d: Delivery, action: 'publish' | 'merge') =>
+  d.approvals?.findLast((a) => a.action === action || a.action === 'approve-pr')?.standing
+
+export function legacyPublicationWithdrawn(d: Delivery, grant: StandingGrant | undefined) {
+  const stage = d.stage === 'blocked' ? d.resumeStage : d.stage
+  if (stage !== 'pr' || !d.publishApproved || d.publishIntent || d.createIntent) return false
+  const accepted = standingFor(d, 'publish')
+  return (
+    accepted !== undefined && (grant?.instruction !== accepted || grant.revokedAt !== undefined)
+  )
+}
+
 const awaitingPublication = (d: Delivery, stage = d.stage) =>
   d.risk === 'high' &&
   !d.publishApproved &&

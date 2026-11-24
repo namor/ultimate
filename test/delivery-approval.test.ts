@@ -9,7 +9,7 @@ import type { ActionContext } from '../server/actions.ts'
 import type { ExtensionHost } from '../server/extensions.ts'
 import { Goals } from '../extensions/goal/server.ts'
 import { Standing } from '../extensions/subagents/api.ts'
-import { actions, userActions } from '../extensions/workspaces/server.ts'
+import { actions, initializeApprovalHistory, userActions } from '../extensions/workspaces/server.ts'
 import { deliveryRuntime } from '../extensions/workspaces/advance.ts'
 import { park, pick, waits } from '../extensions/workspaces/delivery.ts'
 import type { Delivery } from '../extensions/workspaces/delivery.ts'
@@ -135,6 +135,7 @@ async function fixture(risk: Delivery['risk'] = 'medium') {
         })
       return placed.id
     }, context)
+  await initializeApprovalHistory(host)
   const queued = async () =>
     (await opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!.queue.find(
       (item) => item.id === 'submission',
@@ -376,6 +377,22 @@ describe('delivery approval', () => {
     expect((await f.queued()).mergeApproved).toBeUndefined()
   })
 
+  it('requires a fresh instruction after upgrading an index with no instruction history', async () => {
+    const f = await fixture('high')
+    const old = await f.entry(f.ultimate, 'pi.user', { typed: true })
+    await f.opened.harness.commit(async (tx) => {
+      delete (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).instructionFloor
+    }, context)
+    await initializeApprovalHistory(f.host)
+    const ctx = { conversationId: f.ultimate }
+    await expect(f.call(ctx, { action: 'approve-pr', instruction: old })).rejects.toThrow(
+      'Instruction is too old',
+    )
+    const fresh = await f.entry(f.ultimate, 'pi.user', { typed: true })
+    await f.call(ctx, { action: 'approve-pr', instruction: fresh })
+    expect((await f.queued()).mergeApproved).toBe(true)
+  })
+
   it('refuses @ultimate while a hands-off goal is open', async () => {
     const f = await fixture()
     await f.opened.harness.commit(async (tx) => {
@@ -563,27 +580,37 @@ describe('delivery approval', () => {
       expect(delivery.approvals?.[0]).toMatchObject({ standing: f.instruction })
     })
 
-    it('withdraws unused standing publication approval from a legacy matching-ref record', async () => {
-      const f = await granted(undefined, 'high')
-      await approve(f, { action: 'publish' })
-      await set(f, (d) => {
-        d.published = true
-        d.stage = 'pr'
-      })
-      await actions.standing({ revoke: true }, {
-        host: f.host,
-        conversationId: f.ultimate,
-        signal: new AbortController().signal,
-        origin: 'agent',
-        source: 'agent',
-      } as ActionContext)
-      const d = await f.queued()
-      expect(d.publishApproved).toBeUndefined()
-      expect(waits(d)).toEqual({ on: 'publish' })
-      const instruction = await f.entry(f.ultimate, 'pi.user', { typed: true })
-      await f.call({ conversationId: f.ultimate }, { action: 'approve-pr', instruction })
-      expect(waits(await f.queued())).toBeUndefined()
-    })
+    it.each(['new revoke', 'already revoked'])(
+      'withdraws unused standing approval from a legacy matching-ref record: %s',
+      async (mode) => {
+        const f = await granted(undefined, 'high')
+        await approve(f, { action: 'publish' })
+        await set(f, (d) => {
+          d.published = true
+          d.stage = 'pr'
+        })
+        if (mode === 'already revoked') {
+          await f.opened.harness.commit(async (tx) => {
+            ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).standing!.revokedAt = Date.now()
+          }, context)
+          await initializeApprovalHistory(f.host)
+        } else {
+          await actions.standing({ revoke: true }, {
+            host: f.host,
+            conversationId: f.ultimate,
+            signal: new AbortController().signal,
+            origin: 'agent',
+            source: 'agent',
+          } as ActionContext)
+        }
+        const d = await f.queued()
+        expect(d.publishApproved).toBeUndefined()
+        expect(waits(d)).toEqual({ on: 'publish' })
+        const instruction = await f.entry(f.ultimate, 'pi.user', { typed: true })
+        await f.call({ conversationId: f.ultimate }, { action: 'approve-pr', instruction })
+        expect(waits(await f.queued())).toBeUndefined()
+      },
+    )
 
     it('a landing entry keeps its repository slot through a revoke until its lander parks it', async () => {
       const f = await granted()
