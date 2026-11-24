@@ -1,6 +1,6 @@
 ## Borrowed from Pi
 
-- The Pi AI patch in `pnpm-workspace.yaml` serializes the original arguments of a rejected grammar call as JSON when the provider requires text. Remove it when Pi can replay malformed grammar calls.
+- The Pi AI patch in `pnpm-workspace.yaml` serializes the original arguments of a rejected grammar call as JSON when the provider requires text. It also replays Responses calls with the inline tool declaration in effect at the call and pairs each result with that wire type. This prevents the latest grammar declaration from rewriting calls made while the tool was a JSON function. Remove each fix when Pi passes its regression test.
 
 - The Codemode patch registered in `pnpm-workspace.yaml` suggests only discovery helpers available in the sandbox when a script names an unknown tool. Drop when Pi does the same.
 - The Claude Code patch applies the same tool ID normalization to each native replay call and result, including calls in signed carriers. It also closes an unusable warm process on a stdin error and reports the cause to the waiting turn. Drop each change when upstream passes the corresponding regression.
