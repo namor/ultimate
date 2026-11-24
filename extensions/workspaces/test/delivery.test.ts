@@ -274,39 +274,38 @@ describe('PR delivery', () => {
     },
   )
 
-  it.each(['publish', 'pr'] as const)(
-    'refuses a matching-ref write at %s after approval is withdrawn mid-transition',
-    async (stage) => {
-      let saved: Delivery = {
-        ...makeDelivery(),
-        stage,
-        risk: 'high',
-        publishApproved: true,
-        ...(stage === 'pr' ? { published: true } : {}),
+  it('does not consume standing approval by reading a matching ref', async () => {
+    const waiting: Delivery = { ...makeDelivery(), risk: 'high', publishApproved: true }
+    let saved = structuredClone(waiting)
+    let branchExists = true
+    const writes: string[] = []
+    const api: Github = async (path, method) => {
+      if (method) writes.push(method)
+      if (path === baseRef) return refs('main', baseline) as never
+      return (path === deliveryRef && branchExists ? refs(saved.branch, candidate) : []) as never
+    }
+    vi.mocked(git).mockClear().mockResolvedValue('git@github.com:example/my-app.git')
+    const save = async (d: Delivery) => {
+      if (d.createIntent) {
+        delete saved.publishApproved
+        throw new Error('Publish approval was withdrawn; approve again to publish')
       }
-      const writes: string[] = []
-      const api: Github = async (path, method) => {
-        if (method) writes.push(method)
-        return (path === deliveryRef ? refs(saved.branch, candidate) : []) as never
-      }
-      vi.mocked(git).mockClear().mockResolvedValue('git@github.com:example/my-app.git')
-      const save = async (d: Delivery) => {
-        if (d.publishIntent) {
-          delete saved.publishApproved
-          throw new Error('Publish approval was withdrawn; approve again to publish')
-        }
-        saved = { ...d, publishApproved: saved.publishApproved }
-      }
-      const signal = new AbortController().signal
-      await advanceDelivery('/project', saved, save, signal, api)
-      expect(saved).toMatchObject({ stage: 'blocked', resumeStage: stage })
-      expect(saved.publishIntent).toBeUndefined()
-      saved.stage = stage
-      await advanceDelivery('/project', saved, save, signal, api)
-      expect(writes).toEqual([])
-      expect(vi.mocked(git).mock.calls.some((args) => args.includes('push'))).toBe(false)
-    },
-  )
+      saved = { ...d, publishApproved: saved.publishApproved }
+    }
+    const signal = new AbortController().signal
+    await advanceDelivery('/project', saved, save, signal, api)
+    expect(saved).toMatchObject({ stage: 'pr', published: true })
+    expect(saved.publishIntent).toBeUndefined()
+    await advanceDelivery('/project', saved, save, signal, api)
+    expect(saved).toMatchObject({ stage: 'blocked', resumeStage: 'pr' })
+    expect(saved.createIntent).toBeUndefined()
+    saved.stage = 'pr'
+    await advanceDelivery('/project', saved, save, signal, api)
+    branchExists = false
+    await advanceDelivery('/project', { ...waiting, publishApproved: undefined }, save, signal, api)
+    expect(writes).toEqual([])
+    expect(vi.mocked(git).mock.calls.some((args) => args.includes('push'))).toBe(false)
+  })
 
   it('refuses publication to a remote with more than one push destination', async () => {
     vi.mocked(git)

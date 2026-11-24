@@ -142,7 +142,8 @@ export function DeliveryCard(props: { id: string; delivery: Delivery; context: s
   const delivery = () => props.delivery
   const ask = () => deliveryAsk(delivery())
   const action = (): keyof typeof actions | undefined =>
-    ask() ?? (delivery().stage === 'blocked' ? 'recheck' : undefined)
+    ask() ??
+    (delivery().stage === 'blocked' && delivery().cause !== 'runtime' ? 'recheck' : undefined)
   const stopLabel = () => (delivery().pr ? 'Stop delivery · close its PR' : 'Stop delivery')
   const approve = async (request: Approval['action']) => {
     setPending(true)

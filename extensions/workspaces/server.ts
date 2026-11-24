@@ -38,7 +38,7 @@ import {
 import type { GithubRepo } from './refs.ts'
 import { githubRepo, readGithubRepo } from '../../lib/project-identity.ts'
 import { UserInputEvent } from '../../shared/events.ts'
-import { authorize, legacyPublicationWithdrawn, park, spent, standingFor } from './delivery.ts'
+import { authorize, matchingRefStandingWithdrawn, park, spent, standingFor } from './delivery.ts'
 import type { Actor, Approval } from './delivery.ts'
 import { deliveryRuntime } from './advance.ts'
 import { sweepChecks } from './lander.ts'
@@ -192,7 +192,7 @@ export async function initializeApprovalHistory(host: ExtensionHost) {
         await establishInstructionFloor(tx, index, primary as ConversationId | undefined)
     }
     for (const item of index.queue) {
-      if (!item.delivery || !legacyPublicationWithdrawn(item.delivery, index.standing)) continue
+      if (!item.delivery || !matchingRefStandingWithdrawn(item.delivery, index.standing)) continue
       delete item.delivery.publishApproved
       if (item.state !== 'landing') park(item)
     }

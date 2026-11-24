@@ -236,7 +236,8 @@ Low-risk work needs independent review but no approval. Medium risk shows **Appr
 High risk needs scope agreement before sensitive implementation or publication. After local verification and independent review,
 **Approve PR** authorizes publication and merge of that exact candidate only after its required GitHub checks pass. An earlier
 publication-only approval does not authorize merge. A rebuilt candidate needs its own evidence and approval. Scope agreement
-and delivery approval do not satisfy GitHub's platform review requirements.
+and delivery approval do not satisfy GitHub's platform review requirements. If the verification runtime changes while approval is pending, the lander removes the approval prompt and
+asks the submitting branch to verify again.
 
 **Who may approve.** Apart from an agent's recheck or stop of a blocked delivery (above), the `delivery` action (`publish`,
 `approve-pr`, `merge`, `recheck`, `stop`) takes the user's own click on the card, or a
@@ -260,8 +261,8 @@ checked like a per-delivery instruction (browser-stamped `user.input`), and it m
 conversation, at most ten minutes old, newer than the previous grant and its revocation, and not one that already decided a
 delivery; `hours` defaults to 24 and may be at most a week. The grant is stored on the root workspaces index (`standing`:
 instruction, conversation, granted and expiry time). The user revokes it with the card's **Revoke** button (or tells @ultimate,
-which calls `{ revoke: true }`); revoking also withdraws standing approvals no write has used yet (a recorded merge intent is
-reconciled, never withdrawn). An expired or revoked grant is kept as its record and refuses like none. The server checks that a
+which calls `{ revoke: true }`); revoking also withdraws standing approvals no write has used yet. Reading a matching remote
+branch does not use approval. A recorded write intent is reconciled, not withdrawn. An expired or revoked grant is kept as its record and refuses like none. The server checks that a
 review covering the exact tree was submitted, not how independent it was: @ultimate judges that before approving. While it is on, the
 delivery card shows "Standing approval until <time>", and @ultimate may call `delivery` with `standing: true` and a `reason`
 instead of `instruction`, for `publish` and `merge` only. `authorize` (`delivery.ts`) decides every delivery action inside the

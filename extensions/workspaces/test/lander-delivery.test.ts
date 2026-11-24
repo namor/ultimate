@@ -4,6 +4,7 @@ import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import { createLander } from '../lander.ts'
 import { advanceDelivery, deliveryRuntime } from '../advance.ts'
 import { pick } from '../delivery.ts'
+import { deliveryAsk } from '../ask.ts'
 import type { Delivery } from '../delivery.ts'
 import type { WorkspaceIndex } from '../types.ts'
 import { git } from '../../../lib/git.ts'
@@ -57,22 +58,25 @@ function fixture(delivery?: Delivery) {
       return result
     },
   }
-  const phase = createLander(
-    { emit: async () => undefined } as never,
+  const { land, next } = createLander(
+    {
+      emit: async () => undefined,
+      harness: () => ({ commit: runtime.commit, conversation: async () => undefined }),
+      doc: () => undefined,
+      notice: () => undefined,
+    } as never,
     {} as never,
     (_source, work) => work(),
     {} as never,
-  ).definition.phases.land
-  const run = () =>
-    phase(
-      {
-        input: { source: '/fixture' },
-        state: { checkpoint: { phase: 'land', id: 'submission', attempt: 1 } },
-      } as never,
+  ).definition.phases
+  const run = (checkpoint = { phase: 'land', id: 'submission', attempt: 1 }) =>
+    land(
+      { input: { source: '/fixture' }, state: { checkpoint } } as never,
       runtime as never,
       context,
     )
-  return { index, commits, run }
+  const schedule = () => next({ input: { source: '/fixture' } } as never, runtime as never, context)
+  return { index, commits, run, schedule }
 }
 
 it('parks through the scheduler, so an approval committed after its snapshot is picked up next', async () => {
@@ -106,8 +110,52 @@ it('parks through the scheduler, so an approval committed after its snapshot is 
   expect(pick(f.index.queue, Date.now())).toEqual({ ready: 0 })
 })
 
-it('refuses to record a merge intent once its approval was withdrawn mid-transition (#58492)', async () => {
-  const f = fixture({
+it.each(['merge', 'pr'] as const)(
+  'refuses to record the %s write intent when approval is withdrawn mid-transition',
+  async (stage) => {
+    const f = fixture({
+      settings: {
+        repository: 'example/my-app',
+        remote: 'origin',
+        base: 'main',
+        checks: ['verify'],
+        requiredChecks: ['verify'],
+      },
+      candidate: 'a'.repeat(40),
+      baseline: 'b'.repeat(40),
+      tree: 'c'.repeat(40),
+      branch: 'delivery/test',
+      checkedAt: Date.now(),
+      runtime: deliveryRuntime(),
+      stage,
+      risk: stage === 'merge' ? 'medium' : 'high',
+      review: 'fixture',
+      ...(stage === 'merge'
+        ? { pr: 3, mergeApproved: true }
+        : { published: true, publishApproved: true }),
+    })
+    const [flag, intent] =
+      stage === 'merge'
+        ? (['mergeApproved', 'mergeIntent'] as const)
+        : (['publishApproved', 'createIntent'] as const)
+    let saved: unknown
+    vi.mocked(advanceDelivery).mockImplementation(async (_source, snapshot, save) => {
+      delete f.index.queue[0].delivery![flag]
+      saved = await save({ ...snapshot, [intent]: true }).catch((error: Error) => error.message)
+      return snapshot
+    })
+    await f.run()
+    expect(saved).toBe(
+      stage === 'merge'
+        ? 'Merge approval was withdrawn; approve again to merge'
+        : 'Publish approval was withdrawn; approve again to publish',
+    )
+    expect(f.index.queue[0].delivery?.[intent]).toBeUndefined()
+  },
+)
+
+it('routes a stale approval to the branch for verification instead of to the user', async () => {
+  const stale: Delivery = {
     settings: {
       repository: 'example/my-app',
       remote: 'origin',
@@ -119,24 +167,32 @@ it('refuses to record a merge intent once its approval was withdrawn mid-transit
     baseline: 'b'.repeat(40),
     tree: 'c'.repeat(40),
     branch: 'delivery/test',
-    checkedAt: Date.now(),
-    runtime: deliveryRuntime(),
-    stage: 'merge',
-    risk: 'medium',
+    checkedAt: 1,
+    runtime: 'runtime-A',
+    stage: 'publish',
+    risk: 'high',
     review: 'fixture',
-    pr: 3,
-    mergeApproved: true,
+  }
+  const f = fixture(stale)
+  const actual = await vi.importActual<typeof import('../advance.ts')>('../advance.ts')
+  const api = vi.fn<() => Promise<never>>(async () => {
+    throw new Error('No GitHub call expected')
   })
-  let saved: unknown
-  vi.mocked(advanceDelivery).mockImplementation(async (_source, snapshot, save) => {
-    // A revoke commits while the transition still holds its approved copy.
-    delete f.index.queue[0].delivery!.mergeApproved
-    saved = await save({ ...snapshot, mergeIntent: true }).catch((error: Error) => error.message)
-    return snapshot
+  vi.mocked(advanceDelivery).mockImplementation((source, delivery, save, signal) =>
+    actual.advanceDelivery(source, delivery, save, signal, api),
+  )
+  await f.schedule()
+  const checkpoint = { phase: 'land', id: 'submission', attempt: 1, runtimeOnly: true }
+  expect(f.commits.at(-1)).toEqual({ status: 'running', checkpoint })
+  await f.run(checkpoint)
+  expect(api).not.toHaveBeenCalled()
+  expect(f.index.queue[0].delivery).toMatchObject({
+    stage: 'blocked',
+    cause: 'runtime',
+    wake: { to: 'branch' },
   })
-  await f.run()
-  expect(saved).toBe('Merge approval was withdrawn; approve again to merge')
-  expect(f.index.queue[0].delivery?.mergeIntent).toBeUndefined()
+  expect(deliveryAsk(f.index.queue[0].delivery)).toBeUndefined()
+  expect(deliveryAsk({ ...stale, runtime: 'runtime-B' })).toBe('approve-pr')
 })
 
 it('rejects a changed runtime before reading cached check results or touching Git', async () => {

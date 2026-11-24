@@ -163,16 +163,6 @@ export async function advanceDelivery(
     await save(d)
     return d
   }
-  const recordPublishIntent = async () => {
-    if (d.publishIntent) return
-    d.publishIntent = true
-    try {
-      await persist()
-    } catch (error) {
-      delete d.publishIntent
-      throw error
-    }
-  }
   const head = async (branch: string) => {
     const path = branch.split('/').map(encodeURIComponent).join('/')
     const refs = await api<{ ref: string; object: { type: string; sha: string } }[]>(
@@ -218,9 +208,17 @@ export async function advanceDelivery(
       const existing = await head(d.branch)
       if (existing && existing !== d.candidate)
         throw new Block('safety', 'Delivery branch collision; refusing to overwrite it')
-      if (!existing) await requireBaseline()
-      await recordPublishIntent()
       if (!existing) {
+        await requireBaseline()
+        if (!d.publishIntent) {
+          d.publishIntent = true
+          try {
+            await persist()
+          } catch (error) {
+            delete d.publishIntent
+            throw error
+          }
+        }
         await git(
           { cwd: source, signal, timeout: 300000 },
           'push',
@@ -246,9 +244,18 @@ export async function advanceDelivery(
             'uncertain-write',
             'PR creation outcome is uncertain; reconcile it before retrying',
           )
-        if (d.risk === 'high') await recordPublishIntent()
+        if (d.risk === 'high' && !d.publishIntent) {
+          if ((await head(d.branch)) !== d.candidate)
+            throw new Block('safety', 'Delivery branch no longer matches the approved candidate')
+          await requireBaseline()
+        }
         d.createIntent = true
-        await persist()
+        try {
+          await persist()
+        } catch (error) {
+          delete d.createIntent
+          throw error
+        }
         write = 'create'
         pull = await api<Pull>(`${prefix}/pulls`, 'POST', {
           head: d.branch,

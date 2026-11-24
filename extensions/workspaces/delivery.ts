@@ -91,7 +91,7 @@ export const spent = (item: {
 export const standingFor = (d: Delivery, action: 'publish' | 'merge') =>
   d.approvals?.findLast((a) => a.action === action || a.action === 'approve-pr')?.standing
 
-export function legacyPublicationWithdrawn(d: Delivery, grant: StandingGrant | undefined) {
+export function matchingRefStandingWithdrawn(d: Delivery, grant: StandingGrant | undefined) {
   const stage = d.stage === 'blocked' ? d.resumeStage : d.stage
   if (stage !== 'pr' || !d.publishApproved || d.publishIntent || d.createIntent) return false
   const accepted = standingFor(d, 'publish')
@@ -108,6 +108,7 @@ const awaitingPublication = (d: Delivery, stage = d.stage) =>
 
 export function needsUser(d: Delivery): string | undefined {
   if (uncertainWrite(d)) return 'an uncertain remote write must be reconciled'
+  if (d.cause === 'runtime') return undefined
   if (
     (d.resumeStage === 'merge' && d.risk !== 'low' && !d.mergeApproved) ||
     (d.resumeStage !== undefined && awaitingPublication(d, d.resumeStage))
@@ -242,15 +243,14 @@ export function authorize(
   }
   if (action === 'approve-pr') {
     if (uncertainWrite(d)) return 'An uncertain write is pending; reconcile it first'
-    if (d.runtime !== env.runtime)
-      return 'Local verification ran on another runtime; verify a new delivery'
     if (!d.review.trim()) return 'No independent review covers this exact tree'
   }
-  if (
-    (action === 'approve-pr' || action === 'publish' || action === 'merge') &&
-    waits(d)?.on !== (action === 'approve-pr' ? 'publish' : action)
-  )
-    return 'Delivery stage changed; reload its card'
+  if (action === 'approve-pr' || action === 'publish' || action === 'merge') {
+    if (d.runtime !== env.runtime)
+      return 'Local verification ran on another runtime; verify a new delivery'
+    if (waits(d)?.on !== (action === 'approve-pr' ? 'publish' : action))
+      return 'Delivery stage changed; reload its card'
+  }
   if (action === 'recheck') {
     if (d.stage !== 'blocked' || !d.resumeStage) return 'Delivery stage changed; reload its card'
     if (actor.by === 'agent') {
