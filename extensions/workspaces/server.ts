@@ -38,7 +38,7 @@ import {
 import type { GithubRepo } from './refs.ts'
 import { githubRepo, readGithubRepo } from '../../lib/project-identity.ts'
 import { UserInputEvent } from '../../shared/events.ts'
-import { authorize, park, spent } from './delivery.ts'
+import { authorize, matchingRefStandingWithdrawn, park, spent, standingFor } from './delivery.ts'
 import type { Actor, Approval } from './delivery.ts'
 import { deliveryRuntime } from './advance.ts'
 import { sweepChecks } from './lander.ts'
@@ -90,6 +90,16 @@ async function rootAgent(host: ExtensionHost, ctx: Pick<ActionContext, 'conversa
     throw new Error("Only the user or @ultimate on the user's instruction can act on a delivery")
   return ultimate as ConversationId
 }
+async function establishInstructionFloor(
+  tx: Tx,
+  index: { instructionFloor?: number },
+  primary: ConversationId | undefined,
+) {
+  index.instructionFloor ??= primary
+    ? ((await tx.scanEntries({ conversationId: primary }, 1)).items[0]?.id ?? 0)
+    : 0
+}
+
 async function typedInstruction(
   host: ExtensionHost,
   ultimate: ConversationId,
@@ -101,7 +111,11 @@ async function typedInstruction(
     throw new Error(
       "Pass instruction: the entry id of the user's input that told you to act on this delivery",
     )
-  const entry = await harness.commit((tx) => tx.entry(parseEntryId(instruction)), context)
+  const entry = await harness.commit(async (tx) => {
+    const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+    await establishInstructionFloor(tx, index, ultimate)
+    return tx.entry(parseEntryId(instruction))
+  }, context)
   if (!entry || entry.conversationId !== ultimate || (since !== undefined && entry.id <= since))
     throw new Error(
       since === undefined
@@ -168,6 +182,23 @@ async function approver(
   return { action, at: Date.now(), by: 'ultimate', conversation: ultimate, instruction }
 }
 
+export async function initializeApprovalHistory(host: ExtensionHost) {
+  const standing = host.doc('ultimate.standing-agents')
+  await host.harness().commit(async (tx) => {
+    const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+    if (index.instructionFloor === undefined && standing) {
+      const primary = (await tx.doc(standing, ROOT_CONVERSATION_ID)).ultimate
+      if (primary === undefined || typeof primary === 'number')
+        await establishInstructionFloor(tx, index, primary as ConversationId | undefined)
+    }
+    for (const item of index.queue) {
+      if (!item.delivery || !matchingRefStandingWithdrawn(item.delivery, index.standing)) continue
+      delete item.delivery.publishApproved
+      if (item.state !== 'landing') park(item)
+    }
+  }, context)
+}
+
 const standingMaxHours = 7 * 24
 const grantWindow = 10 * 60_000
 
@@ -189,7 +220,7 @@ export const actions = {
       typeof args.candidate !== 'string' ||
       typeof args.tree !== 'string' ||
       typeof args.action !== 'string' ||
-      !['publish', 'merge', 'recheck', 'stop'].includes(args.action)
+      !['approve-pr', 'publish', 'merge', 'recheck', 'stop'].includes(args.action)
     )
       throw new Error('Expected an immutable delivery approval')
     const action = args.action as Approval['action']
@@ -248,16 +279,28 @@ export const actions = {
           approval.standing !== undefined ? `Standing approval refused: ${refusal}` : refusal,
         )
       if (approval.standing !== undefined) approval.standing = index.standing!.instruction
-      if (
-        approval.instruction !== undefined &&
-        [...index.queue, ...Object.entries(index.results).map(([id, r]) => ({ id, ...r }))].some(
-          (item) =>
-            item.id !== entry.id && spent(item).some((a) => a.instruction === approval.instruction),
+      const instruction = approval.instruction
+      if (instruction !== undefined) {
+        if (index.instructionFloor === undefined || instruction <= index.instructionFloor)
+          throw new Error('Instruction is too old to approve this delivery; ask the user again')
+        if (
+          (action === 'approve-pr' || action === 'publish' || action === 'merge') &&
+          index.standing &&
+          instruction <= index.standing.instruction
         )
-      )
-        throw new Error(
-          'instruction already decided another delivery; the user must decide this one',
+          throw new Error('Explicit PR approval needs an instruction newer than the standing grant')
+        if (spent(entry).some((a) => a.instruction === instruction))
+          throw new Error('Instruction already decided this delivery; the user must decide again')
+        if (
+          [
+            ...index.queue.filter((item) => item.id !== entry.id),
+            ...Object.values(index.results),
+          ].some((item) => spent(item).some((a) => a.instruction === instruction))
         )
+          throw new Error(
+            'instruction already decided another delivery; the user must decide this one',
+          )
+      }
       delivery.approvals = [...(delivery.approvals ?? []), approval]
       if (action === 'stop') {
         const by =
@@ -291,6 +334,9 @@ export const actions = {
               note: `Stopped by ${by}.`,
             },
           ]
+      } else if (action === 'approve-pr') {
+        delivery.publishApproved = true
+        delivery.mergeApproved = true
       } else if (action === 'publish') delivery.publishApproved = true
       else if (action === 'merge') delivery.mergeApproved = true
       else {
@@ -324,27 +370,23 @@ export const actions = {
         grant.boundary = (
           await tx.scanEntries({ conversationId: grant.conversation }, 1)
         ).items[0]?.id
-        const standingLast = (
-          d: NonNullable<(typeof index.queue)[number]['delivery']>,
-          a: string,
-        ) => d.approvals?.findLast((approval) => approval.action === a)?.standing !== undefined
         for (const item of index.queue) {
           const d = item.delivery
           if (!d) continue
           delete d.asked
           const stage = d.stage === 'blocked' ? d.resumeStage : d.stage
           if (
-            stage === 'publish' &&
+            (stage === 'publish' || (stage === 'pr' && !d.createIntent)) &&
             d.publishApproved &&
             !d.publishIntent &&
-            standingLast(d, 'publish')
+            standingFor(d, 'publish') !== undefined
           )
             delete d.publishApproved
           if (
             (stage === 'ci' || stage === 'merge') &&
             d.mergeApproved &&
             !d.mergeIntent &&
-            standingLast(d, 'merge')
+            standingFor(d, 'merge') !== undefined
           )
             delete d.mergeApproved
           if (item.state !== 'landing') park(item)
@@ -380,6 +422,8 @@ export const actions = {
       if (previous && Math.max(previous.instruction, previous.boundary ?? 0) >= instruction)
         throw new Error('Renewing a standing approval needs a newer instruction from the user')
       if (
+        index.instructionFloor === undefined ||
+        instruction <= index.instructionFloor ||
         [...index.queue, ...Object.values(index.results)].some((item) =>
           spent(item).some((a) => a.instruction === instruction),
         )
@@ -481,6 +525,7 @@ export default function workspaceExtension(host: ExtensionHost) {
       host.notice(`Lander setup failed: ${String(error)}`)
     })
   host.onOpen(async (opened) => {
+    await initializeApprovalHistory(host)
     const releaseController = new AbortController()
     const { signal } = releaseController
     const releasing = conversations

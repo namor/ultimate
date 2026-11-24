@@ -2,7 +2,6 @@ import type { ConversationId } from '@earendil-works/pi-durable'
 import { describe, expect, it } from 'vitest'
 import { deliveryAsk } from '../../../workspaces/ask.ts'
 import type { Delivery } from '../../../workspaces/delivery.ts'
-import type { StandingGrant } from '../../../workspaces/types.ts'
 import { forgetSettled, keyCard, newestAsked, openQuestions, waiting } from '../../open.ts'
 import { EMPTY_CARD } from '../../state.ts'
 
@@ -58,7 +57,7 @@ describe('open questions in To-dos', () => {
 describe('deliveries waiting on the user', () => {
   const base = { stage: 'publish', risk: 'high' } as Delivery
   it('counts only unapproved publication, merge and recheck requests due from the user', () => {
-    expect(deliveryAsk(base)).toBe('publish')
+    expect(deliveryAsk(base)).toBe('approve-pr')
     expect(deliveryAsk({ ...base, publishApproved: true })).toBeUndefined()
     expect(deliveryAsk({ ...base, risk: 'medium' })).toBeUndefined()
     expect(deliveryAsk({ ...base, stage: 'merge', risk: 'medium' })).toBe('merge')
@@ -74,15 +73,6 @@ describe('deliveries waiting on the user', () => {
     ).toBe('recheck')
     expect(deliveryAsk({ ...base, stage: 'ci' })).toBeUndefined()
     expect(deliveryAsk(undefined)).toBeUndefined()
-  })
-
-  it('does not count a candidate already put to the agent under a standing grant until it lapses', () => {
-    const grant = { instruction: 7, conversation: 1, at: 0, until: 100 } as unknown as StandingGrant
-    const high = { ...base, candidate: 'c', asked: 'publish:c:7' } as Delivery
-    expect(deliveryAsk(high, grant, 50)).toBeUndefined()
-    expect(deliveryAsk({ ...high, stage: 'merge' }, grant, 50)).toBe('merge')
-    expect(deliveryAsk(high, grant, 100)).toBe('publish')
-    expect(deliveryAsk(high, { ...grant, revokedAt: 60 }, 50)).toBe('publish')
   })
 })
 

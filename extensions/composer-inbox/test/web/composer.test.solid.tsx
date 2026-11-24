@@ -4,17 +4,17 @@ import { settle } from '@ui-sdk/core/testing'
 import { createAgent } from '@ui-sdk/solid/agent'
 import { createSignal, flush } from 'solid-js'
 import { expect, it, vi } from 'vitest'
-import { ROOT, provide } from '@/sdk/solid'
+import { ROOT } from '@/sdk/solid'
 import { expectDistinctAgentNames } from '../../../../test/web/agent-names.ts'
 import type { FakeSource, fakeSubscriptions } from '../../../../test/web/fake-source.ts'
 import { renderSolid } from '../../../../test/web/solid-dom-setup.ts'
 import { shellKeys } from '../../../../web/src/sdk/actions.ts'
 import * as client from '../../../../web/src/sdk/client.ts'
-import { InboxItems } from '../../../inbox/ui.solid.tsx'
-import type { InboxItem } from '../../../inbox/ui.solid.tsx'
+import inbox from '../../../inbox/web.solid.tsx'
 import { MessagesDoc } from '../../../messages/refs.ts'
 import type { Message } from '../../../messages/refs.ts'
 import { StandingDoc } from '../../../subagents/refs.ts'
+import { WorkspacesDoc } from '../../../workspaces/refs.ts'
 import extension from '../../web.solid.tsx'
 
 const sources = vi.hoisted(() => [] as FakeSource[])
@@ -42,19 +42,8 @@ const agent = createAgent()
 it('opens Inbox from above the primary composer and leaves the draft in place as waits clear', async ({
   onTestFinished,
 }) => {
-  const approval: InboxItem = {
-    key: 'demo:approval',
-    at: 2,
-    tag: 'delivery',
-    title: 'Approval',
-    pane: null,
-  }
-  const [items, setItems] = createSignal<InboxItem[]>([])
   await registry.setLoaders({
-    'extensions/inbox/web.solid.tsx': async () => ({ default: {} }),
-    'extensions/demo/web.solid.tsx': async () => ({
-      default: { provides: [provide(InboxItems, () => items)] },
-    }),
+    'extensions/inbox/web.solid.tsx': async () => ({ default: inbox }),
   })
   vi.stubGlobal('matchMedia', () => ({ matches: true }))
   store.start()
@@ -94,8 +83,30 @@ it('opens Inbox from above the primary composer and leaves the draft in place as
     server
       .of(ROOT)!
       .send('doc', { kind: MessagesDoc.kind, value: { next: 3, messages: [question, report] } })
+  const sendDelivery = (mergeApproved: boolean) =>
+    server.of(ROOT)!.send('doc', {
+      kind: WorkspacesDoc.kind,
+      value: {
+        standing: { instruction: 7, conversation: primary, at: 0, until: Date.now() + 60_000 },
+        queue: [
+          {
+            id: 'fixture',
+            conversationId: other,
+            steps: [{ at: 2 }],
+            delivery: {
+              stage: 'merge',
+              risk: 'medium',
+              settings: { repository: 'example/my-app', base: 'main' },
+              candidate: 'candidate',
+              asked: 'merge:candidate:7',
+              mergeApproved,
+            },
+          },
+        ],
+      },
+    })
   messages(ask)
-  setItems([approval])
+  sendDelivery(false)
   flush()
   expect(button()?.textContent).toBe('2 items need your input')
   expect(button()?.compareDocumentPosition(input)).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
@@ -126,7 +137,7 @@ it('opens Inbox from above the primary composer and leaves the draft in place as
   messages({ ...ask, state: 'answered' })
   flush()
   expect(button()?.textContent).toBe('1 item needs your input')
-  setItems([])
+  sendDelivery(true)
   flush()
   expect(button()).toBeNull()
   expect(page.querySelector('textarea')).toBe(input)

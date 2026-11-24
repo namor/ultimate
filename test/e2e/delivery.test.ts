@@ -44,7 +44,7 @@ it('advances the target worktree without touching the source after its checked-o
   expect(await git(source, 'rev-parse', 'main')).toBe(candidate)
 })
 
-it('keeps main unchanged and exposes a candidate-bound publication gate with declined trust', async () => {
+it('keeps main unchanged and exposes a candidate-bound PR approval with declined trust', async () => {
   const home = await temp('ultimate-delivery-')
   cleanup.push(() => removeTemp(home))
   const project = join(home, 'project')
@@ -130,7 +130,7 @@ it('keeps main unchanged and exposes a candidate-bound publication gate with dec
       ],
       { stopReason: 'toolUse' },
     ),
-    fauxAssistantMessage('Waiting for publication approval.'),
+    fauxAssistantMessage('Waiting for PR approval.'),
     fauxAssistantMessage('The fixture remote is intentionally not a GitHub publication target.'),
   ])
   const conversation = (await server.harness.conversation(id, context))!
@@ -161,7 +161,7 @@ it('keeps main unchanged and exposes a candidate-bound publication gate with dec
     id: entry.id,
     candidate: delivery.candidate,
     tree: delivery.tree,
-    action: 'publish',
+    action: 'approve-pr',
   }
   const denied = await post(server, '/api/extensions/delivery-probe/actions/attempt', {
     args,
@@ -184,12 +184,14 @@ it('keeps main unchanged and exposes a candidate-bound publication gate with dec
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   await page.goto(`${server.url}/?conversation=${id}`)
   const card = page.getByRole('region', { name: 'PR delivery' })
-  await card.getByRole('button', { name: 'Approve publication' }).waitFor()
+  const approve = card.getByRole('button', { name: 'Approve PR' })
+  await approve.waitFor()
+  await card.getByText('merge it only if its required GitHub checks pass').waitFor()
   await card.getByText('or tell @ultimate in its chat').waitFor()
   await page.screenshot({ path: '/tmp/ultimate-delivery-desktop.png' })
   await page.setViewportSize({ width: 390, height: 844 })
   await page.screenshot({ path: '/tmp/ultimate-delivery-mobile.png' })
-  await card.getByRole('button', { name: 'Approve publication' }).click()
+  await approve.click()
   await until(async () => {
     const value = (await server.harness.snapshot(
       doc,
@@ -198,7 +200,7 @@ it('keeps main unchanged and exposes a candidate-bound publication gate with dec
     )) as WorkspaceIndex
     return value.queue[0]?.delivery?.stage === 'blocked'
   })
-  await card.getByText('Publication approved by you').waitFor()
+  await card.getByText('Publication and conditional merge approved by you').waitFor()
   // The fixture remote is not the authorized repository: a safety hold, so the user decides, not the branch.
   await card.getByText('Needs you: a safety hold needs your decision.').waitFor()
   await page.screenshot({ path: '/tmp/ultimate-delivery-blocked.png' })
@@ -211,6 +213,14 @@ it('keeps main unchanged and exposes a candidate-bound publication gate with dec
   const stopped = (await server.harness.snapshot(doc, 1 as ConversationId, context))!.results[
     entry.id
   ]
-  expect(stopped.delivery?.candidate).toBe(delivery.candidate)
+  expect(stopped.delivery).toMatchObject({
+    candidate: delivery.candidate,
+    publishApproved: true,
+    mergeApproved: true,
+    approvals: [
+      { action: 'approve-pr', by: 'user', candidate: delivery.candidate },
+      { action: 'stop', by: 'user', candidate: delivery.candidate },
+    ],
+  })
   expect(stopped.reason).toContain('Stopped by user')
 })
