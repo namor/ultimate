@@ -30,6 +30,7 @@ import {
   askedUnderStanding,
   authorize,
   BRANCH_WAKES,
+  matchingRefStandingWithdrawn,
   MAX_REBUILDS,
   needsSlot,
   needsUser,
@@ -37,6 +38,7 @@ import {
   pick,
   POLL_MS,
   standingAsk,
+  spent,
   waits,
 } from './delivery.ts'
 import { advanceDelivery, closePull, deliveryRuntime, github } from './advance.ts'
@@ -47,6 +49,19 @@ import { LanderReportEntry } from './refs.ts'
 
 const recentSubmitCardOutcomeLimit = 50
 const maxCloseTries = 3
+
+export function pruneLanderResults(index: Pick<WorkspaceIndex, 'results' | 'instructionFloor'>) {
+  for (const old of Object.keys(index.results).slice(0, -recentSubmitCardOutcomeLimit)) {
+    for (const { instruction } of spent(index.results[old]))
+      if (
+        instruction !== undefined &&
+        index.instructionFloor !== undefined &&
+        instruction > index.instructionFloor
+      )
+        index.instructionFloor = instruction
+    delete index.results[old]
+  }
+}
 export async function landerPath(home: string, source: string, settings: JsonObject) {
   const configured = await treePath(settings, landerName(source))
   if (configured) return configured
@@ -392,7 +407,7 @@ type UnderwayReportPhase = {
 
 type State =
   | { phase: 'next' }
-  | { phase: 'land'; id: string; attempt: number; pushRetried?: boolean }
+  | { phase: 'land'; id: string; attempt: number; pushRetried?: boolean; runtimeOnly?: true }
   | UnderwayReportPhase
   | CommittedDeliveryDecision
   | { phase: 'card-failed'; error: string }
@@ -525,7 +540,9 @@ export async function reportBlocked(
       ? `Needs the user: ${wake.why}.`
       : wake.to === 'ultimate'
         ? `Its branch already had ${BRANCH_WAKES} repair attempts; decide for it: recheck, stop, or ask the user.`
-        : 'Diagnose and repair it: recheck or stop it, or resubmit a repaired candidate.'
+        : delivery.cause === 'runtime'
+          ? 'Resubmit this delivery with fresh local verification.'
+          : 'Diagnose and repair it: recheck or stop it, or resubmit a repaired candidate.'
   const card = {
     kind: LanderReportEntry.kind,
     data: {
@@ -670,7 +687,16 @@ export function createLander(
           const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
           const mine = index.queue.filter((item) => item.source === source)
           for (const item of mine) park(item)
-          const choice = pick(index.queue, runtime.now(), (item) => item.source === source)
+          const outdated = index.queue.findIndex((item) => {
+            const d = item.delivery
+            if (item.source !== source || !d || d.runtime === env.runtime) return false
+            const wait = waits(d)?.on
+            return wait === 'publish' || wait === 'merge'
+          })
+          const choice =
+            outdated >= 0
+              ? { ready: outdated }
+              : pick(index.queue, runtime.now(), (item) => item.source === source)
           const pending =
             !asked ||
             index.closing?.some((item) => item.source === source) ||
@@ -689,17 +715,28 @@ export function createLander(
             return { status: 'sleeping', until: choice.until, checkpoint: { phase: 'next' } }
           const entry = index.queue[choice.ready]
           entry.state = 'landing'
-          if (entry.delivery) entry.delivery.slot = true
-          else await log(tx, runtime.conversationId, entry, { step: 'started' })
-          return { status: 'running', checkpoint: { phase: 'land', id: entry.id, attempt: 1 } }
+          if (!entry.delivery) await log(tx, runtime.conversationId, entry, { step: 'started' })
+          else if (outdated < 0) entry.delivery.slot = true
+          return {
+            status: 'running',
+            checkpoint: {
+              phase: 'land',
+              id: entry.id,
+              attempt: 1,
+              ...(outdated >= 0 ? { runtimeOnly: true } : {}),
+            },
+          }
         }, context)
       },
       land: async (task, runtime, context) => {
-        const { id, attempt, pushRetried } = task.state.checkpoint
+        const { id, attempt, pushRetried, runtimeOnly } = task.state.checkpoint
         const { signal } = runtime
         const index = (await runtime.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
         const entry = index.queue.find((item) => item.id === id)
-        if (!entry)
+        if (
+          !entry ||
+          (runtimeOnly && (!entry.delivery || entry.delivery.runtime === deliveryRuntime()))
+        )
           return runtime.commit(
             () => ({ status: 'running', checkpoint: { phase: 'next' } }),
             context,
@@ -805,8 +842,7 @@ export function createLander(
               ...(entry.subject ? { subject: entry.subject } : {}),
               ...(entry.approvals ? { approvals: entry.approvals } : {}),
             }
-            for (const old of Object.keys(draft.results).slice(0, -recentSubmitCardOutcomeLimit))
-              delete draft.results[old]
+            pruneLanderResults(draft)
             await log(tx, runtime.conversationId, entry, outcome)
             if (outcome.outcome === 'failed')
               await host.emit(tx, SubmissionFailed, {
@@ -952,9 +988,8 @@ export function createLander(
             const previous = entry.delivery
             const save = (delivery: NonNullable<QueueEntry['delivery']>) =>
               runtime.commit(async (tx) => {
-                const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
-                  (item) => item.id === id,
-                )
+                const draft = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+                const saved = draft.queue.find((item) => item.id === id)
                 if (!saved) throw new Error('Delivery was withdrawn while the lander advanced it')
                 const current = saved.delivery
                 if (
@@ -965,10 +1000,11 @@ export function createLander(
                 )
                   throw new Error('Merge approval was withdrawn; approve again to merge')
                 if (
-                  delivery.publishIntent &&
-                  !current?.publishIntent &&
                   delivery.risk === 'high' &&
-                  !current?.publishApproved
+                  !current?.publishIntent &&
+                  (delivery.publishIntent || (delivery.createIntent && !current?.createIntent)) &&
+                  (!current?.publishApproved ||
+                    matchingRefStandingWithdrawn(current, draft.standing))
                 )
                   throw new Error('Publish approval was withdrawn; approve again to publish')
                 const {

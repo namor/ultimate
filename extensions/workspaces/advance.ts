@@ -1,6 +1,6 @@
 import { exec } from '../../lib/exec.ts'
 import { git } from '../../lib/git.ts'
-import { CI_LIMIT_MS, MAX_RERUNS } from './delivery.ts'
+import { CI_LIMIT_MS, MAX_RERUNS, waits } from './delivery.ts'
 import type { Cause, Delivery, Stage } from './delivery.ts'
 import { pullRequestText } from './pull-request.ts'
 
@@ -192,8 +192,8 @@ export async function advanceDelivery(
   try {
     if (d.runtime !== deliveryRuntime())
       throw new Block('runtime', 'Verification runtime changed; verify a new delivery')
+    if (waits(d)?.on === 'publish') return d
     if (d.stage === 'publish') {
-      if (d.risk === 'high' && !d.publishApproved && !d.publishIntent) return d
       if (d.publishIntent && !d.published)
         decide('reconcile publication', 'a recorded push intent was not confirmed')
       const destinations = await git(source, 'remote', 'get-url', '--push', '--all', remote)
@@ -212,7 +212,12 @@ export async function advanceDelivery(
         await requireBaseline()
         if (!d.publishIntent) {
           d.publishIntent = true
-          await persist()
+          try {
+            await persist()
+          } catch (error) {
+            delete d.publishIntent
+            throw error
+          }
         }
         await git(
           { cwd: source, signal, timeout: 300000 },
@@ -239,8 +244,18 @@ export async function advanceDelivery(
             'uncertain-write',
             'PR creation outcome is uncertain; reconcile it before retrying',
           )
+        if (d.risk === 'high' && !d.publishIntent) {
+          if ((await head(d.branch)) !== d.candidate)
+            throw new Block('safety', 'Delivery branch no longer matches the approved candidate')
+          await requireBaseline()
+        }
         d.createIntent = true
-        await persist()
+        try {
+          await persist()
+        } catch (error) {
+          delete d.createIntent
+          throw error
+        }
         write = 'create'
         pull = await api<Pull>(`${prefix}/pulls`, 'POST', {
           head: d.branch,

@@ -23,7 +23,8 @@ export type Isolation = { reason?: string; empty?: boolean }
 export const WorkspacesDoc = docRef<WorkspaceIndex>('ultimate.workspaces')
 
 /**
- * Approve this immutable candidate for publication/merge, recheck a blocked external outcome, or stop it. The user's
+ * `approve-pr` authorizes publication of a high-risk candidate and merge of that candidate only after green CI.
+ * `publish` authorizes publication only; `merge` authorizes merge after green CI. Also supports `recheck` and `stop`. The user's
  * own click from the card, or @ultimate (the root standing agent only) with `instruction`: the entry id of the user's
  * input in its conversation that told it to, newer than the submission. Without `instruction`, the submitting branch or
  * @ultimate may `recheck` (three times per candidate) or `stop` a blocked delivery on its own. All are recorded on the
@@ -34,7 +35,7 @@ export const DeliveryAction = actionRef<
     id: string
     candidate: string
     tree: string
-    action: 'publish' | 'merge' | 'recheck' | 'stop'
+    action: 'approve-pr' | 'publish' | 'merge' | 'recheck' | 'stop'
     instruction?: number
     /** @ultimate only: approve publish or merge under the standing approval, with `reason`. */
     standing?: boolean
