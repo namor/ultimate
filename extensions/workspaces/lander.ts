@@ -781,10 +781,10 @@ export function createLander(
               ...(entry.subject ? { subject: entry.subject } : {}),
               ...(entry.approvals ? { approvals: entry.approvals } : {}),
             }
-            await resolveContinuations(tx, draft, id, continuation, true)
             for (const old of Object.keys(draft.results).slice(0, -recentSubmitCardOutcomeLimit))
               delete draft.results[old]
             await log(tx, runtime.conversationId, entry, outcome)
+            await resolveContinuations(tx, draft, id, continuation, true)
             if (outcome.outcome === 'failed')
               await host.emit(tx, SubmissionFailed, {
                 submission: id,

@@ -24,6 +24,7 @@ import type { ActionContext } from '../../server/actions.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { ConversationsApi, Release } from '../conversations/api.ts'
 import { Branches, WorkspacesApi } from './api.ts'
+import { follow, resolveContinuations } from './continuation.ts'
 import {
   DiskAction,
   DeliveryAction,
@@ -40,7 +41,6 @@ import type { GithubRepo } from './refs.ts'
 import { githubRepo, readGithubRepo } from '../../lib/project-identity.ts'
 import { UserInputEvent } from '../../shared/events.ts'
 import { authorize, park, spent } from './delivery.ts'
-import { follow, resolveContinuations } from './continuation.ts'
 import type { Actor, Approval } from './delivery.ts'
 import { deliveryRuntime } from './advance.ts'
 import { sweepChecks } from './lander.ts'
