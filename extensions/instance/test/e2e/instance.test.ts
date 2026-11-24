@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { cp, readFile, stat, symlink, writeFile } from 'node:fs/promises'
+import { cp, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import {
   fauxAssistantMessage,
@@ -58,22 +58,21 @@ async function fixture({ foreign = false } = {}) {
   // The preview runs the clone's committed code: give it this checkout's preview and landing code.
   for (const path of ['extensions/instance', 'extensions/workspaces', 'lib'])
     await cp(join(checkout, path), join(source, path), { recursive: true })
-  await symlink(join(checkout, 'node_modules'), join(source, 'node_modules'))
+  const installArgs = ['install', '--frozen-lockfile', '--prefer-offline']
+  // Worktrees created inside a preview have a different HOME but can use the same content store.
+  vi.stubEnv(
+    'PNPM_CONFIG_STORE_DIR',
+    (await exec('pnpm', ['store', 'path'], { cwd: checkout })).stdout.trim(),
+  )
+  await exec('pnpm', installArgs, { cwd: source, timeout: 120000 })
   await writeFile(
     join(source, '.ultimate/settings.json'),
-    JSON.stringify({
-      isolates: { worktree: { setup: [`ln -s '${join(checkout, 'node_modules')}' node_modules`] } },
-    }),
-  )
-  await writeFile(
-    join(source, '.gitignore'),
-    (await readFile(join(source, '.gitignore'), 'utf8')) + '\n/node_modules\n',
+    JSON.stringify({ isolates: { worktree: { setup: [`pnpm ${installArgs.join(' ')}`] } } }),
   )
   await git(
     source,
     'add',
     '.ultimate/settings.json',
-    '.gitignore',
     'extensions/instance',
     'extensions/workspaces',
     'lib',
@@ -232,6 +231,10 @@ it('selects shared, isolated main and owned child checkouts with the main projec
     expect(await f.call('instance', { action: 'start', subagent: 999999 })).toContain(
       'Unknown subagent',
     )
+    const metadataPaths = ['node_modules/.modules.yaml', 'node_modules/.pnpm/lock.yaml']
+    const sourceMetadata = () =>
+      Promise.all(metadataPaths.map((path) => readFile(join(f.source, path), 'utf8')))
+    const before = await sourceMetadata()
     const main = await f.main()
     const own = JSON.parse(await f.call('instance', { action: 'start' }, main.id)) as Preview
     expect(
@@ -255,6 +258,11 @@ it('selects shared, isolated main and owned child checkouts with the main projec
     await assertProject(shared, f.source, true)
     await assertProject(own, main.workspace.path, true)
     await assertProject(selected, childWorkspace.path, true)
+    for (const checkout of [f.source, main.workspace.path, childWorkspace.path]) {
+      for (const path of metadataPaths)
+        expect(await realpath(join(checkout, path))).toBe(join(await realpath(checkout), path))
+    }
+    expect(await sourceMetadata()).toEqual(before)
     expect(await f.run({ action: 'start' })).toContain('At most three')
     expect(await f.list()).toEqual(
       expect.arrayContaining([
