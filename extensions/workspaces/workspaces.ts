@@ -188,6 +188,7 @@ async function listedBySource(workspace: WorkspaceIndex['items'][string]) {
 async function onlyIgnored(workspace: WorkspaceIndex['items'][string]) {
   const entries = await readdir(workspace.path, { withFileTypes: true })
   if (!entries.length) return true
+  if (entries.some((entry) => entry.name === '.git')) return false
   const paths = entries.map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
   const ignored = await git(workspace.source, 'check-ignore', '--no-index', '--', ...paths).catch(
     () => '',
@@ -496,8 +497,11 @@ export function workspaces(host: Host) {
     })
     if (registered === undefined)
       return { workspace, registered: false, reason: 'Workspace source checkout is missing' }
-    const potentiallyForeignFolder = !registered && workspace.state !== 'ready'
-    if (potentiallyForeignFolder) return undefined
+    if (!registered) {
+      if (workspace.state !== 'ready') return undefined
+      if (!(await onlyIgnored(workspace)))
+        return { workspace, registered: false, reason: 'Workspace checkout is not registered' }
+    }
     return { workspace, registered }
   }
   async function progress(ids: ConversationId[], context: Context): Promise<KeptWork[]> {
@@ -634,7 +638,6 @@ export function workspaces(host: Host) {
           return
         }
         if (!present && !(await onDisk(workspace.source))) return
-        if (present && !registered) await rm(workspace.path, { recursive: true, force: true })
         const remaining = await finishRemoval(id, workspace, context)
         if (remaining) kept.push(remaining)
       })

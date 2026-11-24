@@ -2616,6 +2616,7 @@ async function leftover(unlanded: boolean) {
     await f.service.land(id, context)
   }
   await git(workspace.source, 'worktree', 'remove', workspace.path)
+  await writeFile(join(workspace.source, '.git', 'info', 'exclude'), '.wrangler/\n')
   await mkdir(join(workspace.path, '.wrangler'), { recursive: true })
   await writeFile(join(workspace.path, '.wrangler/state.json'), '{}')
   return { f, id, workspace }
@@ -2646,10 +2647,11 @@ it.concurrent('release retains a checkout with a missing source and still releas
   await f.service.ready(clean, context)
   const orphanPath = (await f.service.get(orphan, context))!.path
   const cleanPath = (await f.service.get(clean, context))!.path
+  const source = join(f.directory, 'missing-source')
   await writeFile(join(orphanPath, 'precious.txt'), 'keep me')
   await f.opened.harness.commit(async (tx) => {
     const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
-    index.items[String(orphan)].source = join(f.directory, 'missing-source')
+    index.items[String(orphan)].source = source
   }, context)
 
   await expect(f.service.pending([orphan, clean], context)).rejects.toThrow(
@@ -2662,6 +2664,14 @@ it.concurrent('release retains a checkout with a missing source and still releas
   expect(await readFile(join(orphanPath, 'precious.txt'), 'utf8')).toBe('keep me')
   expect((await f.service.get(clean, context))!.state).toBe('removed')
   await expect(access(cleanPath)).rejects.toMatchObject({ code: 'ENOENT' })
+
+  await mkdir(source)
+  await git(source, 'init', '-q')
+  expect(await f.service.release([orphan], context)).toEqual([
+    { id: orphan, uncommitted: 0, unlanded: 0, reason: 'Workspace checkout is not registered' },
+  ])
+  expect((await f.service.get(orphan, context))!.state).toBe('ready')
+  expect(await readFile(join(orphanPath, 'precious.txt'), 'utf8')).toBe('keep me')
 })
 it.concurrent('release never removes a registered checkout whose .git file is broken', async () => {
   const f = await fixture()
