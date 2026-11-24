@@ -19,6 +19,7 @@ import { git } from '../../lib/git.ts'
 import { readWorktreeSetup } from '../../lib/worktree-setup.ts'
 import { overshadowed, retriedLater, settled } from '../../lib/errors.ts'
 import { needsRestart as restartNeeded } from '../../lib/layers.ts'
+import { formatDuration } from '../../lib/format.ts'
 import { runGroup, sweepPidFiles } from '../../lib/process-group.ts'
 import { landingWeight } from '../../lib/token-weight.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
@@ -159,7 +160,6 @@ export const limitsFor = (check: Check, limits: CheckLimits): CheckLimits =>
 const vitestFailureLine = /^\s*(FAIL|×|✗)\s/
 const verifyPhaseLine =
   /^Verification phase: (install|install-deepwiki|install-public-docs|check|fast|e2e|cursor-runner|cursor-tests|deepwiki|public-docs)$/
-const seconds = (value: number) => (value < 60 ? `${value} s` : `${+(value / 60).toFixed(1)} min`)
 
 export const checkPids = (home: string) => join(home, 'lander-checks')
 export const sweepChecks = async (home: string) => {
@@ -182,6 +182,7 @@ export async function runLanderCheck(
   pids: string,
   temp: string,
   limits: CheckLimits = defaultCheckLimitsSeconds,
+  base?: string,
 ): Promise<CheckRun> {
   const tmp = createTempBeforeWatchdog(temp)
   let output = ''
@@ -205,11 +206,12 @@ export async function runLanderCheck(
     }
     watchdog.abort()
   }
-  const stalled = () => stop(`Stalled: no output for ${seconds(limits.stall)}, stopped`)
+  const stalled = () =>
+    stop(`Stalled: no output for ${formatDuration(limits.stall * 1000)}, stopped`)
   const stallDeadline = debounce(limits.stall * 1000, stalled)
   stallDeadline()
   const cancelTotal = deadline(limits.total * 1000, () =>
-    stop(`Timed out after ${seconds(limits.total)}`),
+    stop(`Timed out after ${formatDuration(limits.total * 1000)}`),
   )
   const report = (reason: string, heading: string) => {
     const tests = [...failed].slice(-20)
@@ -248,6 +250,7 @@ export async function runLanderCheck(
         env: {
           ...process.env,
           TMPDIR: tmp,
+          ...(base && { ULTIMATE_LANDER_BASE: base }),
           ...(trackVerifyPhase ? { ULTIMATE_VERIFY_PHASES: '1' } : {}),
         },
         pidFile: join(pids, `${process.pid}-${randomUUID()}.pid`),
@@ -1143,6 +1146,7 @@ export function createLander(
                   checkPids(host.home),
                   checkTemp(host.home),
                   limitsFor(members[member], limits),
+                  base,
                 )
               const runCheckWithOneDurableRerun = async (command: string, member: number) => {
                 const attemptMemoKey = `check:${id}:${round}:${Array.isArray(group) ? `${position}.${member}` : position}`

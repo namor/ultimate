@@ -1,5 +1,3 @@
-import { parseMarkdownIntoBlocks } from 'streamdown'
-
 const prefix = '#local-markdown-'
 const isMarkdownName = (name: string) => /^[^/\\\p{Cc}]+\.md$/iu.test(name)
 
@@ -14,11 +12,6 @@ export function localMarkdownName(marker: string) {
 }
 
 type Node = { type: string; url?: string; identifier?: string; children?: Node[] }
-
-export const chatMarkdownBlocks = (markdown: string) =>
-  /^ {0,3}\[[^\]\n]+\]:\s*<?file:\/\/\//im.test(markdown)
-    ? [markdown]
-    : parseMarkdownIntoBlocks(markdown)
 
 function markerOf(url: string) {
   if (!/^file:\/\/\/[^/?#\\][^?#\\]*$/iu.test(url)) return undefined

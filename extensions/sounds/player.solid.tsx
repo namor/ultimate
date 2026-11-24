@@ -1,8 +1,7 @@
-/** @jsxImportSource @solidjs/web */
 import type { ConversationId } from '@earendil-works/pi-durable'
-import { createEffect, createMemo, mapArray, onSettled, Show } from 'solid-js'
+import { createEffect, createMemo, mapArray, Show } from 'solid-js'
 import type { Accessor } from 'solid-js'
-import type { LiveState } from '@/sdk'
+import type { LiveState } from '@/sdk/solid'
 import {
   ROOT,
   api,
@@ -13,6 +12,7 @@ import {
   useDocOf,
   useEvents,
   useExtensionUiState,
+  usePageVisible,
 } from '@/sdk/solid'
 import { Committed } from '../coding-tools/refs.ts'
 import { OverviewDoc } from '../conversations/refs.ts'
@@ -31,7 +31,6 @@ import { SayAction } from './refs.ts'
 import { speaker } from './speaker.ts'
 import * as tones from './tones.ts'
 import { variantOf } from './variants.ts'
-import { questionsSpoken } from './voiced.ts'
 
 const eventClaimKey = 'ultimate.sounds.played'
 const reconnectCatchUpMs = 3000
@@ -52,7 +51,7 @@ async function claimPlayableCues(cues: readonly Cue[]) {
 }
 
 async function sayLine(line: Line) {
-  if (!line.text || (line.sound === 'input' && questionsSpoken())) return tones.play(line.sound)
+  if (!line.text) return tones.play(line.sound)
   const { audio } = await api.action(SayAction, { text: line.text }).catch((error: unknown) => {
     console.warn('Narrator voice failed', error)
     return { audio: null }
@@ -75,22 +74,16 @@ function rowOf(row: OverviewRow | undefined): OverviewRow | undefined {
 
 function catchingUpFor(narrateWhileHidden: Accessor<boolean>) {
   const connection = useConnection()
+  const visible = usePageVisible()
   const opened = Date.now()
-  let shown = Date.now()
-  onSettled(() => {
-    const update = () => {
-      if (!document.hidden) shown = Date.now()
-    }
-    document.addEventListener('visibilitychange', update)
-    return () => document.removeEventListener('visibilitychange', update)
-  })
+  const shown = createMemo(() => (visible() ? Date.now() : 0))
   return () => {
     const whileHidden = narrateWhileHidden()
     const { status, since } = connection()
     return (
       status !== 'open' ||
-      (!whileHidden && document.hidden) ||
-      Date.now() < Math.max(whileHidden ? opened : shown, since) + reconnectCatchUpMs
+      (!whileHidden && !visible()) ||
+      Date.now() < Math.max(whileHidden ? opened : shown(), since) + reconnectCatchUpMs
     )
   }
 }

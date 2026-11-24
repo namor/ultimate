@@ -3,6 +3,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { join, resolve } from 'node:path'
 import type { ToolExecutionApi } from '@earendil-works/pi-durable'
+import { createNodePhotonImages } from '@earendil-works/pi-durable/images/node'
 import { expect, it, vi } from 'vitest'
 import { context } from '../../../../server/harness.ts'
 import browserExtension, { browserBinary } from '../../server.ts'
@@ -133,6 +134,39 @@ it('marks the page as driven without a page error from a sandboxed frame', async
   }
 })
 
+// Phone checks built a 375 px iframe by hand because browser had no viewport size, and those iframes failed often.
+it('drives the page at the given viewport width and height', async () => {
+  const directory = await temp('ultimate-browser-viewport-')
+  const closers: (() => Promise<void>)[] = []
+  const host = {
+    home: join(directory, 'home'),
+    projectRoot: directory,
+    resource: <T>(_name: string, create: () => T) => create(),
+    onClose: (close: () => Promise<void>) => closers.push(close),
+    system: () => ({ process: { url: 'http://127.0.0.1:1/' } }),
+  } as unknown as ExtensionHost
+  const browser = browserExtension(host).tools!.find((tool) => tool.name === 'browser')!
+  const api = { output() {} } as unknown as ToolExecutionApi
+  try {
+    const result = await browser.execute(
+      {
+        url: 'data:text/html,<title>Phone</title>',
+        width: 375,
+        height: 812,
+        steps: [{ eval: '[innerWidth, innerHeight]' }],
+        screenshot: false,
+      },
+      api,
+      context,
+    )
+    expect(result.isError).toBeFalsy()
+    expect(JSON.stringify(result.output)).toContain('Step 1: OK [375,812]')
+  } finally {
+    for (const close of closers) await close()
+    await removeTemp(directory)
+  }
+})
+
 // The call trace keeps the first 300 characters of a failed call: a page's console errors filled them, so the dream's
 // tool stats grouped 69 of 88 such failures by a console line, without the step that failed.
 it('names the failure before the console errors', async () => {
@@ -167,7 +201,43 @@ it('names the failure before the console errors', async () => {
   }
 })
 
-// A 1 s timeoutMs also bounded loading, so a cold page on a loaded lander timed out before step 1 ran (#61963).
+it('names each match of an ambiguous selector by role and name, and suggests scoping it', async () => {
+  const directory = await temp('ultimate-browser-strict-')
+  const closers: (() => Promise<void>)[] = []
+  const host = {
+    home: join(directory, 'home'),
+    projectRoot: directory,
+    resource: <T>(_name: string, create: () => T) => create(),
+    onClose: (close: () => Promise<void>) => closers.push(close),
+
+    system: () => ({ process: { url: 'http://127.0.0.1:1/' } }),
+  } as unknown as ExtensionHost
+  const browser = browserExtension(host).tools!.find((tool) => tool.name === 'browser')!
+  const api = { output() {} } as unknown as ToolExecutionApi
+  const wide = 'x'.repeat(400)
+  try {
+    const result = await browser.execute(
+      {
+        url: `data:text/html,<button class="${wide}">Save</button><button aria-label="Save draft" class="${wide}">Save</button>`,
+        steps: [{ click: 'button:has-text("Save")' }],
+        screenshot: false,
+      },
+      api,
+      context,
+    )
+    expect(result.isError).toBe(true)
+    const text = (result.output as { text: string }[])[0].text
+    expect(text).toContain('matches 2 elements')
+    expect(text).toContain('1) button "Save"')
+    expect(text).toContain('2) button "Save draft"')
+    expect(text).toContain('Scope it')
+    expect(text).not.toContain(wide)
+  } finally {
+    for (const close of closers) await close()
+    await removeTemp(directory)
+  }
+})
+
 it('loads a page slower than timeoutMs, which bounds only the steps', async () => {
   const directory = await temp('ultimate-browser-slow-load-')
   const closers: (() => Promise<void>)[] = []
@@ -210,6 +280,7 @@ it('saves screenshots at the given path, relative to the conversation cwd, creat
   const directory = await temp('ultimate-browser-path-')
   const closers: (() => Promise<void>)[] = []
   const host = {
+    images: await createNodePhotonImages(),
     home: join(directory, 'home'),
     projectRoot: join(directory, 'project'),
     resource: <T>(_name: string, create: () => T) => create(),
@@ -225,12 +296,27 @@ it('saves screenshots at the given path, relative to the conversation cwd, creat
     const result = await tools.get(name)!.execute({ url, waitMs: 0, ...args }, api(env), context)
     expect(result.isError).toBeFalsy()
     // Codemode reads this structured result; the model reads the PNG line of the output.
-    const saved = (result as { structuredContent?: { file: string } }).structuredContent!.file
+    const saved = (result as { structuredOutput?: { file: string } }).structuredOutput!.file
     await access(saved)
     expect(JSON.stringify(result.output)).toContain(`PNG: ${saved}`)
     return saved
   }
   try {
+    const tall = await tools.get('screenshot')!.execute(
+      {
+        url: 'data:text/html,<body style="height:4000px">',
+        width: 800,
+        fullPage: true,
+        waitMs: 0,
+      },
+      api(),
+      context,
+    )
+    expect(tall.output).toEqual([
+      { type: 'text', text: expect.stringMatching(/^Resized from 800x4\d+ to \d+x1600\./) },
+      expect.objectContaining({ type: 'image', mimeType: 'image/png' }),
+      { type: 'text', text: expect.stringContaining('PNG: ') },
+    ])
     expect(await file('screenshot', { path: join(directory, 'a/b/absolute.png') })).toBe(
       join(directory, 'a/b/absolute.png'),
     )

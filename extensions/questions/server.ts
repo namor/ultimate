@@ -14,7 +14,7 @@ const NOT_OPEN = 'These questions are no longer open'
 
 export const userActions = ['answer', 'dismiss']
 export const actions = {
-  answer: implementAction(AnswerAction, async (args, { host, signal, device }) => {
+  answer: implementAction(AnswerAction, async (args, { host, signal, device, origin, source }) => {
     const data = args as Reply & { messageId: number }
     if (!data || !Number.isSafeInteger(data.messageId)) throw new Error('Invalid answers')
     checkReply(data)
@@ -27,7 +27,12 @@ export const actions = {
     return {
       id: await host
         .need(MessagesApi)
-        .answer(data.messageId, reply, withAbortSignal(signal, context), device),
+        .answer(
+          data.messageId,
+          reply,
+          withAbortSignal(signal, context),
+          origin === 'ui' && source === 'person' ? device : undefined,
+        ),
     }
   }),
   dismiss: implementAction(DismissAction, async (args, { host, signal, device }) => {

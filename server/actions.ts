@@ -1,13 +1,15 @@
 import type { ConversationId, Tx } from '@earendil-works/pi-durable'
 import { exec } from '../lib/exec.ts'
 import type { JsonValue } from '@earendil-works/chord/json'
-import type { Device } from '../shared/events.ts'
+import type { Device, UiSource } from '../shared/events.ts'
 import type { ExtensionHost } from './extensions.ts'
 
 export interface ActionContext {
   host: ExtensionHost
   conversationId?: ConversationId
   device?: Device
+  origin: 'ui' | 'agent'
+  source: UiSource['source']
   uiChanged(tx: Tx, change: { key: string; value?: JsonValue; previous?: JsonValue }): Promise<void>
   signal: AbortSignal
   exec(

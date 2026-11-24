@@ -3,6 +3,7 @@ import type { ModelThinkingLevel } from '@earendil-works/pi-ai'
 import type { ConversationId } from '@earendil-works/pi-durable'
 import { defineEntry } from '@earendil-works/pi-durable'
 import { actionRef } from '../../shared/extension-api.ts'
+import { defineEvent } from '../../shared/events.ts'
 
 export type PlanSelection = {
   family: string
@@ -35,6 +36,10 @@ export type Thread = {
 }
 /** Read one protected planning thread. User-only and excluded from trace contents. */
 export const ReadThread = actionRef<{ fork: number }, Thread>('automatic-plan', 'readThread')
+/** Refresh a protected thread after a turn settles. Carries no thread contents. */
+export const PlanningThreadChanged = defineEvent<{ fork: ConversationId }>(
+  'automatic-plan.thread-changed',
+)
 /** The first plan and its link to the original planning fork. */
 export const PlanCard = defineEntry<{ fork: ConversationId; text: string }>('automatic-plan.result')
 /** An explicit user-selected revision, delivered to the originating coordinator. */
