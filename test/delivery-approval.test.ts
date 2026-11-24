@@ -39,13 +39,16 @@ async function fixture(risk: Delivery['risk'] = 'medium') {
   hosts.push(opened)
   const resumed: string[] = []
   const events = eventHost(() => opened.harness, 'delivery-approval')
+  let standingAvailable = true
   const host = {
     ...prepared,
     harness: () => opened.harness,
     eventLog: events.eventLog,
     doc: (kind: string) =>
       kind === Standing.definition.kind
-        ? Standing
+        ? standingAvailable
+          ? Standing
+          : undefined
         : kind === Goals.definition.kind
           ? Goals
           : undefined,
@@ -151,7 +154,20 @@ async function fixture(risk: Delivery['risk'] = 'medium') {
       source: ctx.device ? 'person' : 'agent',
       ...ctx,
     } as ActionContext)
-  return { opened, host, ultimate, branch, submitter, earlier, entry, queued, call }
+  return {
+    opened,
+    host,
+    ultimate,
+    branch,
+    submitter,
+    earlier,
+    entry,
+    queued,
+    call,
+    standingAvailable: (available: boolean) => {
+      standingAvailable = available
+    },
+  }
 }
 
 describe('delivery approval', () => {
@@ -377,21 +393,26 @@ describe('delivery approval', () => {
     expect((await f.queued()).mergeApproved).toBeUndefined()
   })
 
-  it('requires a fresh instruction after upgrading an index with no instruction history', async () => {
-    const f = await fixture('high')
-    const old = await f.entry(f.ultimate, 'pi.user', { typed: true })
-    await f.opened.harness.commit(async (tx) => {
-      delete (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).instructionFloor
-    }, context)
-    await initializeApprovalHistory(f.host)
-    const ctx = { conversationId: f.ultimate }
-    await expect(f.call(ctx, { action: 'approve-pr', instruction: old })).rejects.toThrow(
-      'Instruction is too old',
-    )
-    const fresh = await f.entry(f.ultimate, 'pi.user', { typed: true })
-    await f.call(ctx, { action: 'approve-pr', instruction: fresh })
-    expect((await f.queued()).mergeApproved).toBe(true)
-  })
+  it.each([true, false])(
+    'requires fresh instruction after upgrade (standing registry ready at boot: %s)',
+    async (availableAtBoot) => {
+      const f = await fixture('high')
+      const old = await f.entry(f.ultimate, 'pi.user', { typed: true })
+      await f.opened.harness.commit(async (tx) => {
+        delete (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).instructionFloor
+      }, context)
+      f.standingAvailable(availableAtBoot)
+      await initializeApprovalHistory(f.host)
+      f.standingAvailable(true)
+      const ctx = { conversationId: f.ultimate }
+      await expect(f.call(ctx, { action: 'approve-pr', instruction: old })).rejects.toThrow(
+        'Instruction is too old',
+      )
+      const fresh = await f.entry(f.ultimate, 'pi.user', { typed: true })
+      await f.call(ctx, { action: 'approve-pr', instruction: fresh })
+      expect((await f.queued()).mergeApproved).toBe(true)
+    },
+  )
 
   it('refuses @ultimate while a hands-off goal is open', async () => {
     const f = await fixture()

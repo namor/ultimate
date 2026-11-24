@@ -90,6 +90,16 @@ async function rootAgent(host: ExtensionHost, ctx: Pick<ActionContext, 'conversa
     throw new Error("Only the user or @ultimate on the user's instruction can act on a delivery")
   return ultimate as ConversationId
 }
+async function establishInstructionFloor(
+  tx: Tx,
+  index: { instructionFloor?: number },
+  primary: ConversationId | undefined,
+) {
+  index.instructionFloor ??= primary
+    ? ((await tx.scanEntries({ conversationId: primary }, 1)).items[0]?.id ?? 0)
+    : 0
+}
+
 async function typedInstruction(
   host: ExtensionHost,
   ultimate: ConversationId,
@@ -101,7 +111,11 @@ async function typedInstruction(
     throw new Error(
       "Pass instruction: the entry id of the user's input that told you to act on this delivery",
     )
-  const entry = await harness.commit((tx) => tx.entry(parseEntryId(instruction)), context)
+  const entry = await harness.commit(async (tx) => {
+    const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+    await establishInstructionFloor(tx, index, ultimate)
+    return tx.entry(parseEntryId(instruction))
+  }, context)
   if (!entry || entry.conversationId !== ultimate || (since !== undefined && entry.id <= since))
     throw new Error(
       since === undefined
@@ -172,13 +186,10 @@ export async function initializeApprovalHistory(host: ExtensionHost) {
   const standing = host.doc('ultimate.standing-agents')
   await host.harness().commit(async (tx) => {
     const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
-    if (index.instructionFloor === undefined) {
-      const primary = standing && (await tx.doc(standing, ROOT_CONVERSATION_ID)).ultimate
-      index.instructionFloor =
-        typeof primary === 'number'
-          ? ((await tx.scanEntries({ conversationId: primary as ConversationId }, 1)).items[0]
-              ?.id ?? 0)
-          : 0
+    if (index.instructionFloor === undefined && standing) {
+      const primary = (await tx.doc(standing, ROOT_CONVERSATION_ID)).ultimate
+      if (primary === undefined || typeof primary === 'number')
+        await establishInstructionFloor(tx, index, primary as ConversationId | undefined)
     }
     for (const item of index.queue) {
       if (!item.delivery || !legacyPublicationWithdrawn(item.delivery, index.standing)) continue
