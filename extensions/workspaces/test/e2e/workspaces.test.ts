@@ -122,7 +122,7 @@ it('clears and reruns a configured add command a crash interrupted', async () =>
     await until(async () => {
       if (child.exitCode !== null) throw new Error(output)
       return readFile(started, 'utf8').then(
-        () => true,
+        (text) => text === 'add\n',
         () => false,
       )
     })
@@ -191,15 +191,14 @@ exec git "$@"
 `,
       { mode: 0o755 },
     )
+    const beforeRegistration = scenario === 'branch creation before registration'
     const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
       cwd: process.cwd(),
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
-        ...(scenario === 'branch creation before registration'
-          ? { PATH: `${bin}:${process.env.PATH}` }
-          : {}),
+        ...(beforeRegistration ? { PATH: `${bin}:${process.env.PATH}` } : {}),
       },
     })
     let output = ''
@@ -210,7 +209,7 @@ exec git "$@"
       await until(async () => {
         if (child.exitCode !== null) throw new Error(output)
         return readFile(started, 'utf8').then(
-          () => true,
+          (text) => text === (beforeRegistration ? 'branch\n' : 'attempt\n'),
           () => false,
         )
       })
