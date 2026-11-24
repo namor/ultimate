@@ -729,10 +729,6 @@ describe('web replica store', () => {
     latest().open()
     await tick()
     const secondRefusal: unknown[] = []
-    const microtasks: (() => void)[] = []
-    const spy = vi.spyOn(globalThis, 'queueMicrotask').mockImplementation((fn) => {
-      microtasks.push(fn)
-    })
     try {
       store.watchRead(
         { extension: 'test', action: 'big-1', args: 'x'.repeat(1_100_000) },
@@ -746,15 +742,28 @@ describe('web replica store', () => {
         undefined,
         (event) => void secondRefusal.push(event),
       )
-      store.watchRead({ extension: 'test', action: 'valid', args: null }, undefined, () => {})
-      await vi.advanceTimersByTimeAsync(10)
-      expect(microtasks).toHaveLength(1)
-      expect(() => microtasks[0]()).toThrow('refusal boom')
+      const releaseValid = store.watchRead(
+        { extension: 'test', action: 'valid', args: null },
+        undefined,
+        () => {},
+      )
+      let flush: () => void
+      {
+        using spy = vi.spyOn(globalThis, 'queueMicrotask').mockImplementation(() => {})
+        vi.advanceTimersByTime(10)
+        expect(spy).toHaveBeenCalledOnce()
+        flush = spy.mock.calls[0][0]
+      }
+      expect(flush).toThrow('refusal boom')
       await tick()
-      expect(server.reads.some((item) => !item.closed && item.read.action === 'valid')).toBe(true)
+      const valid = server.reads.find((item) => item.read.action === 'valid')!
+      expect(valid.closed).toBe(false)
       expect(secondRefusal).toEqual([{ error: 'The server refused this read', status: 413 }])
+      releaseValid()
+      await tick()
+      expect(valid.closed).toBe(true)
+      expect(store.getState().connection.status).toBe('open')
     } finally {
-      spy.mockRestore()
       store.stop()
     }
   })
