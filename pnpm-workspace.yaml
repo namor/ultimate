@@ -51,7 +51,9 @@ overrides:
   vite: 8.3.5
 # Pi upstream: @earendil-works/pi-durable@1.6.0 — sealed planning forks reject entries, submissions, tasks, reconfiguration and descendant forks.
 # Pi upstream: @earendil-works/pi-codemode@1.6.0 dist/runtime/prelude-source.js — unknown-tool errors suggest only discovery helpers present in the sandbox.
+# Pi upstream: @earendil-works/pi-ai@1.6.0 dist/api/constrained-sampling.js — replay rejected grammar calls as their original JSON. Drop when Pi accepts malformed historical calls.
 patchedDependencies:
+  '@earendil-works/pi-ai@1.6.0': patches/@earendil-works__pi-ai@1.6.0.patch
   '@earendil-works/chord@1.6.0': patches/@earendil-works__chord@1.6.0.patch
   '@earendil-works/pi-codemode@1.6.0': patches/@earendil-works__pi-codemode@1.6.0.patch
   '@earendil-works/pi-claude-code@0.1.0': patches/@earendil-works__pi-claude-code@0.1.0.patch

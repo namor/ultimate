@@ -15,7 +15,7 @@ import {
 import { exec } from '../../lib/exec.ts'
 import { git, isolatable } from '../../lib/git.ts'
 import { readWorktreeSetup } from '../../lib/worktree-setup.ts'
-import { meansNone, overshadowed, settled } from '../../lib/errors.ts'
+import { isMissing, meansNone, overshadowed, settled } from '../../lib/errors.ts'
 import { needsRestart as restartNeeded } from '../../lib/layers.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { ConversationsApi } from '../conversations/api.ts'
@@ -490,7 +490,12 @@ export function workspaces(host: Host) {
   async function recordedCheckout(id: ConversationId, context: Context) {
     const workspace = await presentCheckout(id, context)
     if (!workspace) return undefined
-    const registered = await listedBySource(workspace)
+    const registered = await listedBySource(workspace).catch(async (error: unknown) => {
+      if (!isMissing(error) || (await onDisk(workspace.source))) throw error
+      return undefined
+    })
+    if (registered === undefined)
+      return { workspace, registered: false, reason: 'Workspace source checkout is missing' }
     const potentiallyForeignFolder = !registered && workspace.state !== 'ready'
     if (potentiallyForeignFolder) return undefined
     return { workspace, registered }
@@ -511,6 +516,7 @@ export function workspaces(host: Host) {
     const result: KeptWork[] = []
     for (const id of (await candidates(ids, context)).ids) {
       const checkout = await recordedCheckout(id, context)
+      if (checkout?.reason) throw new Error(checkout.reason)
       if (!checkout?.registered) continue
       const item = await changes(id, checkout.workspace)
       if (item.uncommitted || item.unlanded) result.push(item)
@@ -590,6 +596,10 @@ export function workspaces(host: Host) {
           return
         }
         const checkout = await recordedCheckout(id, context)
+        if (checkout?.reason) {
+          kept.push({ id, uncommitted: 0, unlanded: 0, reason: checkout.reason })
+          return
+        }
         const present = Boolean(checkout)
         const registered = Boolean(checkout?.registered)
         const item: KeptWork = present
@@ -623,14 +633,7 @@ export function workspaces(host: Host) {
           kept.push(item)
           return
         }
-        if (
-          !present &&
-          !(await lstat(workspace.source).catch((error: NodeJS.ErrnoException) => {
-            if (error.code !== 'ENOENT') throw error
-            return undefined
-          }))
-        )
-          return
+        if (!present && !(await onDisk(workspace.source))) return
         if (present && !registered) await rm(workspace.path, { recursive: true, force: true })
         const remaining = await finishRemoval(id, workspace, context)
         if (remaining) kept.push(remaining)

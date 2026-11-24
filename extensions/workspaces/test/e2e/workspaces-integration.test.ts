@@ -2638,6 +2638,31 @@ it.concurrent('release keeps the unlanded branch of a worktree Git already remov
   expect((await f.service.get(id, context))!.state).toBe('removed')
   await expect(access(workspace.path)).rejects.toThrow('ENOENT')
 })
+it.concurrent('release retains a checkout with a missing source and still releases healthy siblings', async () => {
+  const f = await fixture()
+  const orphan = await f.create()
+  const clean = await f.create()
+  await f.service.ready(orphan, context)
+  await f.service.ready(clean, context)
+  const orphanPath = (await f.service.get(orphan, context))!.path
+  const cleanPath = (await f.service.get(clean, context))!.path
+  await writeFile(join(orphanPath, 'precious.txt'), 'keep me')
+  await f.opened.harness.commit(async (tx) => {
+    const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+    index.items[String(orphan)].source = join(f.directory, 'missing-source')
+  }, context)
+
+  await expect(f.service.pending([orphan, clean], context)).rejects.toThrow(
+    'Workspace source checkout is missing',
+  )
+  expect(await f.service.release([orphan, clean], context)).toEqual([
+    { id: orphan, uncommitted: 0, unlanded: 0, reason: 'Workspace source checkout is missing' },
+  ])
+  expect((await f.service.get(orphan, context))!.state).toBe('ready')
+  expect(await readFile(join(orphanPath, 'precious.txt'), 'utf8')).toBe('keep me')
+  expect((await f.service.get(clean, context))!.state).toBe('removed')
+  await expect(access(cleanPath)).rejects.toMatchObject({ code: 'ENOENT' })
+})
 it.concurrent('release never removes a registered checkout whose .git file is broken', async () => {
   const f = await fixture()
   const id = await f.create()

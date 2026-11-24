@@ -6,6 +6,7 @@ import {
   fauxProvider,
 } from '@earendil-works/pi-ai/providers/faux'
 import { num, obj } from '@earendil-works/pi-schema'
+import { convertResponsesMessages } from '@earendil-works/pi-ai/api/openai-responses-shared'
 import { CodemodeSandbox } from '@earendil-works/pi-codemode'
 import { defineExtension, defineTool, hook, ToolTask } from '@earendil-works/pi-durable'
 import { ProjectTrustStore } from '@earendil-works/pi-coding-agent'
@@ -291,6 +292,62 @@ async function run(
     data: message,
   }
 }
+
+it('replays a rejected codemode call without losing the call or its error', async () => {
+  const { server } = await fixture()
+  const malformed = fauxToolCall('codemode', {}, { id: 'call_malformed' })
+  const valid = fauxToolCall('codemode', { code: 'return 1' }, { id: 'call_valid' })
+  server.host.faux!.setResponses([
+    fauxAssistantMessage([malformed, valid], { stopReason: 'toolUse' }),
+    fauxAssistantMessage('First reply'),
+  ])
+  await server.root.submit({ type: 'input', content: 'Run the two scripts' }, context)
+  await server.harness.waitForIdle(context)
+
+  server.host.registry.uninstall({ name: 'codemode' })
+  let json: ReturnType<typeof convertResponsesMessages> | undefined
+  let grammar: typeof json
+  server.host.faux!.setResponses([
+    (request, _options, _state, model) => {
+      const providers = new Set([model.provider])
+      json = convertResponsesMessages(model, request, providers)
+      grammar = convertResponsesMessages(model, request, providers, {
+        grammarToolInputProperties: new Map([['codemode', 'code']]),
+      })
+      return fauxAssistantMessage('Recovered')
+    },
+  ])
+  await server.root.submit({ type: 'input', content: 'Continue with codemode disabled' }, context)
+  await server.harness.waitForIdle(context)
+
+  expect(json).toContainEqual(
+    expect.objectContaining({
+      type: 'function_call',
+      call_id: malformed.id,
+      arguments: '{}',
+    }),
+  )
+  expect(grammar).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ type: 'custom_tool_call', call_id: malformed.id, input: '{}' }),
+      expect.objectContaining({
+        type: 'custom_tool_call_output',
+        call_id: malformed.id,
+        output: expect.stringContaining('code'),
+      }),
+      expect.objectContaining({ type: 'custom_tool_call', call_id: valid.id, input: 'return 1' }),
+    ]),
+  )
+  const saved = await server.root.context(context)
+  expect(saved.messages).toContainEqual(
+    expect.objectContaining({ role: 'assistant', content: [malformed, valid] }),
+  )
+  expect(saved.messages.at(-1)).toMatchObject({
+    role: 'assistant',
+    content: [{ type: 'text', text: 'Recovered' }],
+  })
+})
+
 const parsed = (text: string): unknown => {
   try {
     return JSON.parse(text)
