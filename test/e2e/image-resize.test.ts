@@ -1,13 +1,13 @@
 // Pasting an image too large to attach resizes it in the browser: the chip says how, and the conversation receives a
 // WebP within 2000 px and 2 MiB.
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { fauxAssistantMessage } from '@earendil-works/pi-ai/providers/faux'
 import { chromium } from 'playwright-core'
 import { afterEach, expect, it } from 'vitest'
 import { browserBinary } from '../../extensions/browser/server.ts'
 import { context as harnessContext } from '../../server/harness.ts'
 import { maxImageBytes } from '../../shared/protocol.ts'
-import { fauxServer, post, removeTemp, temp, until } from '../helpers.ts'
+import { prebuiltServer, post, removeTemp, temp, until } from '../helpers.ts'
 
 const cleanup: (() => Promise<void>)[] = []
 afterEach(async () => {
@@ -17,9 +17,7 @@ afterEach(async () => {
 it('resizes a pasted image over the limit and sends it', async () => {
   const home = await temp('ultimate-image-resize-')
   cleanup.push(() => removeTemp(home))
-  const server = await fauxServer({
-    ultimateRoot: resolve('.'),
-    projectRoot: resolve('.'),
+  const server = await prebuiltServer({
     userHome: home,
     localSetup: false,
     home: join(home, 'state'),
@@ -50,11 +48,13 @@ it('resizes a pasted image over the limit and sends it', async () => {
   )
   expect(agent.model?.provider).toBe(server.host.faux!.getModel().provider)
   await page.goto(`${server.url}/?conversation=${standing.result}`)
-  const editor = page.locator('#app [data-ui="composer"] textarea')
+  const editor = page.locator(
+    `#app [data-ui="composer"] textarea[data-conversation="${standing.result}"]`,
+  )
   await editor.waitFor()
   // A 3000×2400 PNG of noise: far over 2 MiB, as a phone photo or 5K screenshot would be. It takes a while to make,
   // and the composer may render a new editor meanwhile, so the paste goes to the one on the page once it is made.
-  const size = await page.evaluate(async () => {
+  const size = await page.evaluate(async (conversation) => {
     const canvas = new OffscreenCanvas(3000, 2400)
     const context = canvas.getContext('2d')!
     const pixels = context.createImageData(3000, 2400)
@@ -67,14 +67,15 @@ it('resizes a pasted image over the limit and sends it', async () => {
     const data = new DataTransfer()
     data.items.add(new File([blob], 'big.png', { type: 'image/png' }))
     document
-      .querySelector('#app [data-ui="composer"] textarea')!
+      .querySelector(`#app [data-ui="composer"] textarea[data-conversation="${conversation}"]`)!
       .dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true }))
     return blob.size
-  })
+  }, standing.result)
   expect(size).toBeGreaterThan(maxImageBytes)
   const note = page.locator('[data-ui="composer"] p[title^="Resized"]')
   await note.waitFor()
   expect(await note.getAttribute('title')).toMatch(/^Resized \d+\.\d MB · 3000×2400 → 2000×1600$/)
+  await page.locator('#app [data-ui="composer"] button[type="submit"]:enabled').waitFor()
   await editor.press('Enter')
   await until(async () => !!received)
   const image = received!

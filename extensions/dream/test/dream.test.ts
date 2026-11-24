@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import type { JsonValue } from '@earendil-works/chord/json'
 import { fauxProvider } from '@earendil-works/pi-ai/providers/faux'
-import { configure, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
+import { configure, defineExtension, ROOT_CONVERSATION_ID } from '@earendil-works/pi-durable'
 import { afterEach, expect, it, vi } from 'vitest'
 import { writeJson } from '../../../lib/json-file.ts'
 import { prepareHarness } from '../../../server/harness.ts'
@@ -17,7 +17,9 @@ import { Messages } from '../../messages/api.ts'
 import { Todos } from '../../todos/server.ts'
 import { Standing } from '../../subagents/api.ts'
 import { ContextUsageDoc } from '../../conversations/api.ts'
+import { SubmitAfter, submitAfter } from '../../conversations/submit.ts'
 import automations, { actions as automationActions, Automations } from '../../automations/server.ts'
+import { Hold } from '../../automations/api.ts'
 import dream, { actions, branched, Next, toolStats, userActions } from '../server.ts'
 import { buildSeed } from '../seed.ts'
 import {
@@ -27,7 +29,7 @@ import {
   PAUSE_NAME,
   PauseDoc,
 } from '../built-ins.ts'
-import { apis, eventHost, temp, until } from '../../../test/helpers.ts'
+import { apis, eventHost, openers, temp, until } from '../../../test/helpers.ts'
 
 const openedHosts: OpenHost[] = []
 /** The extensions' close callbacks: automations' minute timer stops before its harness closes. */
@@ -51,7 +53,8 @@ async function fixture() {
     faux: fauxProvider(),
   })
   let opened: OpenHost
-  const openers: (() => Promise<void>)[] = []
+  const lifecycle = openers()
+  closers.push(lifecycle.close)
   const tokens = [...lineageDocs, Messages, Todos]
   const resources = new Map<string, unknown>()
   const events = eventHost(() => opened.harness, 'test')
@@ -59,9 +62,11 @@ async function fixture() {
     new Map<string, unknown>([
       ['messages', { send: async () => ({}), dropped: async () => {} }],
       ['lineage', { rootOf: async () => undefined }],
+      ['conversations', { submitAfter }],
       [
         'subagents',
         {
+          residents: async () => [{ name: 'ultimate', description: '' }],
           standing: async () =>
             (await opened.harness.snapshot(Standing, ROOT_CONVERSATION_ID, context))!.ultimate,
         },
@@ -85,9 +90,8 @@ async function fixture() {
       return resources.get(key)
     },
     metadata: Metadata,
-    onRelease: () => {},
     onClose: (callback: () => Promise<void>) => void closers.push(callback),
-    onOpen: (callback: () => Promise<void>) => void openers.push(callback),
+    onOpen: lifecycle.onOpen,
     projectSetup: async () => ({ decision: false }),
     projectSettings: async () => ({}),
     extensions: () => [
@@ -100,6 +104,7 @@ async function fixture() {
     notice: () => {},
     invoke,
   } as unknown as ExtensionHost
+  prepared.registry.install(defineExtension({ name: 'conversations', tasks: [SubmitAfter] }))
   prepared.registry.install(automations(host))
   prepared.registry.install(dream(host))
   opened = await prepared.open(false)
@@ -110,7 +115,7 @@ async function fixture() {
     ;(await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate = created.id
     return created.id
   }, context)
-  for (const open of openers) await open()
+  await lifecycle.open()
   await events.start()
   const harness = opened.harness
   const own = async () => (await harness.snapshot(BuiltInDoc, ROOT_CONVERSATION_ID, context))?.id
@@ -129,17 +134,17 @@ async function fixture() {
       })
     }, context)
   /** @ultimate's `dream.*` submissions, oldest first: their request ids and types. */
-  const requests = () =>
-    harness.commit(async (tx) => {
-      const deliveries = (await tx.scanTasks({ kind: 'dream.deliver' }, 50)).items
-      const found = []
-      for (const task of deliveries) {
-        const { requestId } = task.input as { requestId: string }
-        const submission = await tx.submissionByRequest(ultimate, requestId)
-        if (submission) found.push({ requestId, type: submission.type })
-      }
-      return found
-    }, context)
+  const requests = async () =>
+    (
+      await prepared.scanSubmissions(
+        { conversationId: ultimate, order: 'ascending' },
+        50,
+        undefined,
+        context,
+      )
+    ).items.flatMap(({ requestId, type }) =>
+      requestId?.startsWith('dream.') ? [{ requestId, type }] : [],
+    )
   return {
     host,
     harness,
@@ -270,6 +275,25 @@ it("asks @ultimate to dream on a built-in's fire, beside the fire's own wake-up,
   await f.usage(75)
   await until(async () => (await f.record(id)).condition?.value === 75)
   expect(await f.requests()).toHaveLength(1)
+})
+
+it('dreams once per chapter: neither built-in fires after a dream ran in it', async () => {
+  const f = await fixture()
+  const id = (await f.own())!
+  const pause = (await f.ownPause())!
+  f.host.harness().resume()
+  // A dream branch ran in this chapter and was concluded; nothing is prepared yet.
+  await f.harness.commit(async (tx) => {
+    const doc = await tx.doc(Next, ROOT_CONVERSATION_ID)
+    doc.dream = { branch: 9 as ConversationId, requested: 1 as EntryId, at: Date.now() }
+  }, context)
+  await f.usage(71)
+  await until(async () => (await f.record(id)).condition?.value === 71)
+  await f.settle()
+  // The crossing counts (it re-arms below 60 as usual) but fires nothing: no wake-up, no dream ask.
+  expect(await f.record(id)).toMatchObject({ fires: 0, condition: { armed: false } })
+  expect(await f.requests()).toEqual([])
+  expect(await f.harness.commit((tx) => f.host.need(Hold).held(tx, pause), context)).toBe(true)
 })
 
 it("asks @ultimate to dream on the user's Dream, prepares the next chapter, and replaces it", async () => {

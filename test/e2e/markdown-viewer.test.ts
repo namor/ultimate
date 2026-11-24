@@ -1,12 +1,12 @@
 import { fauxAssistantMessage } from '@earendil-works/pi-ai/providers/faux'
 import type { ConversationId } from '@earendil-works/pi-durable'
 import { writeFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { chromium, type Locator } from 'playwright-core'
 import { afterEach, expect, it } from 'vitest'
 import { browserBinary } from '../../extensions/browser/server.ts'
 import { context } from '../../server/harness.ts'
-import { fauxServer, post, removeTemp, temp } from '../helpers.ts'
+import { post, prebuiltServer, removeTemp, temp } from '../helpers.ts'
 
 const cleanup: (() => Promise<void>)[] = []
 afterEach(async () => {
@@ -71,9 +71,7 @@ it('opens a local Markdown chat link only through the chooser and renders the se
       longText('Report'),
     ].join('\n'),
   )
-  const server = await fauxServer({
-    ultimateRoot: resolve('.'),
-    projectRoot: resolve('.'),
+  const server = await prebuiltServer({
     userHome: home,
     localSetup: false,
     home: join(home, 'state'),
@@ -147,7 +145,7 @@ it('opens a local Markdown chat link only through the chooser and renders the se
   const canceled = await page.evaluate(() => {
     const transfer = new DataTransfer()
     transfer.items.add(new File(['synthetic only'], 'drop.md', { type: 'text/markdown' }))
-    return ['[data-markdown-viewer]', '[data-slot="dialog-overlay"]'].map((selector) => {
+    return ['[data-markdown-viewer]', '[data-slot="dialog-backdrop"]'].map((selector) => {
       const event = new DragEvent('drop', {
         bubbles: true,
         cancelable: true,

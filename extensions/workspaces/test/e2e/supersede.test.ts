@@ -79,7 +79,7 @@ async function fixture() {
   return { harness, service, id, workspace, commit, tree, conversation, directory, projectRoot }
 }
 
-async function resubmit(mergeIntent: boolean) {
+async function resubmit(mergeIntent: boolean, runtimeChanged = false) {
   const { harness, service, id, workspace, commit, tree, conversation } = await fixture()
   const other = await conversation()
   const { id: oldId } = await service.submit(id, 'None', context)
@@ -104,11 +104,13 @@ async function resubmit(mergeIntent: boolean) {
       tree,
       branch: 'ultimate-delivery/test',
       checkedAt: Date.now(),
-      runtime: advance.deliveryRuntime(),
+      runtime: runtimeChanged ? 'old-runtime' : advance.deliveryRuntime(),
       stage: 'blocked',
-      cause: 'check-failed',
+      cause: runtimeChanged ? 'runtime' : 'check-failed',
       resumeStage: 'ci',
-      reason: 'Required GitHub check verify: failure',
+      reason: runtimeChanged
+        ? 'Local verification ran on another runtime'
+        : 'Required GitHub check verify: failure',
       pr: 33,
       url: 'https://github.com/example/my-app/pull/33',
       publishApproved: true,
@@ -120,7 +122,7 @@ async function resubmit(mergeIntent: boolean) {
   const assessment = {
     risk: 'low' as const,
     review: 'reviewer #9 approved',
-    reviewedTree: await commit('replacement tip'),
+    reviewedTree: runtimeChanged ? tree : await commit('replacement tip'),
   }
   const { id: newId } = await service.submit(id, 'None', context, assessment)
   const index = (await harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
@@ -209,6 +211,19 @@ it('rebuilds with the renewed review and without the public copy its owner withd
   expect(payload.body).toContain('Risk: high')
   expect(payload.body).toContain(rebuilt.candidate)
   expect(payload.body).toContain(tree)
+})
+
+it('supersedes a runtime-blocked delivery on the same tip and clears its active approvals', async () => {
+  const { index, oldId, newId, assessment } = await resubmit(false, true)
+  const old = index.results[oldId]
+  expect(newId).not.toBe(oldId)
+  expect(old.delivery?.approvals).toEqual([
+    { action: 'publish', at: expect.any(Number), by: 'user' },
+  ])
+  const replacement = index.queue.find((item) => item.id === newId)!
+  expect(replacement).toMatchObject({ tip: old.tip, state: 'queued', assessment })
+  expect(replacement.delivery).toBeUndefined()
+  expect(replacement.approvals).toBeUndefined()
 })
 
 it('queues the replacement behind a delivery with an uncertain merge', async () => {

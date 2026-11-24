@@ -63,7 +63,7 @@ export const UserInputEvent = defineEvent<
     submission?: number
     message?: number
     length: InputCharacterCount
-  } & Partial<Device>
+  } & Partial<UiAttribution>
 >('user.input')
 
 export const NavigatedEvent = defineEvent<

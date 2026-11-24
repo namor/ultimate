@@ -9,11 +9,11 @@ import type { ActionContext } from '../server/actions.ts'
 import type { ExtensionHost } from '../server/extensions.ts'
 import { Goals } from '../extensions/goal/server.ts'
 import { Standing } from '../extensions/subagents/api.ts'
-import { actions, userActions } from '../extensions/workspaces/server.ts'
+import { actions, initializeApprovalHistory, userActions } from '../extensions/workspaces/server.ts'
 import { deliveryRuntime } from '../extensions/workspaces/advance.ts'
-import { park, pick } from '../extensions/workspaces/delivery.ts'
+import { park, pick, waits } from '../extensions/workspaces/delivery.ts'
 import type { Delivery } from '../extensions/workspaces/delivery.ts'
-import { reportBlocked } from '../extensions/workspaces/lander.ts'
+import { pruneLanderResults, reportBlocked } from '../extensions/workspaces/lander.ts'
 import { Workspaces } from '../extensions/workspaces/workspaces.ts'
 import { UserInputEvent } from '../shared/events.ts'
 import { eventHost, temp } from './helpers.ts'
@@ -27,7 +27,7 @@ const candidate = 'a'.repeat(40)
 const tree = 'c'.repeat(40)
 
 /** A harness with @ultimate registered, a branch, and one submission awaiting its medium-risk merge approval. */
-async function fixture() {
+async function fixture(risk: Delivery['risk'] = 'medium') {
   const home = await temp('ultimate-delivery-approval-')
   const prepared = await prepareHarness({
     home,
@@ -39,13 +39,16 @@ async function fixture() {
   hosts.push(opened)
   const resumed: string[] = []
   const events = eventHost(() => opened.harness, 'delivery-approval')
+  let standingAvailable = true
   const host = {
     ...prepared,
     harness: () => opened.harness,
     eventLog: events.eventLog,
     doc: (kind: string) =>
       kind === Standing.definition.kind
-        ? Standing
+        ? standingAvailable
+          ? Standing
+          : undefined
         : kind === Goals.definition.kind
           ? Goals
           : undefined,
@@ -67,7 +70,7 @@ async function fixture() {
       checks: ['verify'],
       requiredChecks: ['verify'],
     },
-    risk: 'medium',
+    risk,
     review: 'fixture',
     baseline: 'b'.repeat(40),
     candidate,
@@ -75,8 +78,8 @@ async function fixture() {
     branch: 'ultimate-delivery/test',
     checkedAt: Date.now(),
     runtime: deliveryRuntime(),
-    stage: 'merge',
-    pr: 3,
+    stage: risk === 'high' ? 'publish' : 'merge',
+    ...(risk === 'high' ? {} : { pr: 3 }),
   }
   // A user input in @ultimate's conversation before the submission, then the submission's `at` entry.
   const earlier = await opened.harness.commit(async (tx) => {
@@ -108,7 +111,11 @@ async function fixture() {
   const entry = (
     conversationId: ConversationId,
     kind: string,
-    options: { data?: JsonValue; typed?: boolean | 'message' | 'voice' } = {},
+    options: {
+      data?: JsonValue
+      typed?: boolean | 'message' | 'voice'
+      source?: ActionContext['source']
+    } = {},
   ) =>
     opened.harness.commit(async (tx) => {
       const placed = await tx.appendEntry(conversationId, {
@@ -125,27 +132,81 @@ async function fixture() {
             : { message: (options.data as { id: number }).id }),
           length: 8,
           // A voice-forwarded answer has no browser behind it; the composer and answer card always do.
-          ...(options.typed === 'voice' ? {} : { device: 'desktop/chrome' }),
+          ...(options.typed === 'voice'
+            ? {}
+            : { source: options.source ?? 'person', device: 'desktop/chrome' }),
         })
       return placed.id
     }, context)
+  await initializeApprovalHistory(host)
   const queued = async () =>
     (await opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!.queue.find(
       (item) => item.id === 'submission',
     )!.delivery!
   const call = (
-    ctx: Partial<Pick<ActionContext, 'conversationId' | 'device'>>,
+    ctx: Partial<Pick<ActionContext, 'conversationId' | 'device' | 'origin' | 'source'>>,
     args: Record<string, unknown> = {},
   ) =>
     actions.delivery({ id: 'submission', candidate, tree, action: 'merge', ...args }, {
       host,
       signal: new AbortController().signal,
+      origin: ctx.device ? 'ui' : 'agent',
+      source: ctx.device ? 'person' : 'agent',
       ...ctx,
     } as ActionContext)
-  return { opened, host, ultimate, branch, submitter, earlier, entry, queued, call }
+  return {
+    opened,
+    host,
+    ultimate,
+    branch,
+    submitter,
+    earlier,
+    entry,
+    queued,
+    call,
+    standingAvailable: (available: boolean) => {
+      standingAvailable = available
+    },
+  }
 }
 
 describe('delivery approval', () => {
+  it('records one explicit high-risk approval for both writes, bound to the candidate and tree', async () => {
+    const f = await fixture('high')
+    const click = { device: { device: 'desktop/chrome' } } as Pick<ActionContext, 'device'>
+    await expect(f.call(click, { action: 'approve-pr', tree: 'd'.repeat(40) })).rejects.toThrow(
+      'candidate changed',
+    )
+    await expect(
+      f.call(click, { action: 'approve-pr', candidate: 'd'.repeat(40) }),
+    ).rejects.toThrow('candidate changed')
+    await f.call(click, { action: 'approve-pr' })
+    await expect(f.call(click, { action: 'approve-pr' })).rejects.toThrow('stage changed')
+    expect(await f.queued()).toMatchObject({
+      publishApproved: true,
+      mergeApproved: true,
+      approvals: [{ action: 'approve-pr', by: 'user', candidate }],
+    })
+  })
+
+  it('never turns publication-only approval or its instruction into merge authority', async () => {
+    const f = await fixture('high')
+    const ctx = { conversationId: f.ultimate }
+    const instruction = await f.entry(f.ultimate, 'pi.user', { typed: true })
+    await f.call(ctx, { action: 'publish', instruction })
+    const newer = await f.entry(f.ultimate, 'pi.user', { typed: true })
+    await expect(f.call(ctx, { action: 'approve-pr', instruction: newer })).rejects.toThrow(
+      'stage changed',
+    )
+    await f.opened.harness.commit(async (tx) => {
+      const d = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue[0].delivery!
+      d.stage = 'merge'
+      d.pr = 3
+    }, context)
+    await expect(f.call(ctx, { instruction })).rejects.toThrow('already decided this delivery')
+    expect((await f.queued()).mergeApproved).toBeUndefined()
+  })
+
   it('is no longer reserved for the browser', () => {
     expect(userActions).not.toContain('delivery')
   })
@@ -166,6 +227,35 @@ describe('delivery approval', () => {
         candidate,
       },
     ])
+  })
+
+  it.each(['agent', 'app'] as const)(
+    'does not assign delivery authority to a %s UI write',
+    async (source) => {
+      const f = await fixture()
+      const instruction = await f.entry(f.ultimate, 'pi.user', { typed: true })
+      await expect(
+        f.call(
+          {
+            origin: 'ui',
+            source,
+            conversationId: f.ultimate,
+            device: { device: 'desktop/chrome' },
+          },
+          { instruction },
+        ),
+      ).rejects.toThrow('requires a person or the responsible conversation agent')
+      expect((await f.queued()).approvals).toBeUndefined()
+    },
+  )
+
+  it('refuses a recorded app input as a person’s instruction', async () => {
+    const f = await fixture()
+    const instruction = await f.entry(f.ultimate, 'pi.user', { typed: true, source: 'app' })
+    await expect(f.call({ conversationId: f.ultimate }, { instruction })).rejects.toThrow(
+      'not one written in their name',
+    )
+    expect((await f.queued()).approvals).toBeUndefined()
   })
 
   it("records the user's own click without an instruction", async () => {
@@ -288,7 +378,41 @@ describe('delivery approval', () => {
       'already decided another delivery',
     )
     expect((await f.queued()).mergeApproved).toBeUndefined()
+    await f.opened.harness.commit(async (tx) => {
+      const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+      for (let n = 0; n < 50; n++) {
+        const { delivery: _delivery, ...outcome } = index.results.other
+        index.results[`newer-${n}`] = outcome
+      }
+      pruneLanderResults(index)
+      expect(index.results.other).toBeUndefined()
+    }, context)
+    await expect(f.call({ conversationId: f.ultimate }, { instruction })).rejects.toThrow(
+      'Instruction is too old',
+    )
+    expect((await f.queued()).mergeApproved).toBeUndefined()
   })
+
+  it.each([true, false])(
+    'requires fresh instruction after upgrade (standing registry ready at boot: %s)',
+    async (availableAtBoot) => {
+      const f = await fixture('high')
+      const old = await f.entry(f.ultimate, 'pi.user', { typed: true })
+      await f.opened.harness.commit(async (tx) => {
+        delete (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).instructionFloor
+      }, context)
+      f.standingAvailable(availableAtBoot)
+      await initializeApprovalHistory(f.host)
+      f.standingAvailable(true)
+      const ctx = { conversationId: f.ultimate }
+      await expect(f.call(ctx, { action: 'approve-pr', instruction: old })).rejects.toThrow(
+        'Instruction is too old',
+      )
+      const fresh = await f.entry(f.ultimate, 'pi.user', { typed: true })
+      await f.call(ctx, { action: 'approve-pr', instruction: fresh })
+      expect((await f.queued()).mergeApproved).toBe(true)
+    },
+  )
 
   it('refuses @ultimate while a hands-off goal is open', async () => {
     const f = await fixture()
@@ -309,13 +433,15 @@ describe('delivery approval', () => {
 
   describe('standing approval', () => {
     /** The user's typed grant, then a submission after it awaiting merge. */
-    const granted = async (hours?: number) => {
-      const f = await fixture()
+    const granted = async (hours?: number, risk?: Delivery['risk']) => {
+      const f = await fixture(risk)
       const instruction = await f.entry(f.ultimate, 'pi.user', { typed: true })
       await actions.standing({ instruction, ...(hours ? { hours } : {}) }, {
         host: f.host,
         conversationId: f.ultimate,
         signal: new AbortController().signal,
+        origin: 'agent',
+        source: 'agent',
       } as unknown as ActionContext)
       return { ...f, instruction }
     }
@@ -325,6 +451,25 @@ describe('delivery approval', () => {
       f.opened.harness.commit(async (tx) => {
         change((await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue[0].delivery!)
       }, context)
+
+    it('does not convert a grant into combined approval or withdraw explicit combined approval', async () => {
+      const f = await granted(undefined, 'high')
+      const ctx = { conversationId: f.ultimate }
+      await expect(approve(f, { action: 'approve-pr' })).rejects.toThrow('publish and merge only')
+      await expect(
+        f.call(ctx, { action: 'approve-pr', instruction: f.instruction }),
+      ).rejects.toThrow('newer than the standing grant')
+      const instruction = await f.entry(f.ultimate, 'pi.user', { typed: true })
+      await f.call(ctx, { action: 'approve-pr', instruction })
+      await actions.standing({ revoke: true }, {
+        host: f.host,
+        ...ctx,
+        signal: new AbortController().signal,
+        origin: 'agent',
+        source: 'agent',
+      } as ActionContext)
+      expect(await f.queued()).toMatchObject({ publishApproved: true, mergeApproved: true })
+    })
 
     it('lets @ultimate approve verified, reviewed, CI-green work and records the grant and reason', async () => {
       const f = await granted()
@@ -378,6 +523,8 @@ describe('delivery approval', () => {
         host: f.host,
         device: { device: 'desktop/chrome' },
         signal: new AbortController().signal,
+        origin: 'ui',
+        source: 'person',
       } as ActionContext)
       await expect(approve(f)).rejects.toThrow('No standing approval')
       const renew = (instruction: number) =>
@@ -385,6 +532,8 @@ describe('delivery approval', () => {
           host: f.host,
           conversationId: f.ultimate,
           signal: new AbortController().signal,
+          origin: 'agent',
+          source: 'agent',
         } as unknown as ActionContext)
       await expect(renew(f.instruction)).rejects.toThrow('newer instruction')
       await renew(await f.entry(f.ultimate, 'pi.user', { typed: true }))
@@ -401,7 +550,13 @@ describe('delivery approval', () => {
         .standing!
       expect(grant.until - grant.at).toBe(24 * 3600_000)
       const ctx = (extra: object) =>
-        ({ host: f.host, signal: new AbortController().signal, ...extra }) as ActionContext
+        ({
+          host: f.host,
+          signal: new AbortController().signal,
+          origin: 'agent',
+          source: 'agent',
+          ...extra,
+        }) as ActionContext
       const typed = await f.entry(f.ultimate, 'pi.user', { typed: true })
       await expect(
         actions.standing({ instruction: typed }, ctx({ conversationId: f.branch })),
@@ -419,6 +574,8 @@ describe('delivery approval', () => {
           host: f.host,
           conversationId: f.ultimate,
           signal: new AbortController().signal,
+          origin: 'agent',
+          source: 'agent',
         } as unknown as ActionContext)
       const older = await f.entry(f.ultimate, 'pi.user', { typed: true })
       const used = await f.entry(f.ultimate, 'pi.user', { typed: true })
@@ -435,12 +592,46 @@ describe('delivery approval', () => {
         host: f.host,
         conversationId: f.ultimate,
         signal: new AbortController().signal,
+        origin: 'agent',
+        source: 'agent',
       } as unknown as ActionContext)
       const delivery = await f.queued()
       expect(delivery.mergeApproved).toBeUndefined()
       // The audit record stays.
       expect(delivery.approvals?.[0]).toMatchObject({ standing: f.instruction })
     })
+
+    it.each(['new revoke', 'already revoked'])(
+      'withdraws unused standing approval from a legacy matching-ref record: %s',
+      async (mode) => {
+        const f = await granted(undefined, 'high')
+        await approve(f, { action: 'publish' })
+        await set(f, (d) => {
+          d.published = true
+          d.stage = 'pr'
+        })
+        if (mode === 'already revoked') {
+          await f.opened.harness.commit(async (tx) => {
+            ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).standing!.revokedAt = Date.now()
+          }, context)
+          await initializeApprovalHistory(f.host)
+        } else {
+          await actions.standing({ revoke: true }, {
+            host: f.host,
+            conversationId: f.ultimate,
+            signal: new AbortController().signal,
+            origin: 'agent',
+            source: 'agent',
+          } as ActionContext)
+        }
+        const d = await f.queued()
+        expect(d.publishApproved).toBeUndefined()
+        expect(waits(d)).toEqual({ on: 'publish' })
+        const instruction = await f.entry(f.ultimate, 'pi.user', { typed: true })
+        await f.call({ conversationId: f.ultimate }, { action: 'approve-pr', instruction })
+        expect(waits(await f.queued())).toBeUndefined()
+      },
+    )
 
     it('a landing entry keeps its repository slot through a revoke until its lander parks it', async () => {
       const f = await granted()
@@ -463,6 +654,8 @@ describe('delivery approval', () => {
         host: f.host,
         conversationId: f.ultimate,
         signal: new AbortController().signal,
+        origin: 'agent',
+        source: 'agent',
       } as unknown as ActionContext)
       const index = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
       expect(index.queue[0]).toMatchObject({ state: 'landing', delivery: { slot: true } })
@@ -486,6 +679,8 @@ describe('delivery approval', () => {
         host: f.host,
         conversationId: f.ultimate,
         signal: new AbortController().signal,
+        origin: 'agent',
+        source: 'agent',
       } as unknown as ActionContext)
       const index = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
       expect(index.queue[0]).toMatchObject({ state: 'waiting' })
@@ -507,6 +702,8 @@ describe('delivery approval', () => {
         host: f.host,
         conversationId: f.ultimate,
         signal: new AbortController().signal,
+        origin: 'agent',
+        source: 'agent',
       } as unknown as ActionContext)
       expect((await f.queued()).mergeApproved).toBeUndefined()
     })

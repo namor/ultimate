@@ -25,6 +25,7 @@ import {
   ReadThread,
   Refine,
   RevisionCard,
+  PlanningThreadChanged,
   SendRevision,
   SetPlan,
 } from './refs.ts'
@@ -190,6 +191,7 @@ function requestTask(host: ExtensionHost) {
             ...(answer ? { answer } : { error: output }),
             ...(receipt?.usage ? { input: receipt.usage.input, output: receipt.usage.output } : {}),
           })
+          await host.emit(tx, PlanningThreadChanged, { fork })
           await conversations.accountResponse(tx, runtime.conversationId, receipt)
           return finish(
             answer
@@ -203,12 +205,13 @@ function requestTask(host: ExtensionHost) {
       runtime.commit(async (tx) => {
         const { fork, index } = task.input
         ;(await tx.doc(Planning, fork)).turns[index].error = 'Planning stopped'
+        await host.emit(tx, PlanningThreadChanged, { fork })
         return { status: 'terminal', outcome: { status: 'aborted' } }
       }, ctx),
   })
 }
 
-function revisionTask() {
+function revisionTask(host: ExtensionHost) {
   return defineTask<{ fork: ConversationId; revision: number }, { phase: 'send' }, null>({
     name: 'automatic-plan.revision',
     version: 1,
@@ -232,6 +235,7 @@ function revisionTask() {
           })
           thread.sent = revision
           delete thread.sending
+          await host.emit(tx, PlanningThreadChanged, { fork })
           return finish(null)
         }, ctx)
       },
@@ -239,7 +243,10 @@ function revisionTask() {
     abort: ({ input: { fork, revision } }, runtime, ctx) =>
       runtime.commit(async (tx) => {
         const thread = await tx.doc(Planning, fork)
-        if (thread.sending === revision) delete thread.sending
+        if (thread.sending === revision) {
+          delete thread.sending
+          await host.emit(tx, PlanningThreadChanged, { fork })
+        }
         return { status: 'terminal', outcome: { status: 'aborted' } }
       }, ctx),
   })
@@ -414,7 +421,7 @@ export const actions = {
       if (thread.sent === revision || thread.sending === revision) return
       thread.sending = revision
       await tx.createTask(
-        revisionTask(),
+        revisionTask(host),
         { fork, revision },
         { conversationId: id, ownership: { kind: 'conversation' }, background: true },
       )
@@ -427,7 +434,7 @@ export const actions = {
 export default (host: ExtensionHost) =>
   defineExtension({
     name: 'automatic-plan',
-    tasks: [requestTask(host), revisionTask()],
+    tasks: [requestTask(host), revisionTask(host)],
     sections: [
       section('automatic-plan', async ({ conversationId }, ctx) => {
         if (!(await host.harness().snapshot(Branch, conversationId, ctx))?.branch) return undefined

@@ -1,9 +1,9 @@
 The Agent surface's sidebar and, on phones, the title bar's @ultimate button: talk to @ultimate, see each root's tree with what
 is in flight and what landed, and switch, rename, compact, conclude and resume conversations. It is the UI that brings
 the core together, so it sits at the top of the core tier: it reads conversations, workspaces, subagents, lineage and
-messages, and shows what optional extensions provide through points (`conversations/ui.tsx`: a working phase, a plan task).
+messages, and shows what optional extensions provide through points (`conversations/ui.solid.tsx`: a working phase, a plan task).
 Its UI state keeps the keys it had as part of conversations (`ext.conversations.*`).
-Rows under @ultimate's come from the `sidebar.under-ultimate` point (`ui.tsx`; side-chat fills it with open side
+Rows under @ultimate's come from the `sidebar.under-ultimate` point (`points.ts`; side-chat fills it with open side
 chats). The conversations the `sidebar.unlisted` point names (side-chat names every side chat) are left out of every
 other list (`listed.ts`).
 
@@ -13,7 +13,7 @@ its definition's `icon` and `tint` for any other resident, else a bot — with a
 waits on you). Then its display name (its definition's `title`, else the ULTIMATE wordmark for @ultimate, `Lander`, or
 the name capitalised) with `@name` small and muted. The same mark sits in the title bar's button and before standing senders in chat bubbles.
 
-The **project** heads the sidebar (`project.tsx`): a slim bar of its colour (`ProjectSwatch`, `tile.tsx`, the same
+The **project** heads the sidebar (`project.solid.tsx`): a slim bar of its colour (`ProjectSwatch`, `ui.solid.tsx`, the same
 the project rail draws), its display name (the folder prettified by `prettyName`:
 `omarchy-config` → `Omarchy Config`) and under it its path from home, small and muted (`#<worktree>` in a branch
 checkout, `preview · …` on a preview; the full path on hover). Under them, when `origin` is on GitHub, its
@@ -22,7 +22,7 @@ checkout, `preview · …` on a preview; the full path on hover). Under them, wh
 right folds the root's **Memory** row under it (folded by default, kept in `ext.conversations.projectOpen`); folded,
 a quiet brain and memory count beside the chevron opens Memory instead.
 
-The sidebar also stands beside lineage's Memory surface, so rows open conversations through `useShell` (`state.tsx`),
+The sidebar also stands beside lineage's Memory surface, so rows open conversations through `shell.switchConversation` (`state.solid.tsx`),
 which brings the Agent surface back; beside Memory no conversation row is highlighted, the Memory row (or the folded
 block's brain) is.
 
@@ -33,9 +33,9 @@ message. Clicking it opens @ultimate on the Agent surface through `subagents.sta
 its conversation exists. Below it, an Agents group lists the lander first, then the other ownerless top-level standing
 agents (label `agent`) by ID. These rows are never concluded or hidden and show no summary or feature:
 Each lander's row names its source: `Project checkout` for the running project, otherwise the source folder's name.
-The full path is available on hover, to screen readers and in the log's read-only footer, which explains why each
-source has its own log. @lander shows its state (`landing` or `idle`), `queue N` while submissions wait,
-and `last <age>` for its latest landing (what landed is its Landed section's first row); other agents show `working` or `idle` and the age. Their menu only
+The full path is available on hover and to screen readers. @lander shows its state (`landing`, `waiting on delivery`
+or `idle`), `queue N` for queued submissions, and `last <age>` for its latest landing. Other agents show `working`
+or `idle` and the age. Their menu only
 compacts the context; they are never renamed, cleared or concluded.
 
 Beyond a phone the title bar's ULTIMATE wordmark (`titlebar.brand`) opens @ultimate too.
@@ -44,7 +44,7 @@ and lists them (`extensions/inbox`). On
 phones, where the sidebar is hidden, the title bar's `@ultimate` button (`titlebar.left`) opens @ultimate from every
 surface instead, with the same mark: its dot pulses while @ultimate works and is amber while questions wait.
 
-Every section of the sidebar folds the same way (`Section`, `section.tsx`): a quiet mono heading with a chevron and
+Every section of the sidebar folds the same way (`Section`, `section.solid.tsx`): a quiet mono heading with a chevron and
 a count bubble, open by default, its fold state kept per section in `ext.conversations.closedSections`; the Scheduled
 section of the `sidebar.top` slot draws the same heading. Top to bottom:
 
@@ -60,7 +60,7 @@ section of the `sidebar.top` slot draws the same heading. Top to bottom:
   landing (`CommitCount` from workspaces). The first five show; `+N more` unfolds the rest
   (`ext.conversations.landedAll`). Landings are read again whenever a root's token count changes, which every new
   entry does.
-- **Memory** (inside the project block): one row per root (`MemoryRow`, `root.tsx`) with a brain mark, the brief's size (what every new branch
+- **Memory** (inside the project block): one row per root (`MemoryRow`, `root.solid.tsx`) with a brain mark, the brief's size (what every new branch
   starts from; the whole context's while it has no memories) and its memories counted by kind (`4 decisions · 5 facts
   · 3 lessons`). Clicking it opens lineage's **Memory** surface, grouped into decisions, facts and lessons (empty
   until @ultimate remembers something), and the row shows selected while it is open. The project path above it opens the root's tally, the browsable history (every
@@ -68,10 +68,11 @@ section of the `sidebar.top` slot draws the same heading. Top to bottom:
 - The `sidebar.top` slot: background work that optional extensions contribute without the sidebar importing them,
   automations' **Scheduled**, up to five compact rows with `+N more`, and its own
   bottom rule. Each hides while it has nothing active.
-- **In flight · N** (`InFlight`, `root.tsx`): every open branch of every tree, newest input first. A branch is open
+- **In flight · N** (`InFlight`, `root.solid.tsx`): every open branch of every tree, newest input first. A branch is open
   until it is concluded or it landed after its latest input (the lander's results, or a root landing note from it;
   a landed branch that gets new work is open again). Each shows its title, its feature tag, a state (`submitted` or
-  `landing` while the lander has it, the working phase while it works, brand-colored `waits on <target>` for an
+  `landing` while the lander has it, `needs review`, `delivery blocked` or `waits on you` when delivery is waiting,
+  the working phase while it works, brand-colored `waits on <target>` for an
   agent, remote or timer dependency, amber `waits on you`, red `failed`, else `idle`) and its age; clicking opens it, and its `…` menu is the same as an Earlier row's (Rename, Compact
   context, Conclude with the pending-work check). A branch
   with a worktree also shows its work so far on a quiet line below (workspaces' `progress`): `N commits` not yet on
@@ -79,9 +80,9 @@ section of the `sidebar.top` slot draws the same heading. Top to bottom:
   `uncommitted:<id>`. A fresh worktree, or a branch without one, shows nothing. All rows are read in one call, again
   only when an agent commits (`coding-tools.committed`), a worktree's state changes or a branch's run starts or ends;
   never on a timer. When its coordinator works its current epic itself (no task linked to a subagent), a line
-  `E1 · <title>` comes first (`EpicLine`, `rows.tsx`, from plan's `conversations.epic` point): its dot pulses while
+  `E1 · <title>` comes first (`EpicLine`, `rows.solid.tsx`, from plan's `conversations.epic` point): its dot pulses while
   the coordinator runs, it reads `idle` between runs and `done` with a check once the epic is, and a click opens the
-  epic in the plan panel. Its subagents follow, one line each at any depth (`SubagentLine`, `rows.tsx`): their mark, plan
+  epic in the plan panel. Its subagents follow, one line each at any depth (`ChildRow`, `rows.solid.tsx`): their mark, plan
   chip, role and `#id`, and their state word, with the latest activity or plan task on hover.
 
 Landed branches and older conversations that are neither roots nor branches live in the collapsed "Earlier · N" group,
@@ -98,9 +99,9 @@ A solid purple dot means an unread reply, not ongoing work; only the pulsing dot
 Every row reads one state from messages’ `conversationState`, the same the System surface shows: working;
 **waits on you** (@ultimate or a branch with an open question to the user);
 **waits on <target>** (brand-colored, never on a subagent: an open agent or remote request, an enabled timer with
-its next fire time). The primary is named `@ultimate`, other conversations `#N`; when @ultimate itself waits on a
-remote, its waiting branch shows `waits on @ultimate → <project>` (one hop).
-A recorded starter alone does not make a branch wait. Rows count busy subagents and a queued landing as working
+its next fire time). The primary is named `@ultimate`, other conversations `#N`;
+when @ultimate itself waits on a remote, its waiting branch shows `waits on @ultimate → <project>` (one hop).
+Every row counts busy subagents and a queued landing as working
 (`useUnderway`), so a working tree never reads as waiting. Labels truncate with
 the full text on hover. Truly idle conversations still say `idle`; **done** (green check, subagents only: it answered, and its answer went to its parent);
 **failed** (red cross: its latest input ended unanswered); else idle. Working includes queued input. Standing rows,
@@ -122,7 +123,7 @@ Conclude releases clean, fully landed checkouts, including owned subagent checko
 unlanded commits, and busy checkouts are kept.
 Info's Workspace section shows checkouts read-only.
 
-Hovering a branch's row (In flight, Earlier, Concluded) for a moment opens its summary history (`summaries.tsx`): the
+Hovering a branch's row (In flight, Earlier, Concluded) for a moment opens its summary history (`summaries.solid.tsx`): the
 latest summary first, older ones below with their time, in a list capped in height that scrolls inside, also with ↑/↓
 while the row has focus. It reads the conversations `summaries` action only when it opens. Standing agents, roots and
 subagents have no summary, so their rows get none; touch devices have no hover and show none.

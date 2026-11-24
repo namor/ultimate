@@ -15,7 +15,7 @@ import {
 import { exec } from '../../lib/exec.ts'
 import { git, isolatable } from '../../lib/git.ts'
 import { readWorktreeSetup } from '../../lib/worktree-setup.ts'
-import { meansNone, overshadowed, settled } from '../../lib/errors.ts'
+import { isMissing, meansNone, overshadowed, settled } from '../../lib/errors.ts'
 import { needsRestart as restartNeeded } from '../../lib/layers.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { ConversationsApi } from '../conversations/api.ts'
@@ -168,13 +168,17 @@ async function workLostWithCheckout(
     ),
   }
 }
+const failure = (error: unknown) => (error instanceof Error ? error.message : String(error))
 const workHeldByRegisteredCheckout = (
   id: ConversationId,
   workspace: WorkspaceIndex['items'][string],
   registered: boolean,
 ): Promise<KeptWork> =>
   registered
-    ? workLostWithCheckout(workspace).then((work) => ({ id, ...work }))
+    ? workLostWithCheckout(workspace).then(
+        (work) => ({ id, ...work }),
+        (error: unknown) => ({ id, uncommitted: 0, unlanded: 0, reason: failure(error) }),
+      )
     : Promise.resolve({ id, uncommitted: 0, unlanded: 0 })
 async function listedBySource(workspace: WorkspaceIndex['items'][string]) {
   return (await git(workspace.source, 'worktree', 'list', '--porcelain'))
@@ -184,6 +188,7 @@ async function listedBySource(workspace: WorkspaceIndex['items'][string]) {
 async function onlyIgnored(workspace: WorkspaceIndex['items'][string]) {
   const entries = await readdir(workspace.path, { withFileTypes: true })
   if (!entries.length) return true
+  if (entries.some((entry) => entry.name === '.git')) return false
   const paths = entries.map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
   const ignored = await git(workspace.source, 'check-ignore', '--no-index', '--', ...paths).catch(
     () => '',
@@ -486,9 +491,17 @@ export function workspaces(host: Host) {
   async function recordedCheckout(id: ConversationId, context: Context) {
     const workspace = await presentCheckout(id, context)
     if (!workspace) return undefined
-    const registered = await listedBySource(workspace)
-    const potentiallyForeignFolder = !registered && workspace.state !== 'ready'
-    if (potentiallyForeignFolder) return undefined
+    const registered = await listedBySource(workspace).catch(async (error: unknown) => {
+      if (!isMissing(error) || (await onDisk(workspace.source))) throw error
+      return undefined
+    })
+    if (registered === undefined)
+      return { workspace, registered: false, reason: 'Workspace source checkout is missing' }
+    if (!registered) {
+      if (workspace.state !== 'ready') return undefined
+      if (!(await onlyIgnored(workspace)))
+        return { workspace, registered: false, reason: 'Workspace checkout is not registered' }
+    }
     return { workspace, registered }
   }
   async function progress(ids: ConversationId[], context: Context): Promise<KeptWork[]> {
@@ -507,6 +520,7 @@ export function workspaces(host: Host) {
     const result: KeptWork[] = []
     for (const id of (await candidates(ids, context)).ids) {
       const checkout = await recordedCheckout(id, context)
+      if (checkout?.reason) throw new Error(checkout.reason)
       if (!checkout?.registered) continue
       const item = await changes(id, checkout.workspace)
       if (item.uncommitted || item.unlanded) result.push(item)
@@ -554,7 +568,7 @@ export function workspaces(host: Host) {
       }
       return undefined
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
+      const reason = failure(error)
       const present = await registeredCheckout(workspace)
       await host.harness().commit(async (tx) => {
         const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).items[String(id)]
@@ -586,6 +600,10 @@ export function workspaces(host: Host) {
           return
         }
         const checkout = await recordedCheckout(id, context)
+        if (checkout?.reason) {
+          kept.push({ id, uncommitted: 0, unlanded: 0, reason: checkout.reason })
+          return
+        }
         const present = Boolean(checkout)
         const registered = Boolean(checkout?.registered)
         const item: KeptWork = present
@@ -608,26 +626,18 @@ export function workspaces(host: Host) {
               if (descendant.state !== 'removed') item.descendant = Number(child)
             }
           } while (size !== sources.size)
-          if (!item.uncommitted && !item.unlanded && !item.descendant)
+          if (!item.uncommitted && !item.unlanded && !item.reason && !item.descendant)
             index.items[String(id)].state = 'removed'
           else if (registered && index.items[String(id)].state === 'removed')
             index.items[String(id)].state = 'ready'
           return undefined
         }, context)
         if (reason) item.busy = reason
-        if (item.uncommitted || item.unlanded || item.busy || item.descendant) {
+        if (item.uncommitted || item.unlanded || item.reason || item.busy || item.descendant) {
           kept.push(item)
           return
         }
-        if (
-          !present &&
-          !(await lstat(workspace.source).catch((error: NodeJS.ErrnoException) => {
-            if (error.code !== 'ENOENT') throw error
-            return undefined
-          }))
-        )
-          return
-        if (present && !registered) await rm(workspace.path, { recursive: true, force: true })
+        if (!present && !(await onDisk(workspace.source))) return
         const remaining = await finishRemoval(id, workspace, context)
         if (remaining) kept.push(remaining)
       })
@@ -675,8 +685,10 @@ export function workspaces(host: Host) {
         const branch = record
           .find((line) => line.startsWith('branch refs/heads/'))
           ?.slice('branch refs/heads/'.length)
-        const work = await workLostWithCheckout({ path, branch: branch ?? '', target })
-        if (work.uncommitted || work.unlanded) {
+        const work = await workLostWithCheckout({ path, branch: branch ?? '', target }).catch(
+          (error: unknown) => ({ uncommitted: 0, unlanded: 0, reason: failure(error) }),
+        )
+        if (work.uncommitted || work.unlanded || work.reason) {
           kept.push(path)
           return
         }
@@ -808,7 +820,12 @@ export function workspaces(host: Host) {
       const { source, target } = index.items[String(id)]
       const idleReadBeforeWrites = await landerIdle(tx, index, source)
       const lander = await ensureLanderBeforeWrites(tx, index, source, target, path)
-      const queued = index.queue.find((item) => item.conversationId === id && item.tip === tip)
+      const queued = index.queue.find(
+        (item) =>
+          item.conversationId === id &&
+          item.tip === tip &&
+          !(item.delivery?.cause === 'runtime' && supersedes(item, { conversationId: id, target })),
+      )
       if (queued?.delivery?.stage === 'review' && assessment) {
         if (reviewedTree !== queued.delivery.tree)
           throw new Error('Review does not cover the integration candidate tree')

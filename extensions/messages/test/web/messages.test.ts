@@ -1,6 +1,6 @@
 import type { EntryRecord, EntryId, ConversationId } from '@earendil-works/pi-durable'
 import { describe, expect, it, vi } from 'vitest'
-import { accentOf } from '../../accent.tsx'
+import { accentOf } from '../../accent.ts'
 import { callerOf } from '../../caller.ts'
 import {
   answerTo,
@@ -23,11 +23,10 @@ import {
   threadRow,
   ultimateCompact,
   waitingOnUser,
-} from '../../data.tsx'
+} from '../../data.ts'
 import type { Message } from '../../refs.ts'
-import { questionsOf } from '../../waiting.tsx'
+import { questionsOf } from '../../waiting.ts'
 
-vi.mock('@/sdk', () => ({ events: { emit: vi.fn<() => void>() } }))
 vi.mock('../../../lineage/ui.tsx', async () => import('../../../lineage/refs.ts'))
 vi.mock('../../../workspaces/ui.tsx', async () => import('../../../workspaces/refs.ts'))
 vi.mock('../../../subagents/ui.tsx', async () => import('../../../subagents/refs.ts'))
@@ -420,12 +419,12 @@ describe('messages a codemode script sent', () => {
   // Identical texts from two scripts and a direct call, in different states, plus a message to a branch and one from
   // before the log recorded calls.
   const log: Message[] = [
-    { ...base, id: 1, state: 'answered', call: 'a/1' },
-    { ...base, id: 2, state: 'delivered', call: 'b/1' },
-    { ...base, id: 3, state: 'delivered', call: 'a/3', reply: false },
+    { ...base, id: 1, state: 'answered', call: 'a/c1' },
+    { ...base, id: 2, state: 'delivered', call: 'b/c1' },
+    { ...base, id: 3, state: 'delivered', call: 'a/c3', reply: false },
     { ...base, id: 4, state: 'delivered', call: 'a' },
-    { ...base, id: 5, state: 'sent', to: 4 as ConversationId, call: 'a/4' },
-    { ...base, id: 6, state: 'delivered', call: 'ab/1' },
+    { ...base, id: 5, state: 'sent', to: 4 as ConversationId, call: 'a/c4' },
+    { ...base, id: 6, state: 'delivered', call: 'ab/c1' },
     { ...base, id: 7, state: 'delivered' },
   ]
   it('binds each identical text to the call that sent it, in the order sent', () => {
@@ -578,8 +577,8 @@ describe('conversation state', () => {
     ).toBe('done')
   })
 
-  it('does not show an open branch as waiting just because it has a starter', () => {
-    const branch = { id: 5, kind: 'other' as const, starter: 3 }
+  it('does not show an idle branch as waiting after it reports to its starter', () => {
+    const branch = { id: 5, kind: 'other' as const }
     const log = messagesLog({
       from: 5 as ConversationId,
       to: 3 as ConversationId,
@@ -587,13 +586,18 @@ describe('conversation state', () => {
       report: true,
     })
     expect(conversationState(branch, log)).toBe('idle')
-    expect(conversationState({ ...branch, concludedSince: Infinity }, log)).toBe('idle')
-    expect(conversationState({ ...branch, concludedSince: 200 }, log)).toBe('idle')
-    expect(conversationState({ id: 5, kind: 'other' }, log)).toBe('idle')
+    expect(waitLabel(conversationWait(branch, log), 3)).toBeUndefined()
     expect(conversationState({ ...branch, runState: 'error' }, log)).toBe('failed')
   })
 
-  it('shows a delivered branch report to its recipient, not a queued report or human question', () => {
+  it('shows a branch waiting on @ultimate while its reply-expected message to it is open', () => {
+    const branch = { id: 5, kind: 'other' as const }
+    const log = messagesLog({ from: 5 as ConversationId, to: 3 as ConversationId })
+    expect(conversationState(branch, log)).toBe('awaiting')
+    expect(waitLabel(conversationWait(branch, log), 3)).toBe('waits on @ultimate')
+  })
+
+  it('shows a delivered branch request to its recipient, not a queued request or human question', () => {
     const report = { from: 5 as ConversationId, to: 3 as ConversationId, report: true as const }
     const requests = (log: ReturnType<typeof messagesLog>) => openMessages(log.messages, 3).requests
     expect(requests(messagesLog(report))).toHaveLength(1)

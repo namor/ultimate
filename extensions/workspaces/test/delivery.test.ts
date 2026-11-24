@@ -163,84 +163,148 @@ describe('PR delivery', () => {
     },
   )
 
-  it('checks the exact candidate and merges through its PR without pushing the target', async () => {
-    vi.mocked(git).mockClear()
-    const copy = {
-      title: 'Keep the original run on retry',
-      body: 'Retry now returns the original run.',
-    }
-    let saved: Delivery = { ...makeDelivery(), pullRequest: copy }
-    let created = false
-    let done = false
-    const writes: { intent: boolean | undefined; fields?: Record<string, string> }[] = []
-    vi.mocked(git).mockImplementation(async (...args) => {
-      if (args.includes('get-url')) return 'git@github.com:example/my-app.git'
-      if (args.includes('ls-remote')) throw new Error('Fetch mirror is not authoritative')
-      return ''
-    })
-    const api: Github = async (path, method, fields) => {
+  it.each(['low', 'medium', 'high'] as const)(
+    '%s risk merges the exact checked candidate only with the required approval',
+    async (risk) => {
+      vi.mocked(git).mockClear()
+      const copy = {
+        title: 'Keep the original run on retry',
+        body: 'Retry now returns the original run.',
+      }
+      let saved: Delivery = { ...makeDelivery(), risk, pullRequest: copy }
+      let checkHead = risk === 'high' ? baseline : candidate
+      let created = false
+      let done = false
+      const writes: { intent: boolean | undefined; fields?: Record<string, string> }[] = []
+      vi.mocked(git).mockImplementation(async (...args) => {
+        if (args.includes('get-url')) return 'git@github.com:example/my-app.git'
+        if (args.includes('ls-remote')) throw new Error('Fetch mirror is not authoritative')
+        return ''
+      })
+      const api: Github = async (path, method, fields) => {
+        if (path === baseRef) return refs('main', baseline) as never
+        if (path === deliveryRef) return [] as never
+        if (path.includes('/pulls?')) return (created ? [pull()] : []) as never
+        if (path.endsWith('/pulls') && method === 'POST') {
+          writes.push({ intent: saved.createIntent, fields })
+          created = true
+          return pull() as never
+        }
+        if (path.endsWith('/protection')) return protection as never
+        if (path.includes('/check-runs'))
+          return {
+            total_count: 1,
+            check_runs: [
+              {
+                name: 'verify',
+                head_sha: checkHead,
+                status: 'completed',
+                conclusion: 'success',
+                app: { id: 1, slug: 'github-actions' },
+              },
+            ],
+          } as never
+        if (path.endsWith('/merge')) {
+          writes.push({ intent: saved.mergeIntent, fields })
+          done = true
+          return { merged: true, sha: merged } as never
+        }
+        return pull(done) as never
+      }
+      const save = async (d: Delivery) => {
+        saved = structuredClone(d)
+      }
+      const signal = new AbortController().signal
+      const steps: string[] = []
+      const advance = async () => {
+        await advanceDelivery('/project', structuredClone(saved), save, signal, api)
+        steps.push(`${saved.stage}:${writes.length}`)
+      }
+      if (risk === 'high') {
+        await advance()
+        saved.publishApproved = saved.mergeApproved = true
+      }
+      await advance()
+      await advance()
+      await advance()
+      if (risk === 'high') {
+        checkHead = candidate
+        await advance()
+      }
+      if (risk === 'medium') {
+        await advance()
+        saved.mergeApproved = true
+      }
+      await advance()
+      await advance()
+      expect(steps).toEqual(
+        {
+          low: ['pr:0', 'ci:1', 'merge:1', 'merge:2', 'merged:2'],
+          medium: ['pr:0', 'ci:1', 'merge:1', 'merge:1', 'merge:2', 'merged:2'],
+          high: ['publish:0', 'pr:0', 'ci:1', 'ci:1', 'merge:1', 'merge:2', 'merged:2'],
+        }[risk],
+      )
+      expect(saved).toMatchObject({ stage: 'merged', candidate, merged, pr: 3 })
+      expect(writes).toEqual([
+        {
+          intent: true,
+          fields: expect.objectContaining({
+            title: copy.title,
+            body: expect.stringContaining(copy.body),
+          }),
+        },
+        { intent: true, fields: { sha: candidate, merge_method: 'merge' } },
+      ])
+      expect(writes[0].fields?.body).toContain(tree)
+      expect(writes[0].fields?.body).not.toContain(saved.review)
+      const pushes = vi.mocked(git).mock.calls.filter((args) => args.includes('push'))
+      expect(pushes).toHaveLength(1)
+      expect(pushes[0].slice(-2)).toEqual([
+        'origin',
+        `${candidate}:refs/heads/ultimate-delivery/test`,
+      ])
+      expect(vi.mocked(git).mock.calls).toContainEqual([
+        '/project',
+        'remote',
+        'get-url',
+        '--push',
+        '--all',
+        'origin',
+      ])
+    },
+  )
+
+  it('does not consume standing approval by reading a matching ref', async () => {
+    const waiting: Delivery = { ...makeDelivery(), risk: 'high', publishApproved: true }
+    let saved = structuredClone(waiting)
+    let branchExists = true
+    const writes: string[] = []
+    const api: Github = async (path, method) => {
+      if (method) writes.push(method)
       if (path === baseRef) return refs('main', baseline) as never
-      if (path === deliveryRef) return [] as never
-      if (path.includes('/pulls?')) return (created ? [pull()] : []) as never
-      if (path.endsWith('/pulls') && method === 'POST') {
-        writes.push({ intent: saved.createIntent, fields })
-        created = true
-        return pull() as never
-      }
-      if (path.endsWith('/protection')) return protection as never
-      if (path.includes('/check-runs'))
-        return {
-          total_count: 1,
-          check_runs: [
-            {
-              name: 'verify',
-              head_sha: candidate,
-              status: 'completed',
-              conclusion: 'success',
-              app: { id: 1, slug: 'github-actions' },
-            },
-          ],
-        } as never
-      if (path.endsWith('/merge')) {
-        writes.push({ intent: saved.mergeIntent, fields })
-        done = true
-        return { merged: true, sha: merged } as never
-      }
-      return pull(done) as never
+      return (path === deliveryRef && branchExists ? refs(saved.branch, candidate) : []) as never
     }
+    vi.mocked(git).mockClear().mockResolvedValue('git@github.com:example/my-app.git')
     const save = async (d: Delivery) => {
-      saved = structuredClone(d)
+      if (d.createIntent) {
+        delete saved.publishApproved
+        throw new Error('Publish approval was withdrawn; approve again to publish')
+      }
+      saved = { ...d, publishApproved: saved.publishApproved }
     }
     const signal = new AbortController().signal
-    for (let transition = 0; transition < 6; transition++)
-      await advanceDelivery('/project', saved, save, signal, api)
-    expect(saved).toMatchObject({ stage: 'merged', candidate, merged, pr: 3 })
-    expect(writes).toEqual([
-      {
-        intent: true,
-        fields: expect.objectContaining({
-          title: copy.title,
-          body: expect.stringContaining(copy.body),
-        }),
-      },
-      { intent: true, fields: { sha: candidate, merge_method: 'merge' } },
-    ])
-    expect(writes[0].fields?.body).toContain(tree)
-    expect(writes[0].fields?.body).not.toContain(saved.review)
-    const pushes = vi.mocked(git).mock.calls.filter((args) => args.includes('push'))
-    expect(pushes).toHaveLength(1)
-    expect(pushes[0].slice(-2)).toEqual([
-      'origin',
-      `${candidate}:refs/heads/ultimate-delivery/test`,
-    ])
-    expect(vi.mocked(git).mock.calls).toContainEqual([
-      '/project',
-      'remote',
-      'get-url',
-      '--push',
-      '--all',
-      'origin',
-    ])
+    await advanceDelivery('/project', saved, save, signal, api)
+    expect(saved).toMatchObject({ stage: 'pr', published: true })
+    expect(saved.publishIntent).toBeUndefined()
+    await advanceDelivery('/project', saved, save, signal, api)
+    expect(saved).toMatchObject({ stage: 'blocked', resumeStage: 'pr' })
+    expect(saved.createIntent).toBeUndefined()
+    saved.stage = 'pr'
+    await advanceDelivery('/project', saved, save, signal, api)
+    branchExists = false
+    await advanceDelivery('/project', { ...waiting, publishApproved: undefined }, save, signal, api)
+    expect(writes).toEqual([])
+    expect(vi.mocked(git).mock.calls.some((args) => args.includes('push'))).toBe(false)
   })
 
   it('refuses publication to a remote with more than one push destination', async () => {
