@@ -47,7 +47,13 @@ async function assertProject(
   }
   expect((await fetch(`${preview.url}/api/models`)).status).toBe(200)
 }
-async function fixture({ foreign = false } = {}) {
+async function installDependencies(checkout: string) {
+  await exec('pnpm', ['install', '--frozen-lockfile', '--prefer-offline'], {
+    cwd: checkout,
+    timeout: 120000,
+  })
+}
+async function fixture({ foreign = false, previewSource = false } = {}) {
   const root = await temp('ultimate-preview-')
   // Child hosts must sweep only this fixture, never the machine's real temporary directory.
   vi.stubEnv('TMPDIR', root)
@@ -58,17 +64,9 @@ async function fixture({ foreign = false } = {}) {
   // The preview runs the clone's committed code: give it this checkout's preview and landing code.
   for (const path of ['extensions/instance', 'extensions/workspaces', 'lib'])
     await cp(join(checkout, path), join(source, path), { recursive: true })
-  const installArgs = ['install', '--frozen-lockfile', '--prefer-offline']
-  // Worktrees created inside a preview have a different HOME but can use the same content store.
-  vi.stubEnv(
-    'PNPM_CONFIG_STORE_DIR',
-    (await exec('pnpm', ['store', 'path'], { cwd: checkout })).stdout.trim(),
-  )
-  await exec('pnpm', installArgs, { cwd: source, timeout: 120000 })
-  await writeFile(
-    join(source, '.ultimate/settings.json'),
-    JSON.stringify({ isolates: { worktree: { setup: [`pnpm ${installArgs.join(' ')}`] } } }),
-  )
+  // Only install where a preview boots. The nested landing test creates a Git-only worktree.
+  if (foreign || previewSource) await installDependencies(source)
+  await writeFile(join(source, '.ultimate/settings.json'), '{}')
   await git(
     source,
     'add',
@@ -187,7 +185,9 @@ async function fixture({ foreign = false } = {}) {
       context,
     )
     await service.ready(conversation.id, context)
-    return { id: conversation.id, workspace: (await service.get(conversation.id, context))! }
+    const workspace = (await service.get(conversation.id, context))!
+    if (!foreign) await installDependencies(workspace.path)
+    return { id: conversation.id, workspace }
   }
   async function close() {
     const previews = JSON.parse(await run({ action: 'list' })) as Preview[]
@@ -226,7 +226,7 @@ const listed = (preview: Preview, conversationId: number) => ({
   running: true,
 })
 it('selects shared, isolated main and owned child checkouts with the main project decision', async () => {
-  const f = await fixture()
+  const f = await fixture({ previewSource: true })
   try {
     expect(await f.call('instance', { action: 'start', subagent: 999999 })).toContain(
       'Unknown subagent',
@@ -249,6 +249,7 @@ it('selects shared, isolated main and owned child checkouts with the main projec
     )[0]
     const childWorkspace = (await f.service.get(child.conversationId, context))!
     expect(childWorkspace.source).toBe(main.workspace.path)
+    await installDependencies(childWorkspace.path)
     const shared = JSON.parse(await f.call('instance', { action: 'start' })) as Preview
     const selected = JSON.parse(
       await f.call('instance', { action: 'start', subagent: child.conversationId }, main.id),
@@ -488,7 +489,7 @@ it('lands a preview submission on its own branch, never the previewed branch or 
 }, 120000)
 
 it('removes preview registrations, branches and temporary homes on stop and shutdown', async () => {
-  const f = await fixture()
+  const f = await fixture({ previewSource: true })
   try {
     const beforeTrees = await git(f.source, 'worktree', 'list', '--porcelain')
     const beforeBranches = await git(f.source, 'branch', '--format=%(refname)')
