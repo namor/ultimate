@@ -820,7 +820,12 @@ export function workspaces(host: Host) {
       const { source, target } = index.items[String(id)]
       const idleReadBeforeWrites = await landerIdle(tx, index, source)
       const lander = await ensureLanderBeforeWrites(tx, index, source, target, path)
-      const queued = index.queue.find((item) => item.conversationId === id && item.tip === tip)
+      const queued = index.queue.find(
+        (item) =>
+          item.conversationId === id &&
+          item.tip === tip &&
+          !(item.delivery?.cause === 'runtime' && supersedes(item, { conversationId: id, target })),
+      )
       if (queued?.delivery?.stage === 'review' && assessment) {
         if (reviewedTree !== queued.delivery.tree)
           throw new Error('Review does not cover the integration candidate tree')
