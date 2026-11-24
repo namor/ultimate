@@ -838,6 +838,7 @@ it('answers questions to the user through answer cards or input in the sender co
       message: answer.id,
       length: 'Q: Which command?\nA: Both'.length,
       device: 'phone safari',
+      source: 'person',
     },
     {
       conversation: f.recipient.id,

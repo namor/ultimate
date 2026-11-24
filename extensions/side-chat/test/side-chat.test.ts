@@ -678,8 +678,9 @@ describe('side chats', () => {
 
     await f.call(side, 'note', { to: ROOT_CONVERSATION_ID, text: 'must not land' })
     await f.call(side, 'codemode', { code: 'return 1' })
+    await f.call(side, 'message', { to: 'user', text: 'must not send' })
     const blocked = JSON.stringify(await entries(f.server, side))
-    for (const tool of ['note', 'codemode'])
+    for (const tool of ['note', 'codemode', 'message'])
       expect(blocked).toContain(`This side chat is read-only: ${tool} is blocked`)
     expect((await f.server.harness.snapshot(Side, side, context))!.effects).toBe(false)
     await f.call(side, 'memory', {})

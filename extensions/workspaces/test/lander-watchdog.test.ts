@@ -73,7 +73,7 @@ it.each([false, true])(
     const ran = runLanderCheck('.', 'pnpm verify', context, { stall: 1, total: 0.2 })
     await vi.advanceTimersByTimeAsync(200)
     const result = await ran
-    const cause = stopRejects ? 'Error: Process group did not exit' : 'Timed out after 0.2 s'
+    const cause = stopRejects ? 'Error: Process group did not exit' : 'Timed out after 200ms'
     expect(result).toMatchObject({ cause })
     expect('timedOut' in result ? result.timedOut : undefined).toBe(stopRejects ? undefined : true)
     expect(result.failure).toContain(cause)

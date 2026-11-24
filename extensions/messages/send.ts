@@ -7,6 +7,7 @@ import { AskedCalls, Messages, MessageSent } from './api.ts'
 import type { Message, Question } from './api.ts'
 import type { Judged, Via } from './refs.ts'
 import { checkQuestions, gist, openQuestion } from './questions.ts'
+import { actingAs } from '../../lib/acting-as.ts'
 import { isOwed } from '../../lib/message-state.ts'
 import { UserInputEvent } from '../../shared/events.ts'
 import type { Device } from '../../shared/events.ts'
@@ -106,7 +107,13 @@ export async function send(
         `A subagent answers the conversation that started it: give your final answer, or message #${parent}.`,
       )
     const isStanding = from !== 'user' && Object.values(standing ?? {}).includes(from)
-    if (!isStanding && starter === undefined)
+    const canMessageUser =
+      isStanding ||
+      starter !== undefined ||
+      (from !== 'user' &&
+        primaryId !== undefined &&
+        (await actingAs(host, from, ctx)) === primaryId)
+    if (!canMessageUser)
       throw new Error(
         'Only @ultimate, standing agents and branches message the user; send this to the conversation that started you.',
       )
