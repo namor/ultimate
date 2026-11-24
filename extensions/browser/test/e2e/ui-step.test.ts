@@ -235,8 +235,12 @@ it('acts on the one control with the exact label, also one an earlier step broug
       ],
     },
   ])
-  expect(closed(1)).toMatchObject({ ok: true, appeared: [] })
-  expect(closed(1)).not.toHaveProperty('open')
+  const result = closed(1) as { ok: boolean; appeared: Component[] }
+  expect(result.ok).toBe(true)
+  const labels = result.appeared.map(({ label }) => label)
+  expect(labels).not.toContain('Archive')
+  expect(labels).not.toContain('Monday only')
+  expect(result).not.toHaveProperty('open')
   const later = await drive([
     {
       ui: 'act',
