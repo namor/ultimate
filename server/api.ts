@@ -209,7 +209,7 @@ async function runAction(
     return
   }
   const args = argsOf(data)
-  const privateAction = extensions.privateAction(name, key)
+  const directOnly = sharedReadRefusal(extensions, name, key) !== undefined
   const { rev, publish } = reads.answering({
     extension: name,
     action: key,
@@ -241,7 +241,7 @@ async function runAction(
       deviceOf(request.headers),
       sourceOf(request.headers),
     )
-    const current = privateAction || publish({ result: result ?? null })
+    const current = directOnly || publish({ result: result ?? null })
     reply(response, 200, { result, rev, ...(current ? {} : { superseded: true }) })
   } catch (error) {
     const clientLeft = controller.signal.aborted
@@ -252,7 +252,7 @@ async function runAction(
       500,
     )
     const current =
-      privateAction || clientLeft || publish({ error: userFacingActionError, status: 500 })
+      directOnly || clientLeft || publish({ error: userFacingActionError, status: 500 })
     reply(response, 500, {
       error: userFacingActionError,
       rev,
@@ -261,6 +261,12 @@ async function runAction(
   } finally {
     response.off('close', cancel)
   }
+}
+
+function sharedReadRefusal(extensions: Extensions, extension: string, action: string) {
+  if (extensions.privateAction(extension, action)) return 'Private actions require a direct request'
+  if (extensions.userAction(extension, action)) return 'User actions require a direct request'
+  return undefined
 }
 
 export async function createApi(
@@ -276,8 +282,8 @@ export async function createApi(
   const streams = new Set<() => Promise<void>>()
   const connections = new Map<string, Connection>()
   const reads = createReads(async (spec, signal) => {
-    if (extensions.privateAction(spec.extension, spec.action))
-      throw new HttpError(403, 'Private actions require a direct request')
+    const refusal = sharedReadRefusal(extensions, spec.extension, spec.action)
+    if (refusal) throw new HttpError(403, refusal)
     if (!extensions.action(spec.extension, spec.action))
       throw new HttpError(404, 'Unknown extension action')
     return await extensions.invoke(
@@ -545,8 +551,9 @@ export async function createApi(
       connection.subscriptions.set(streamUniqueId, async () => {})
       return
     }
-    if (extensions.privateAction(spec.extension, spec.action)) {
-      send(reads.refused(403, 'Private actions require a direct request'))
+    const refusal = sharedReadRefusal(extensions, spec.extension, spec.action)
+    if (refusal) {
+      send(reads.refused(403, refusal))
       connection.subscriptions.set(streamUniqueId, async () => {})
       return
     }

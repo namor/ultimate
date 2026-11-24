@@ -316,6 +316,8 @@ export async function loadExtensions(
   let open = false
   const cleanups = new Set<() => Promise<void>>()
   const resources = new Map<string, unknown>()
+  const userAction = (name: string, action: string) =>
+    userActions.get(name)?.includes(action) ?? false
   const privateAction = (name: string, action: string) =>
     privateActions.get(name)?.includes(action) ?? false
   async function invoke(
@@ -328,7 +330,7 @@ export async function loadExtensions(
     device?: Device,
     source: UiSource = { source: 'person' },
   ) {
-    if (caller === 'agent' && userActions.get(name)?.includes(action))
+    if (caller === 'agent' && userAction(name, action))
       throw new Error(`${name}/${action} is a user-only action`)
     const table = actions.get(name)
     const fn = table && Object.hasOwn(table, action) ? table[action] : undefined
@@ -855,6 +857,7 @@ export async function loadExtensions(
     },
     invoke,
     privateAction,
+    userAction,
     doc: findDoc,
     catalogue: () => apis.catalogue(),
     trace: trace.reader,

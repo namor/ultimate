@@ -164,7 +164,7 @@ async function end(
       {
         side: id,
         ...(model ? { model } : {}),
-        ...(reply ? { reply: { ...reply, ...(device ? { device } : {}) } } : {}),
+        ...(reply ? { reply: { ...reply, ...(device ? { personDevice: device } : {}) } } : {}),
       },
       {
         conversationId: side.of,
@@ -189,7 +189,7 @@ export function endTask(host: ExtensionHost) {
     {
       side: ConversationId
       model?: SummaryModel
-      reply?: { message: number; text: string; device?: Device }
+      reply?: { message: number; text: string; personDevice?: Device }
     },
     { phase: 'stop' } | { phase: 'summarize' },
     null
@@ -317,7 +317,7 @@ export function endTask(host: ExtensionHost) {
           if (reply && (await stillOpen(reply.message)))
             await host
               .need(MessagesApi)
-              .answer(reply.message, reply.text, ctx, reply.device, {
+              .answer(reply.message, reply.text, ctx, reply.personDevice, {
                 taskId: task.id,
                 callId: 'answer',
               })
@@ -554,11 +554,17 @@ export const actions = {
     return { id }
   }),
   discard: implementAction(DiscardAction, (args, { host }) => end(host, sideId(args), 'discarded')),
-  inject: implementAction(InjectAction, (args, { host, device }) => {
+  inject: implementAction(InjectAction, (args, { host, device, origin, source }) => {
     const answer = args && typeof args === 'object' && 'answer' in args ? args.answer : undefined
     if (answer !== undefined && (answer === null || typeof answer !== 'object'))
       throw new Error('answer must be {answers?, note?} or {text}')
-    return end(host, sideId(args), 'injected', answer, device)
+    return end(
+      host,
+      sideId(args),
+      'injected',
+      answer,
+      origin === 'ui' && source === 'person' ? device : undefined,
+    )
   }),
 }
 

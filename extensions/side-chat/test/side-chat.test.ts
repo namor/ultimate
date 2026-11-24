@@ -21,7 +21,9 @@ import { Branch } from '../../lineage/api.ts'
 import { Automations } from '../../automations/server.ts'
 import { Index, Side, tracksEffect } from '../server.ts'
 import type { endTask } from '../server.ts'
-import { fauxServer, post, sourceCopy, temp, until } from '../../../test/helpers.ts'
+import { eventHost, fauxServer, post, sourceCopy, temp, until } from '../../../test/helpers.ts'
+import { UserInputEvent } from '../../../shared/events.ts'
+import { SOURCE_HEADER } from '../../../shared/protocol.ts'
 
 let ultimateRoot: string
 const servers: Awaited<ReturnType<typeof fauxServer>>[] = []
@@ -731,6 +733,53 @@ describe('side chats', () => {
       /no longer waits on you/,
     )
   })
+
+  it.each(['person', 'agent', 'app'] as const)(
+    'keeps person attribution only on a person’s side-chat answer (%s)',
+    async (source) => {
+      const f = await fixture()
+      const log = eventHost(() => f.server.harness, 'test').eventLog
+      const settings = join(ultimateRoot, '.ultimate/settings.json')
+      await writeFile(settings, JSON.stringify({}))
+      try {
+        const prior = new Set(
+          (await log.recent({ events: [UserInputEvent] })).map((event) => event.id),
+        )
+        await f.call(f.main, 'message', {
+          to: 'user',
+          text: `Attribution ${source}`,
+          questions: [{ text: 'What?', kind: 'text' }],
+        })
+        const board = (await f.server.harness.snapshot(Messages, ROOT_CONVERSATION_ID, context))!
+        const message = board.messages.find((item) => item.text === `Attribution ${source}`)!
+        const opened = await f.action('open', { message: message.id })
+        expect(opened.status).toBe(200)
+        const side = opened.data.result.id
+        const response = await fetch(`${f.server.url}/api/extensions/side-chat/actions/inject`, {
+          method: 'POST',
+          headers: { Origin: f.server.url, [SOURCE_HEADER]: source },
+          body: JSON.stringify({
+            args: { id: side, answer: { text: 'fixture answer' } },
+            conversationId: f.main,
+          }),
+        })
+        expect(response.status).toBe(200)
+        const answer = async () =>
+          (await log.recent({ events: [UserInputEvent] })).find(
+            (event) =>
+              !prior.has(event.id) &&
+              event.data.conversation === f.main &&
+              event.data.kind === 'answer',
+          )
+        await until(async () => !!(await answer()))
+        const data = (await answer())!.data
+        expect(data.source).toBe(source === 'person' ? 'person' : undefined)
+        expect(!!data.device).toBe(source === 'person')
+      } finally {
+        await writeFile(settings, JSON.stringify({ summaryModel: 'unavailable/test' }))
+      }
+    },
+  )
 
   it('drafts answers on the card without sending, only in a question side chat', async () => {
     const f = await fixture()

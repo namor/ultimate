@@ -1658,15 +1658,39 @@ export const actions = { value: async () => 'ok' }`,
       },
     } as unknown as ReturnType<typeof server.host.modelRuntime.getProvider>)
     let answered = ''
-    vi.spyOn(server.host.modelRuntime, 'login').mockImplementation(
-      async (_provider, _type, interaction) => {
+    const loginMock = vi
+      .spyOn(server.host.modelRuntime, 'login')
+      .mockImplementation(async (_provider, _type, interaction) => {
         interaction.notify({ type: 'info', message: 'Stub login' })
         answered = await interaction.prompt({ type: 'secret', message: 'Enter key' })
         return { type: 'api_key', key: answered }
-      },
-    )
+      })
+    const logout = vi.spyOn(server.host.modelRuntime, 'logout').mockResolvedValue(undefined)
     const stream = await attach(server, { docs: ['models.login'] })
     try {
+      await until(() => stream.events.some((event) => event.name === 'stream'))
+      const { id: streamId } = stream.events.find((event) => event.name === 'stream')!.data as {
+        id: string
+      }
+      const mutations = ['login', 'answer', 'cancel', 'logout'].map((action, index) => ({
+        sub: index + 1,
+        read: { extension: 'models', action, args: { provider: 'stub', type: 'api_key' } },
+        every: 250,
+      }))
+      await fetch(`${server.url}/api/events/${streamId}`, {
+        method: 'POST',
+        headers: { Origin: server.url },
+        body: JSON.stringify({ subscribe: mutations, unsubscribe: [] }),
+      })
+      const refusals = () => stream.events.filter((event) => event.name === 'read')
+      await until(() => refusals().length === mutations.length)
+      for (const event of refusals())
+        expect(event.data).toMatchObject({
+          status: 403,
+          error: 'User actions require a direct request',
+        })
+      expect(loginMock).not.toHaveBeenCalled()
+      expect(logout).not.toHaveBeenCalled()
       const action = (name: string, args: unknown, conversationId = 1) =>
         post(server, `/api/extensions/models/actions/${name}`, { args, conversationId })
       const flows = async (id = 1) =>
@@ -1683,6 +1707,8 @@ export const actions = { value: async () => 'ok' }`,
         return flowId
       }
       const first = await login()
+      expect((await action('logout', { provider: 'stub' })).status).toBe(200)
+      expect(logout).toHaveBeenCalledExactlyOnceWith('stub')
       expect(
         (await action('answer', { flowId: first, value: 'not-a-real-credential' })).status,
       ).toBe(200)
