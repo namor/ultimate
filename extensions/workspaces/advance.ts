@@ -208,12 +208,17 @@ export async function advanceDelivery(
       const existing = await head(d.branch)
       if (existing && existing !== d.candidate)
         throw new Block('safety', 'Delivery branch collision; refusing to overwrite it')
-      if (!existing) {
-        await requireBaseline()
-        if (!d.publishIntent) {
-          d.publishIntent = true
+      if (!existing) await requireBaseline()
+      if (!d.publishIntent) {
+        d.publishIntent = true
+        try {
           await persist()
+        } catch (error) {
+          delete d.publishIntent
+          throw error
         }
+      }
+      if (!existing) {
         await git(
           { cwd: source, signal, timeout: 300000 },
           'push',
@@ -239,6 +244,8 @@ export async function advanceDelivery(
             'uncertain-write',
             'PR creation outcome is uncertain; reconcile it before retrying',
           )
+        if (d.risk === 'high' && !d.publishIntent && !d.publishApproved)
+          throw new Block('safety', 'No recorded approval to publish this high-risk candidate')
         d.createIntent = true
         await persist()
         write = 'create'

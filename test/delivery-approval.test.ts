@@ -27,7 +27,7 @@ const candidate = 'a'.repeat(40)
 const tree = 'c'.repeat(40)
 
 /** A harness with @ultimate registered, a branch, and one submission awaiting its medium-risk merge approval. */
-async function fixture() {
+async function fixture(risk: Delivery['risk'] = 'medium') {
   const home = await temp('ultimate-delivery-approval-')
   const prepared = await prepareHarness({
     home,
@@ -67,7 +67,7 @@ async function fixture() {
       checks: ['verify'],
       requiredChecks: ['verify'],
     },
-    risk: 'medium',
+    risk,
     review: 'fixture',
     baseline: 'b'.repeat(40),
     candidate,
@@ -75,8 +75,8 @@ async function fixture() {
     branch: 'ultimate-delivery/test',
     checkedAt: Date.now(),
     runtime: deliveryRuntime(),
-    stage: 'merge',
-    pr: 3,
+    stage: risk === 'high' ? 'publish' : 'merge',
+    ...(risk === 'high' ? {} : { pr: 3 }),
   }
   // A user input in @ultimate's conversation before the submission, then the submission's `at` entry.
   const earlier = await opened.harness.commit(async (tx) => {
@@ -154,6 +154,42 @@ async function fixture() {
 }
 
 describe('delivery approval', () => {
+  it('records one explicit high-risk approval for both writes, bound to the candidate and tree', async () => {
+    const f = await fixture('high')
+    const click = { device: { device: 'desktop/chrome' } } as Pick<ActionContext, 'device'>
+    await expect(f.call(click, { action: 'approve-pr', tree: 'd'.repeat(40) })).rejects.toThrow(
+      'candidate changed',
+    )
+    await expect(
+      f.call(click, { action: 'approve-pr', candidate: 'd'.repeat(40) }),
+    ).rejects.toThrow('candidate changed')
+    await f.call(click, { action: 'approve-pr' })
+    await expect(f.call(click, { action: 'approve-pr' })).rejects.toThrow('stage changed')
+    expect(await f.queued()).toMatchObject({
+      publishApproved: true,
+      mergeApproved: true,
+      approvals: [{ action: 'approve-pr', by: 'user', candidate }],
+    })
+  })
+
+  it('never turns publication-only approval or its instruction into merge authority', async () => {
+    const f = await fixture('high')
+    const ctx = { conversationId: f.ultimate }
+    const instruction = await f.entry(f.ultimate, 'pi.user', { typed: true })
+    await f.call(ctx, { action: 'publish', instruction })
+    const newer = await f.entry(f.ultimate, 'pi.user', { typed: true })
+    await expect(f.call(ctx, { action: 'approve-pr', instruction: newer })).rejects.toThrow(
+      'stage changed',
+    )
+    await f.opened.harness.commit(async (tx) => {
+      const d = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue[0].delivery!
+      d.stage = 'merge'
+      d.pr = 3
+    }, context)
+    await expect(f.call(ctx, { instruction })).rejects.toThrow('already decided this delivery')
+    expect((await f.queued()).mergeApproved).toBeUndefined()
+  })
+
   it('is no longer reserved for the browser', () => {
     expect(userActions).not.toContain('delivery')
   })
@@ -346,8 +382,8 @@ describe('delivery approval', () => {
 
   describe('standing approval', () => {
     /** The user's typed grant, then a submission after it awaiting merge. */
-    const granted = async (hours?: number) => {
-      const f = await fixture()
+    const granted = async (hours?: number, risk?: Delivery['risk']) => {
+      const f = await fixture(risk)
       const instruction = await f.entry(f.ultimate, 'pi.user', { typed: true })
       await actions.standing({ instruction, ...(hours ? { hours } : {}) }, {
         host: f.host,
@@ -364,6 +400,25 @@ describe('delivery approval', () => {
       f.opened.harness.commit(async (tx) => {
         change((await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue[0].delivery!)
       }, context)
+
+    it('does not convert a grant into combined approval or withdraw explicit combined approval', async () => {
+      const f = await granted(undefined, 'high')
+      const ctx = { conversationId: f.ultimate }
+      await expect(approve(f, { action: 'approve-pr' })).rejects.toThrow('publish and merge only')
+      await expect(
+        f.call(ctx, { action: 'approve-pr', instruction: f.instruction }),
+      ).rejects.toThrow('newer than the standing grant')
+      const instruction = await f.entry(f.ultimate, 'pi.user', { typed: true })
+      await f.call(ctx, { action: 'approve-pr', instruction })
+      await actions.standing({ revoke: true }, {
+        host: f.host,
+        ...ctx,
+        signal: new AbortController().signal,
+        origin: 'agent',
+        source: 'agent',
+      } as ActionContext)
+      expect(await f.queued()).toMatchObject({ publishApproved: true, mergeApproved: true })
+    })
 
     it('lets @ultimate approve verified, reviewed, CI-green work and records the grant and reason', async () => {
       const f = await granted()

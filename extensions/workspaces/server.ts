@@ -189,7 +189,7 @@ export const actions = {
       typeof args.candidate !== 'string' ||
       typeof args.tree !== 'string' ||
       typeof args.action !== 'string' ||
-      !['publish', 'merge', 'recheck', 'stop'].includes(args.action)
+      !['approve-pr', 'publish', 'merge', 'recheck', 'stop'].includes(args.action)
     )
       throw new Error('Expected an immutable delivery approval')
     const action = args.action as Approval['action']
@@ -248,16 +248,26 @@ export const actions = {
           approval.standing !== undefined ? `Standing approval refused: ${refusal}` : refusal,
         )
       if (approval.standing !== undefined) approval.standing = index.standing!.instruction
-      if (
-        approval.instruction !== undefined &&
-        [...index.queue, ...Object.entries(index.results).map(([id, r]) => ({ id, ...r }))].some(
-          (item) =>
-            item.id !== entry.id && spent(item).some((a) => a.instruction === approval.instruction),
+      const instruction = approval.instruction
+      if (instruction !== undefined) {
+        if (
+          (action === 'approve-pr' || action === 'publish' || action === 'merge') &&
+          index.standing &&
+          instruction <= index.standing.instruction
         )
-      )
-        throw new Error(
-          'instruction already decided another delivery; the user must decide this one',
+          throw new Error('Explicit PR approval needs an instruction newer than the standing grant')
+        if (spent(entry).some((a) => a.instruction === instruction))
+          throw new Error('Instruction already decided this delivery; the user must decide again')
+        if (
+          [
+            ...index.queue.filter((item) => item.id !== entry.id),
+            ...Object.values(index.results),
+          ].some((item) => spent(item).some((a) => a.instruction === instruction))
         )
+          throw new Error(
+            'instruction already decided another delivery; the user must decide this one',
+          )
+      }
       delivery.approvals = [...(delivery.approvals ?? []), approval]
       if (action === 'stop') {
         const by =
@@ -291,6 +301,9 @@ export const actions = {
               note: `Stopped by ${by}.`,
             },
           ]
+      } else if (action === 'approve-pr') {
+        delivery.publishApproved = true
+        delivery.mergeApproved = true
       } else if (action === 'publish') delivery.publishApproved = true
       else if (action === 'merge') delivery.mergeApproved = true
       else {
@@ -326,8 +339,11 @@ export const actions = {
         ).items[0]?.id
         const standingLast = (
           d: NonNullable<(typeof index.queue)[number]['delivery']>,
-          a: string,
-        ) => d.approvals?.findLast((approval) => approval.action === a)?.standing !== undefined
+          action: 'publish' | 'merge',
+        ) =>
+          d.approvals?.findLast(
+            (approval) => approval.action === action || approval.action === 'approve-pr',
+          )?.standing !== undefined
         for (const item of index.queue) {
           const d = item.delivery
           if (!d) continue

@@ -51,7 +51,7 @@ function waitLine(delivery: Delivery) {
       return 'Waits on an independent review of the integration tree; the branch resubmits with reviewedTree.'
     case 'publish':
     case 'merge':
-      return `Waits on your ${wait.on} approval (or @ultimate under a standing approval).`
+      return 'Waiting for PR approval.'
     case undefined:
       break
   }
@@ -107,12 +107,12 @@ function StandingLine(props: { grant: StandingGrant; context: string }) {
 }
 
 const actions = {
-  publish: {
-    label: 'Approve publication',
-    prompt: 'Allow this verified candidate to be published?',
+  'approve-pr': {
+    label: 'Approve PR',
+    prompt: 'Publish this verified candidate and merge it only if its required GitHub checks pass.',
   },
   merge: {
-    label: 'Approve merge',
+    label: 'Approve PR',
     prompt: 'Required GitHub checks passed. Approve this candidate for merge?',
   },
   recheck: {
@@ -123,6 +123,7 @@ const actions = {
 }
 
 const approvalLabels = {
+  'approve-pr': 'Publication and conditional merge approved',
   publish: 'Publication approved',
   merge: 'Merge approved',
   recheck: 'Recheck requested',
@@ -139,7 +140,7 @@ export function DeliveryCard(props: { id: string; delivery: Delivery; context: s
   const [pending, setPending] = createSignal(false)
   const [error, setError] = createSignal<string>()
   const delivery = () => props.delivery
-  const ask = () => deliveryAsk(delivery(), standing(), now())
+  const ask = () => deliveryAsk(delivery())
   const action = (): keyof typeof actions | undefined =>
     ask() ?? (delivery().stage === 'blocked' ? 'recheck' : undefined)
   const stopLabel = () => (delivery().pr ? 'Stop delivery · close its PR' : 'Stop delivery')

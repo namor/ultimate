@@ -54,7 +54,7 @@ export type Delivery = {
   decisions?: Decision[]
 }
 export type Approval = {
-  action: 'publish' | 'merge' | 'recheck' | 'stop'
+  action: 'approve-pr' | 'publish' | 'merge' | 'recheck' | 'stop'
   at: number
   by: 'user' | 'ultimate' | 'agent'
   candidate?: string
@@ -223,7 +223,16 @@ export function authorize(
         ? 'Required GitHub checks have not passed on this exact head'
         : 'Delivery is not awaiting publication'
   }
-  if ((action === 'publish' || action === 'merge') && d.stage !== action)
+  if (action === 'approve-pr') {
+    if (uncertainWrite(d)) return 'An uncertain write is pending; reconcile it first'
+    if (d.runtime !== env.runtime)
+      return 'Local verification ran on another runtime; verify a new delivery'
+    if (!d.review.trim()) return 'No independent review covers this exact tree'
+  }
+  if (
+    (action === 'approve-pr' || action === 'publish' || action === 'merge') &&
+    waits(d)?.on !== (action === 'approve-pr' ? 'publish' : action)
+  )
     return 'Delivery stage changed; reload its card'
   if (action === 'recheck') {
     if (d.stage !== 'blocked' || !d.resumeStage) return 'Delivery stage changed; reload its card'

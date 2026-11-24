@@ -1,6 +1,6 @@
 import { InboxIcon } from '@lucide/solid'
 import { createMemo } from 'solid-js'
-import { defineWebExtension, provide, useNow } from '@/sdk/solid'
+import { defineWebExtension, provide } from '@/sdk/solid'
 import { UnderUltimate } from '../sidebar/ui.solid.tsx'
 import { DeliveryCard, deliveryAsk, useWorkspaceIndex } from '../workspaces/ui.solid.tsx'
 import { SURFACE } from './items.ts'
@@ -10,12 +10,10 @@ import { Inbox, InboxSidebar, WaitingBadge, WaitingLink } from './surface.solid.
 
 function useDeliveryItems() {
   const index = useWorkspaceIndex()
-  const now = useNow(60_000)
   return createMemo(() => {
-    const { queue, standing } = index()
-    return queue.flatMap<InboxItem>(({ id, conversationId, delivery, steps }) => {
+    return index().queue.flatMap<InboxItem>(({ id, conversationId, delivery, steps }) => {
       if (!delivery) return []
-      const ask = deliveryAsk(delivery, standing, now())
+      const ask = deliveryAsk(delivery)
       if (!ask) return []
       return [
         {
@@ -23,12 +21,7 @@ function useDeliveryItems() {
           at: steps[0]?.at ?? 0,
           conversation: conversationId,
           tag: 'delivery',
-          title:
-            ask === 'recheck'
-              ? 'Review blocked delivery'
-              : ask === 'publish'
-                ? 'Approve publication'
-                : 'Approve merge',
+          title: ask === 'recheck' ? 'Review blocked delivery' : 'Approve PR',
           gist: `${delivery.settings.repository} → ${delivery.settings.base}`,
           get pane() {
             return <DeliveryCard context={`Inbox delivery ${id}`} delivery={delivery} id={id} />

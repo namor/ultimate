@@ -355,7 +355,8 @@ it('renders candidate and wait changes and binds person-only decisions to the di
   expect(card().querySelector('code')?.title).toBe(candidate)
   expect(card().textContent).toContain('sample/project → main')
   await publish({ stage: 'publish' })
-  expect(card().getAttribute('data-delivery-ask')).toBe('publish')
+  expect(card().getAttribute('data-delivery-ask')).toBe('approve-pr')
+  expect(card().textContent).toContain('merge it only if its required GitHub checks pass')
   expect(card().textContent).toContain('Standing approval until')
   await expectDistinctAgentNames(agent)
   const press = async (label: string) => {
@@ -379,7 +380,10 @@ it('renders candidate and wait changes and binds person-only decisions to the di
       'person',
     )
   }
-  await action('Approve publication', 'publish')
+  await action('Approve PR', 'approve-pr')
+  await publish({ stage: 'merge', publishApproved: true, mergeApproved: true })
+  expect(card().getAttribute('data-delivery-ask')).toBeNull()
+  expect(card().querySelector('button[aria-label^="Approve PR"]')).toBeNull()
   const url = 'https://github.com/sample/project/pull/7'
   const nextCandidate = 'd'.repeat(40)
   const nextTree = 'e'.repeat(40)
@@ -388,7 +392,7 @@ it('renders candidate and wait changes and binds person-only decisions to the di
   expect(card().textContent).toContain('1/2 reruns used')
   expect(card().querySelector('a')?.getAttribute('href')).toBe(url)
   await publish({ stage: 'merge', url, pr: 7, candidate: nextCandidate, tree: nextTree })
-  await action('Approve merge', 'merge', nextCandidate, nextTree)
+  await action('Approve PR', 'merge', nextCandidate, nextTree)
   await publish({ stage: 'blocked', resumeStage: 'merge', reason: 'Approval needed', url, pr: 7 })
   expect(card().textContent).toContain('Approval needed')
   await action('Recheck outcome', 'recheck')
