@@ -1,5 +1,7 @@
 ## Borrowed from Pi
 
+- The Pi AI patch in `pnpm-workspace.yaml` serializes the original arguments of a rejected grammar call as JSON when the provider requires text. Remove it when Pi can replay malformed grammar calls.
+
 - The Codemode patch registered in `pnpm-workspace.yaml` suggests only discovery helpers available in the sandbox when a script names an unknown tool. Drop when Pi does the same.
 - The Claude Code patch applies the same tool ID normalization to each native replay call and result, including calls in signed carriers. It also closes an unusable warm process on a stdin error and reports the cause to the waiting turn. Drop each change when upstream passes the corresponding regression.
 - `server/http.ts` — adapted HTTP dispatcher, not exported; prevents early provider stream termination. Unlike Pi's copy it does not call `undici.install()`: Node's built-in fetch already uses the global dispatcher and decodes compressed bodies through it. undici in package.json exists only for this file. Drop when Pi exports configureHttpDispatcher and applyHttpProxySettings; keep the MIT notice until then.

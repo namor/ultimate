@@ -101,18 +101,20 @@ it('uploads a PDF picked with the paperclip and sends its path, not its bytes', 
   })
   const agent = await (await server.harness.conversation(data.result, context))!.agent(context)
   expect(agent.model?.provider).toBe(server.host.faux!.getModel().provider)
+  const upload = Promise.withResolvers<void>()
+  cleanup.push(async () => upload.resolve())
+  let intercepted = false
+  await page.context().route('**/api/extensions/attachments/actions/upload', async (route) => {
+    intercepted = true
+    await upload.promise
+    await route.continue()
+  })
   await page.goto(`${server.url}/?conversation=${data.result}`)
   const editor = page.locator(
     `#app [data-ui="composer"] textarea[data-conversation="${data.result}"]`,
   )
   await editor.waitFor()
   const pdf = Buffer.from('%PDF-1.7 report')
-  const upload = Promise.withResolvers<void>()
-  cleanup.push(async () => upload.resolve())
-  await page.route('**/api/extensions/attachments/actions/upload', async (route) => {
-    await upload.promise
-    await route.continue()
-  })
   await page
     .locator(
       '#app [data-ui="composer"] label[aria-label="Attach files"] input[type="file"]:enabled',
@@ -122,7 +124,7 @@ it('uploads a PDF picked with the paperclip and sends its path, not its bytes', 
     .locator('#app [data-ui="composer"] [data-ui="file-chip"]', { hasText: 'PDF' })
     .waitFor()
   await editor.fill('Summarise this')
-  // #45669: the filename already matches "PDF" while uploading; the chip alone made Enter race the upload.
+  await until(() => intercepted)
   expect(await page.locator('#app [data-ui="composer"] button[type="submit"]').isDisabled()).toBe(
     true,
   )

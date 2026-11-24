@@ -1,0 +1,17 @@
+diff --git a/dist/api/constrained-sampling.js b/dist/api/constrained-sampling.js
+--- a/dist/api/constrained-sampling.js
++++ b/dist/api/constrained-sampling.js
+@@ -128,11 +128,8 @@
+     return (strict === true ? makeStrictJsonSchema(tool.parameters) : tool.parameters);
+ }
+ export function getGrammarToolInput(toolName, arguments_, inputProperty) {
+-    const input = arguments_[inputProperty];
+-    if (typeof input !== "string") {
+-        throw new Error(`Grammar tool call "${toolName}" requires argument "${inputProperty}" to be a string.`);
+-    }
+-    return input;
++    const input = arguments_?.[inputProperty];
++    return typeof input === "string" ? input : JSON.stringify(arguments_ ?? {});
+ }
+ /**
+  * Append `inputDelta` to a streaming grammar tool input and return the matching piece of its JSON arguments text, or
