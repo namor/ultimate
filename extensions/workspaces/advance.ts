@@ -1,6 +1,6 @@
 import { exec } from '../../lib/exec.ts'
 import { git } from '../../lib/git.ts'
-import { CI_LIMIT_MS, MAX_RERUNS } from './delivery.ts'
+import { CI_LIMIT_MS, MAX_RERUNS, waits } from './delivery.ts'
 import type { Cause, Delivery, Stage } from './delivery.ts'
 import { pullRequestText } from './pull-request.ts'
 
@@ -163,6 +163,16 @@ export async function advanceDelivery(
     await save(d)
     return d
   }
+  const recordPublishIntent = async () => {
+    if (d.publishIntent) return
+    d.publishIntent = true
+    try {
+      await persist()
+    } catch (error) {
+      delete d.publishIntent
+      throw error
+    }
+  }
   const head = async (branch: string) => {
     const path = branch.split('/').map(encodeURIComponent).join('/')
     const refs = await api<{ ref: string; object: { type: string; sha: string } }[]>(
@@ -192,8 +202,8 @@ export async function advanceDelivery(
   try {
     if (d.runtime !== deliveryRuntime())
       throw new Block('runtime', 'Verification runtime changed; verify a new delivery')
+    if (waits(d)?.on === 'publish') return d
     if (d.stage === 'publish') {
-      if (d.risk === 'high' && !d.publishApproved && !d.publishIntent) return d
       if (d.publishIntent && !d.published)
         decide('reconcile publication', 'a recorded push intent was not confirmed')
       const destinations = await git(source, 'remote', 'get-url', '--push', '--all', remote)
@@ -209,15 +219,7 @@ export async function advanceDelivery(
       if (existing && existing !== d.candidate)
         throw new Block('safety', 'Delivery branch collision; refusing to overwrite it')
       if (!existing) await requireBaseline()
-      if (!d.publishIntent) {
-        d.publishIntent = true
-        try {
-          await persist()
-        } catch (error) {
-          delete d.publishIntent
-          throw error
-        }
-      }
+      await recordPublishIntent()
       if (!existing) {
         await git(
           { cwd: source, signal, timeout: 300000 },
@@ -244,8 +246,7 @@ export async function advanceDelivery(
             'uncertain-write',
             'PR creation outcome is uncertain; reconcile it before retrying',
           )
-        if (d.risk === 'high' && !d.publishIntent && !d.publishApproved)
-          throw new Block('safety', 'No recorded approval to publish this high-risk candidate')
+        if (d.risk === 'high') await recordPublishIntent()
         d.createIntent = true
         await persist()
         write = 'create'

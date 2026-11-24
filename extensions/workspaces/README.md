@@ -245,7 +245,8 @@ entry id of the user's input in its conversation that gave the order. The action
 (`device` set) names that entry: only the user's composer and answer card emit one, so a `pi.user` input the server placed, an
 answer @ultimate settled in the user's name, a dismissal, or a request the voice model forwarded does not count. The entry must
 come after the submission (a reassessment resets that point, and one that lands mid-call refuses the approval), and must not
-have decided any delivery action already. An explicit PR instruction must be newer than any standing grant. For `approve-pr`,
+have decided any delivery action already. A typed instruction must also be newer than instructions in evicted results.
+An explicit PR instruction must be newer than any standing grant. For `approve-pr`,
 @ultimate must check that the instruction names the candidate and authorizes both publication and merge after green CI. Any other conversation (a branch, a subagent, a side chat, an automation run) is refused, as is
 @ultimate while a hands-off goal is open: the goal decides in the user's place elsewhere, never here. Every action is recorded on
 the delivery (`approvals`: who, when, and for @ultimate its conversation and instruction entry), and the card shows it with a link

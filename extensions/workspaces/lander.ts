@@ -37,6 +37,7 @@ import {
   pick,
   POLL_MS,
   standingAsk,
+  spent,
   waits,
 } from './delivery.ts'
 import { advanceDelivery, closePull, deliveryRuntime, github } from './advance.ts'
@@ -47,6 +48,15 @@ import { LanderReportEntry } from './refs.ts'
 
 const recentSubmitCardOutcomeLimit = 50
 const maxCloseTries = 3
+
+export function pruneLanderResults(index: Pick<WorkspaceIndex, 'results' | 'instructionFloor'>) {
+  for (const old of Object.keys(index.results).slice(0, -recentSubmitCardOutcomeLimit)) {
+    for (const { instruction } of spent(index.results[old]))
+      if (instruction !== undefined && instruction > (index.instructionFloor ?? 0))
+        index.instructionFloor = instruction
+    delete index.results[old]
+  }
+}
 export async function landerPath(home: string, source: string, settings: JsonObject) {
   const configured = await treePath(settings, landerName(source))
   if (configured) return configured
@@ -805,8 +815,7 @@ export function createLander(
               ...(entry.subject ? { subject: entry.subject } : {}),
               ...(entry.approvals ? { approvals: entry.approvals } : {}),
             }
-            for (const old of Object.keys(draft.results).slice(0, -recentSubmitCardOutcomeLimit))
-              delete draft.results[old]
+            pruneLanderResults(draft)
             await log(tx, runtime.conversationId, entry, outcome)
             if (outcome.outcome === 'failed')
               await host.emit(tx, SubmissionFailed, {

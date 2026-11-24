@@ -250,6 +250,8 @@ export const actions = {
       if (approval.standing !== undefined) approval.standing = index.standing!.instruction
       const instruction = approval.instruction
       if (instruction !== undefined) {
+        if (instruction <= (index.instructionFloor ?? 0))
+          throw new Error('Instruction is too old to approve this delivery; ask the user again')
         if (
           (action === 'approve-pr' || action === 'publish' || action === 'merge') &&
           index.standing &&
@@ -350,7 +352,7 @@ export const actions = {
           delete d.asked
           const stage = d.stage === 'blocked' ? d.resumeStage : d.stage
           if (
-            stage === 'publish' &&
+            (stage === 'publish' || (stage === 'pr' && !d.createIntent)) &&
             d.publishApproved &&
             !d.publishIntent &&
             standingLast(d, 'publish')
@@ -396,6 +398,7 @@ export const actions = {
       if (previous && Math.max(previous.instruction, previous.boundary ?? 0) >= instruction)
         throw new Error('Renewing a standing approval needs a newer instruction from the user')
       if (
+        instruction <= (index.instructionFloor ?? 0) ||
         [...index.queue, ...Object.values(index.results)].some((item) =>
           spent(item).some((a) => a.instruction === instruction),
         )

@@ -274,30 +274,39 @@ describe('PR delivery', () => {
     },
   )
 
-  it('will not create a PR from a matching ref after publication approval is withdrawn', async () => {
-    let saved: Delivery = { ...makeDelivery(), risk: 'high', publishApproved: true }
-    const calls: string[] = []
-    const api: Github = async (path) => {
-      calls.push(path)
-      return refs(saved.branch, candidate) as never
-    }
-    vi.mocked(git).mockClear().mockResolvedValue('git@github.com:example/my-app.git')
-    const save = async (d: Delivery) => {
-      if (d.publishIntent) {
-        delete saved.publishApproved
-        throw new Error('Publish approval was withdrawn; approve again to publish')
+  it.each(['publish', 'pr'] as const)(
+    'refuses a matching-ref write at %s after approval is withdrawn mid-transition',
+    async (stage) => {
+      let saved: Delivery = {
+        ...makeDelivery(),
+        stage,
+        risk: 'high',
+        publishApproved: true,
+        ...(stage === 'pr' ? { published: true } : {}),
       }
-      saved = { ...d, publishApproved: saved.publishApproved }
-    }
-    const signal = new AbortController().signal
-    await advanceDelivery('/project', saved, save, signal, api)
-    expect(saved).toMatchObject({ stage: 'blocked', resumeStage: 'publish' })
-    expect(saved.publishIntent).toBeUndefined()
-    saved.stage = 'publish'
-    await advanceDelivery('/project', saved, save, signal, api)
-    expect(calls).toEqual([deliveryRef])
-    expect(vi.mocked(git).mock.calls.some((args) => args.includes('push'))).toBe(false)
-  })
+      const writes: string[] = []
+      const api: Github = async (path, method) => {
+        if (method) writes.push(method)
+        return (path === deliveryRef ? refs(saved.branch, candidate) : []) as never
+      }
+      vi.mocked(git).mockClear().mockResolvedValue('git@github.com:example/my-app.git')
+      const save = async (d: Delivery) => {
+        if (d.publishIntent) {
+          delete saved.publishApproved
+          throw new Error('Publish approval was withdrawn; approve again to publish')
+        }
+        saved = { ...d, publishApproved: saved.publishApproved }
+      }
+      const signal = new AbortController().signal
+      await advanceDelivery('/project', saved, save, signal, api)
+      expect(saved).toMatchObject({ stage: 'blocked', resumeStage: stage })
+      expect(saved.publishIntent).toBeUndefined()
+      saved.stage = stage
+      await advanceDelivery('/project', saved, save, signal, api)
+      expect(writes).toEqual([])
+      expect(vi.mocked(git).mock.calls.some((args) => args.includes('push'))).toBe(false)
+    },
+  )
 
   it('refuses publication to a remote with more than one push destination', async () => {
     vi.mocked(git)

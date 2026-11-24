@@ -88,11 +88,17 @@ export const spent = (item: {
   approvals?: Approval[]
 }): Approval[] => [...(item.delivery?.approvals ?? []), ...(item.approvals ?? [])]
 
+const awaitingPublication = (d: Delivery, stage = d.stage) =>
+  d.risk === 'high' &&
+  !d.publishApproved &&
+  !d.publishIntent &&
+  (stage === 'publish' || (stage === 'pr' && !d.createIntent))
+
 export function needsUser(d: Delivery): string | undefined {
   if (uncertainWrite(d)) return 'an uncertain remote write must be reconciled'
   if (
     (d.resumeStage === 'merge' && d.risk !== 'low' && !d.mergeApproved) ||
-    (d.resumeStage === 'publish' && d.risk === 'high' && !d.publishApproved)
+    (d.resumeStage !== undefined && awaitingPublication(d, d.resumeStage))
   )
     return 'it waits for your approval'
   if (d.cause === 'auth') return 'GitHub access needs your login or credentials'
@@ -102,8 +108,7 @@ export function needsUser(d: Delivery): string | undefined {
 
 export function waits(d: Delivery): Wait | undefined {
   if (d.stage === 'review') return { on: 'review' }
-  if (d.stage === 'publish' && d.risk === 'high' && !d.publishApproved && !d.publishIntent)
-    return { on: 'publish' }
+  if (awaitingPublication(d)) return { on: 'publish' }
   if (d.stage === 'merge' && d.risk !== 'low' && !d.mergeApproved) return { on: 'merge' }
   if (d.stage === 'blocked') {
     const why = d.wake?.to === 'user' ? d.wake.why : needsUser(d)
@@ -218,10 +223,10 @@ export function authorize(
     if (d.stage === 'review' || !d.review.trim())
       return 'No independent review covers this exact tree'
     if (uncertainWrite(d)) return 'An uncertain write is pending; reconcile it first'
-    if (d.stage !== action)
-      return action === 'merge'
-        ? 'Required GitHub checks have not passed on this exact head'
-        : 'Delivery is not awaiting publication'
+    if (action === 'merge' && d.stage !== 'merge')
+      return 'Required GitHub checks have not passed on this exact head'
+    if (action === 'publish' && d.stage !== 'publish' && d.stage !== 'pr')
+      return 'Delivery is not awaiting publication'
   }
   if (action === 'approve-pr') {
     if (uncertainWrite(d)) return 'An uncertain write is pending; reconcile it first'

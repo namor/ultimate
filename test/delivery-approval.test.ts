@@ -11,9 +11,9 @@ import { Goals } from '../extensions/goal/server.ts'
 import { Standing } from '../extensions/subagents/api.ts'
 import { actions, userActions } from '../extensions/workspaces/server.ts'
 import { deliveryRuntime } from '../extensions/workspaces/advance.ts'
-import { park, pick } from '../extensions/workspaces/delivery.ts'
+import { park, pick, waits } from '../extensions/workspaces/delivery.ts'
 import type { Delivery } from '../extensions/workspaces/delivery.ts'
-import { reportBlocked } from '../extensions/workspaces/lander.ts'
+import { pruneLanderResults, reportBlocked } from '../extensions/workspaces/lander.ts'
 import { Workspaces } from '../extensions/workspaces/workspaces.ts'
 import { UserInputEvent } from '../shared/events.ts'
 import { eventHost, temp } from './helpers.ts'
@@ -361,6 +361,19 @@ describe('delivery approval', () => {
       'already decided another delivery',
     )
     expect((await f.queued()).mergeApproved).toBeUndefined()
+    await f.opened.harness.commit(async (tx) => {
+      const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+      for (let n = 0; n < 50; n++) {
+        const { delivery: _delivery, ...outcome } = index.results.other
+        index.results[`newer-${n}`] = outcome
+      }
+      pruneLanderResults(index)
+      expect(index.results.other).toBeUndefined()
+    }, context)
+    await expect(f.call({ conversationId: f.ultimate }, { instruction })).rejects.toThrow(
+      'Instruction is too old',
+    )
+    expect((await f.queued()).mergeApproved).toBeUndefined()
   })
 
   it('refuses @ultimate while a hands-off goal is open', async () => {
@@ -548,6 +561,28 @@ describe('delivery approval', () => {
       expect(delivery.mergeApproved).toBeUndefined()
       // The audit record stays.
       expect(delivery.approvals?.[0]).toMatchObject({ standing: f.instruction })
+    })
+
+    it('withdraws unused standing publication approval from a legacy matching-ref record', async () => {
+      const f = await granted(undefined, 'high')
+      await approve(f, { action: 'publish' })
+      await set(f, (d) => {
+        d.published = true
+        d.stage = 'pr'
+      })
+      await actions.standing({ revoke: true }, {
+        host: f.host,
+        conversationId: f.ultimate,
+        signal: new AbortController().signal,
+        origin: 'agent',
+        source: 'agent',
+      } as ActionContext)
+      const d = await f.queued()
+      expect(d.publishApproved).toBeUndefined()
+      expect(waits(d)).toEqual({ on: 'publish' })
+      const instruction = await f.entry(f.ultimate, 'pi.user', { typed: true })
+      await f.call({ conversationId: f.ultimate }, { action: 'approve-pr', instruction })
+      expect(waits(await f.queued())).toBeUndefined()
     })
 
     it('a landing entry keeps its repository slot through a revoke until its lander parks it', async () => {
