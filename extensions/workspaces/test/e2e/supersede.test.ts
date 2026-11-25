@@ -250,7 +250,7 @@ it('queues the replacement behind a delivery with an uncertain merge', async () 
 })
 
 it.each(['parked', 'stopped'] as const)(
-  'reconciles a %s delivery using the exact merge on the recorded target',
+  'reconciles a %s delivery without changing the reported GitHub outcome',
   async (kind) => {
     const { host, emit, harness, service, id, workspace, tree, projectRoot } = await fixture()
     const { id: submission, lander } = await service.submit(id, 'None', context)
@@ -391,6 +391,32 @@ it.each(['parked', 'stopped'] as const)(
     expect(emit.mock.calls.filter(([, event]) => event === SubmissionLanded)).toHaveLength(0)
     reportedMerge = merged
     remoteTip = kind === 'parked' ? merged : later
+    const verifyReplacementAndRecreation = async () => {
+      const unrelated = await git(
+        projectRoot,
+        'commit-tree',
+        tree,
+        '-p',
+        baseline,
+        '-m',
+        'unrelated target',
+      )
+      await git(projectRoot, 'reset', '--hard', unrelated)
+      await git(projectRoot, 'replace', unrelated, later)
+      await git(projectRoot, 'merge-base', '--is-ancestor', merged, 'refs/heads/main')
+      await expect(reconcile()).rejects.toThrow('local target does not contain')
+      expect(await snapshot()).toEqual(before)
+      expect(await git(projectRoot, 'rev-parse', 'refs/heads/main')).toBe(unrelated)
+      expect(emit.mock.calls).toEqual([])
+      await git(projectRoot, 'replace', '-d', unrelated)
+      await git(projectRoot, 'reset', '--hard', later)
+      await service.discard(id, context)
+      harness.release()
+      await service.ready(id, context)
+      expect((await service.get(id, context))?.state).toBe('ready')
+      expect((await service.get(id, context))?.landed).toBeUndefined()
+    }
+    if (kind === 'stopped') await verifyReplacementAndRecreation()
     expect(await reconcile()).toEqual({ status: kind === 'parked' ? 'queued' : 'landed' })
     if (kind === 'parked') {
       harness.release()
@@ -408,7 +434,7 @@ it.each(['parked', 'stopped'] as const)(
     expect(after.results[submission].delivery?.publishApproved).toBeUndefined()
     expect(after.results[submission].delivery?.approvals).toEqual(delivery.approvals)
     expect(after.results[submission].pushed).toBeUndefined()
-    expect(after.items[String(id)].landed).toBe(kind === 'parked' ? merged : later)
+    expect(after.items[String(id)].landed).toBe(kind === 'parked' ? merged : undefined)
     expect(await git(projectRoot, 'rev-parse', 'refs/heads/main')).toBe(
       kind === 'parked' ? merged : later,
     )
@@ -424,3 +450,54 @@ it.each(['parked', 'stopped'] as const)(
     ])
   },
 )
+
+it('returns the retained unmerged close without another read or report', async () => {
+  const { harness, emit, service, id, workspace, tree } = await fixture()
+  const { id: submission, lander } = await service.submit(id, 'None', context)
+  const reason = 'Delivery PR was closed without merging'
+  const candidate = await git(workspace.path, 'rev-parse', 'HEAD')
+  await harness.commit(async (tx) => {
+    const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+    const [entry] = index.queue.splice(0, 1)
+    index.results[submission] = {
+      ...entry,
+      lander,
+      outcome: 'failed',
+      reason,
+      delivery: {
+        settings: {
+          repository: 'example/my-app',
+          remote: 'origin',
+          base: 'main',
+          checks: ['verify'],
+          requiredChecks: ['verify'],
+        },
+        candidate,
+        tree,
+        baseline: workspace.base,
+        branch: `ultimate-delivery/${submission}`,
+        pr: 7,
+        stage: 'closed',
+        cause: 'closed',
+        reason,
+        risk: 'medium',
+        review: 'fixture',
+        runtime: advance.deliveryRuntime(),
+        checkedAt: 1,
+      },
+    }
+  }, context)
+  const observe = vi
+    .spyOn(advance, 'observePullOutcome')
+    .mockRejectedValue(new Error('Unexpected GitHub read'))
+  const signal = new AbortController().signal
+  const reconcile = () =>
+    service.reconcileDelivery({ id: submission, candidate, tree }, [id], signal, context)
+  const snapshot = () => harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context)
+  const before = await snapshot()
+  expect(await reconcile()).toEqual({ status: 'closed' })
+  expect(await reconcile()).toEqual({ status: 'closed' })
+  expect(observe).not.toHaveBeenCalled()
+  expect(await snapshot()).toEqual(before)
+  expect(emit.mock.calls).toEqual([])
+})

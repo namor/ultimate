@@ -91,6 +91,50 @@ describe('PR delivery', () => {
       expect(requests).toEqual(['GET repos/example/my-app/pulls/3'])
     },
   )
+  it.each([false, true])(
+    'does not merge after the final PR read reports a different base commit (closed: %s)',
+    async (closed) => {
+      const d: Delivery = { ...makeDelivery(), pr: 3, stage: 'merge' }
+      const requests: string[] = []
+      let reads = 0
+      const api: Github = async (path, method = 'GET') => {
+        requests.push(method)
+        if (path === baseRef) return refs('main', baseline) as never
+        if (path.endsWith('/protection')) return protection as never
+        if (path.includes('/check-runs'))
+          return {
+            total_count: 1,
+            check_runs: [
+              {
+                name: 'verify',
+                head_sha: candidate,
+                status: 'completed',
+                conclusion: 'success',
+                app: { id: 1, slug: 'github-actions' },
+              },
+            ],
+          } as never
+        const response = pull()
+        if (++reads > 1) {
+          response.base.sha = merged
+          if (closed) response.state = 'closed'
+        }
+        return response as never
+      }
+      const result = await advanceDelivery(
+        '/project',
+        d,
+        async () => {},
+        new AbortController().signal,
+        api,
+      )
+      expect(result.stage).toBe(closed ? 'closed' : 'blocked')
+      expect(result.cause).toBe(closed ? 'closed' : 'safety')
+      expect(result.mergeIntent).toBeUndefined()
+      expect(requests).not.toContain('PUT')
+    },
+  )
+
   it.each(['create', 'merge'] as const)(
     'can retry a definitively rejected %s without retaining a false uncertain intent',
     async (operation) => {
@@ -142,11 +186,14 @@ describe('PR delivery', () => {
     },
   )
 
-  it.each(['publish', 'merge'] as const)(
+  it.each(['publish', 'merge', 'intent before a manual merge'] as const)(
     'reconciles an interrupted %s without repeating its external write',
-    async (stage) => {
+    async (operation) => {
+      const stage = operation === 'publish' ? 'publish' : 'merge'
+      const manual = operation === 'intent before a manual merge'
       let saved: Delivery = { ...makeDelivery(), stage, ...(stage === 'merge' ? { pr: 3 } : {}) }
       let happened = false
+      let green = true
       let writes = 0
       const controller = new AbortController()
       vi.mocked(git).mockImplementation(async (...args) => {
@@ -157,10 +204,13 @@ describe('PR delivery', () => {
           controller.abort(new Error('interrupted'))
           throw new Error('lost push response')
         }
+        if (args.includes('--format=%P')) return `${baseline} ${candidate}`
+        if (args.includes('rev-parse')) return tree
         return ''
       })
       const api: Github = async (path, method) => {
         if (path === baseRef) return refs('main', baseline) as never
+        if (path.endsWith('/git/ref/heads/main')) return refs('main', merged)[0] as never
         if (path === deliveryRef) return (happened ? refs(saved.branch, candidate) : []) as never
         if (path.endsWith('/protection')) return protection as never
         if (path.includes('/check-runs'))
@@ -171,7 +221,7 @@ describe('PR delivery', () => {
                 name: 'verify',
                 head_sha: candidate,
                 status: 'completed',
-                conclusion: 'success',
+                conclusion: green ? 'success' : 'failure',
                 app: { id: 1, slug: 'github-actions' },
               },
             ],
@@ -186,10 +236,25 @@ describe('PR delivery', () => {
       }
       const save = async (d: Delivery) => {
         saved = structuredClone(d)
+        if (manual && d.mergeIntent && !happened) {
+          controller.abort(new Error('interrupted'))
+          happened = true
+        }
       }
       await expect(
         advanceDelivery('/project', saved, save, controller.signal, api),
       ).rejects.toThrow('interrupted')
+      let rejected: Delivery | undefined
+      if (manual) {
+        green = false
+        rejected = await advanceDelivery('/project', saved, save, new AbortController().signal, api)
+        green = true
+        saved.stage = saved.resumeStage!
+      }
+      expect(rejected?.stage).toBe(manual ? 'blocked' : undefined)
+      expect(rejected?.cause).toBe(manual ? 'safety' : undefined)
+      expect(rejected?.mergeIntent).toBe(manual ? true : undefined)
+      expect(rejected?.merged).toBeUndefined()
       await advanceDelivery(
         '/project',
         structuredClone(saved),
@@ -197,8 +262,15 @@ describe('PR delivery', () => {
         new AbortController().signal,
         api,
       )
-      expect(writes).toBe(1)
+      expect(writes).toBe(manual ? 0 : 1)
       expect(saved.stage).toBe(stage === 'publish' ? 'pr' : 'merged')
+      expect(saved.observedMerge).toEqual(
+        stage === 'merge' ? { targetTip: merged, parent: baseline } : undefined,
+      )
+      expect(saved.mergeReceipt).toBeUndefined()
+      expect(saved.decisions?.at(-1)?.what).toBe(
+        stage === 'merge' ? 'observed GitHub merge after recorded intent' : 'reconcile publication',
+      )
     },
   )
 

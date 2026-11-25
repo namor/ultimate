@@ -36,6 +36,7 @@ export type Delivery = {
   publishIntent?: boolean
   createIntent?: boolean
   mergeIntent?: boolean
+  mergeReceipt?: string
   pr?: number
   url?: string
   merged?: string

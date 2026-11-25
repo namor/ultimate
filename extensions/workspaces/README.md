@@ -246,8 +246,9 @@ For a parked delivery, the submitting branch or @ultimate can call `workspaces/r
 The action reads GitHub without publishing, merging, closing or retrying the PR. It queues a proven terminal outcome for the
 lander. An open PR leaves the wait unchanged. The same action can correct a retained failed result with an exact stop decision
 if the local target already contains the proven merge. It keeps the stop in the audit, emits the first `workspaces.landed` for
-that submission, and does not conclude the branch or overwrite a newer landing. Repeating it does not emit another event.
-Neither path records an approval or a merge intent.
+that submission. It does not conclude the branch or change the workspace's current landing marker. Repeating it does not emit another event.
+Neither path records an approval or a merge intent. A saved merge intent without a successful GitHub response does not prove
+who merged it. The lander applies the same observation checks before recovering that outcome.
 
 ### Approval rules
 

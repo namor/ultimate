@@ -344,7 +344,7 @@ export const landerSettings = async (host: Pick<Host, 'projectSettings'>): Promi
   }
 }
 export const contains = (cwd: string, ancestor: string, descendant: string) =>
-  git(cwd, 'merge-base', '--is-ancestor', ancestor, descendant).then(
+  git(cwd, '--no-replace-objects', 'merge-base', '--is-ancestor', ancestor, descendant).then(
     () => true,
     () => false,
   )
@@ -359,7 +359,7 @@ export async function fastForwardOnlyTargetBranch(
     .map((record) => record.split('\n'))
     .find((record) => record.includes(`branch refs/heads/${target}`))?.[0]
     .slice('worktree '.length)
-  if (worktree) await git(worktree, 'merge', '-q', '--ff-only', integrated)
+  if (worktree) await git(worktree, '--no-replace-objects', 'merge', '-q', '--ff-only', integrated)
   else await git(source, 'update-ref', `refs/heads/${target}`, integrated, base)
 }
 const lines = (text: string) => text.split('\n').filter(Boolean)
@@ -384,8 +384,10 @@ export async function mergedDeliveryOutcome(
     delivery,
     sha,
     base,
-    commits: lines(await git(source, 'log', '--oneline', `${base}..${sha}`)),
-    paths: lines(await git(source, 'diff', '--name-only', base, sha)),
+    commits: lines(
+      await git(source, '--no-replace-objects', 'log', '--oneline', `${base}..${sha}`),
+    ),
+    paths: lines(await git(source, '--no-replace-objects', 'diff', '--name-only', base, sha)),
     flaky: [],
     ...(delivery.observedMerge ? {} : { pushed: `${delivery.settings.remote}/${target}` }),
     pr: delivery.url,
@@ -1096,7 +1098,10 @@ export function createLander(
                 )
               const outcome = await mergedDeliveryOutcome(source, target, delivery)
               const { sha } = outcome
-              if ((await git(source, 'rev-parse', `${sha}^{tree}`)) !== delivery.tree)
+              if (
+                (await git(source, '--no-replace-objects', 'rev-parse', `${sha}^{tree}`)) !==
+                delivery.tree
+              )
                 throw new Error('GitHub merge tree differs from the verified candidate')
               return await serializeSourceWrites(source, async () => {
                 const current = await git(source, 'rev-parse', `refs/heads/${target}`)

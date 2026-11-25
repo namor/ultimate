@@ -365,6 +365,8 @@ export function workspaces(host: Host) {
     }
     const prior = read((await host.harness().snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!)
     if (prior.retained?.outcome === 'landed') return { status: 'landed' as const }
+    if (prior.retained?.outcome === 'failed' && prior.delivery.stage === 'closed')
+      return { status: 'closed' as const }
     if (
       prior.retained &&
       (prior.retained.sha ||
@@ -434,14 +436,13 @@ export function workspaces(host: Host) {
             ),
         )
         const workspace = index.items[String(current.owner)]
-        if (workspace?.source === current.source && workspace.target === result.target) {
-          workspace.landed ??= outcome.sha
-          if (
-            workspace.continuation?.tracks === 'delivery' &&
-            workspace.continuation.submission === id
-          )
-            delete workspace.continuation
-        }
+        if (
+          workspace?.source === current.source &&
+          workspace.target === result.target &&
+          workspace.continuation?.tracks === 'delivery' &&
+          workspace.continuation.submission === id
+        )
+          delete workspace.continuation
         await log(tx, result.lander, { ...result, id, conversationId: current.owner }, outcome)
         await resolveContinuations(tx, index, id, Continuation, false)
         await emitLanding(host, tx, id, current.owner, result)

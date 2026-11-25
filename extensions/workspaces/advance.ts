@@ -168,7 +168,7 @@ export async function observePullOutcome(
   if (!delivery.pr || !Number.isSafeInteger(delivery.pr) || delivery.pr < 1)
     throw new Block('safety', 'No exact recorded delivery PR to reconcile')
   const pull = await api<Pull>(`repos/${delivery.settings.repository}/pulls/${delivery.pr}`)
-  return terminalPull(source, delivery, pull, signal, api, now, true)
+  return terminalPull(source, delivery, pull, signal, api, now)
 }
 
 async function terminalPull(
@@ -178,7 +178,6 @@ async function terminalPull(
   signal: AbortSignal,
   api: Github,
   now: number,
-  verifyObserved = !d.mergeIntent,
 ): Promise<Delivery | undefined> {
   assertPull(d, pull)
   if (typeof pull.merged !== 'boolean')
@@ -198,6 +197,8 @@ async function terminalPull(
     ]
   }
   if (!pull.merged) {
+    if (d.merged || d.mergeReceipt)
+      throw new Block('safety', 'GitHub reported an unmerged PR after a recorded merge')
     result.stage = 'closed'
     result.cause = 'closed'
     result.reason = 'Delivery PR was closed without merging'
@@ -206,9 +207,11 @@ async function terminalPull(
   }
   const sha = pull.merge_commit_sha
   if (!fullSha(sha)) throw new Block('safety', 'GitHub did not report an exact merge commit')
+  if ((d.mergeReceipt && d.mergeReceipt !== sha) || (d.merged && d.merged !== sha))
+    throw new Block('safety', 'GitHub reported a merge different from the recorded merge')
   result.stage = 'merged'
   result.merged = sha
-  if (verifyObserved) {
+  if (!d.mergeIntent || d.mergeReceipt !== sha) {
     if (![d.baseline, d.candidate, d.tree].every(fullSha))
       throw new Block(
         'safety',
@@ -315,9 +318,25 @@ export async function advanceDelivery(
     throw new Block('stale', `${base} moved to ${target.slice(0, 7)} since the candidate was built`)
   }
   let write: 'create' | 'merge' | undefined
-  if (d.stage === 'blocked' || d.stage === 'merged' || d.stage === 'closed' || d.stage === 'review')
+  if (
+    d.stage === 'blocked' ||
+    d.stage === 'closed' ||
+    d.stage === 'review' ||
+    (d.stage === 'merged' && (d.observedMerge || (d.mergeReceipt && d.mergeReceipt === d.merged)))
+  )
     return d
+  const readPull = () => api<Pull>(`${prefix}/pulls/${d.pr}`)
+  const settle = async (pull: Pull) => {
+    const terminal = await terminalPull(source, d, pull, signal, api, now)
+    if (terminal) await save(terminal)
+    return terminal
+  }
   try {
+    if (d.stage === 'ci' || d.stage === 'merge' || d.stage === 'merged') {
+      const terminal = await settle(await readPull())
+      if (terminal) return terminal
+      if (d.stage === 'merged') throw new Block('safety', 'The recorded merged PR is now open')
+    }
     if (d.runtime !== deliveryRuntime())
       throw new Block('runtime', 'Verification runtime changed; verify a new delivery')
     if (waits(d)?.on === 'publish') return d
@@ -397,12 +416,6 @@ export async function advanceDelivery(
       d.stage = 'ci'
       return persist()
     }
-    const pull = await api<Pull>(`${prefix}/pulls/${d.pr}`)
-    const terminal = await terminalPull(source, d, pull, signal, api, now)
-    if (terminal) {
-      await save(terminal)
-      return terminal
-    }
     if (d.mergeIntent)
       throw new Block('uncertain-write', 'Merge outcome is uncertain; reconcile before retrying')
     const { protection, checks } = await readChecks(api, d)
@@ -468,20 +481,19 @@ export async function advanceDelivery(
       return persist()
     }
     if (d.risk !== 'low' && !d.mergeApproved) return d
-    let stale: Block | undefined
+    const fresh = await readPull()
+    const terminal = await settle(fresh)
+    if (terminal) return terminal
     try {
       await requireBaseline()
     } catch (error) {
       if (!(error instanceof Block) || error.cause !== 'stale') throw error
-      stale = error
+      const raced = await settle(await readPull())
+      if (raced) return raced
+      throw error
     }
-    const fresh = await api<Pull>(`${prefix}/pulls/${d.pr}`)
-    const settled = await terminalPull(source, d, fresh, signal, api, now)
-    if (settled) {
-      await save(settled)
-      return settled
-    }
-    if (stale) throw stale
+    if (fresh.base.sha !== d.baseline)
+      throw new Block('safety', 'The fresh PR base commit differs from the verified baseline')
     d.mergeIntent = true
     try {
       await persist()
@@ -489,6 +501,7 @@ export async function advanceDelivery(
       delete d.mergeIntent
       throw error
     }
+    signal.throwIfAborted()
     write = 'merge'
     const merged = await api<{ merged: boolean; sha: string }>(
       `${prefix}/pulls/${d.pr}/merge`,
@@ -498,10 +511,15 @@ export async function advanceDelivery(
         merge_method: 'merge',
       },
     )
+    if (typeof merged.merged !== 'boolean')
+      throw new Block('uncertain-write', 'GitHub returned no exact merge receipt')
     if (!merged.merged) {
       delete d.mergeIntent
       throw new Block('github', 'GitHub refused the merge')
     }
+    if (!fullSha(merged.sha))
+      throw new Block('uncertain-write', 'GitHub returned no exact merge receipt')
+    d.mergeReceipt = merged.sha
     return persist()
   } catch (error) {
     signal.throwIfAborted()
