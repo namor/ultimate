@@ -43,6 +43,13 @@ export const DeliveryAction = actionRef<
   },
   { ok: true }
 >('workspaces', 'delivery')
+
+/** Observe the exact delivery PR, without authorizing writes. Queue a terminal outcome, or correct a retained stop. */
+export const ReconcileAction = actionRef<
+  { id: string; candidate: string; tree: string },
+  { status: 'queued' | 'landed' | 'closed' }
+>('workspaces', 'reconcile')
+
 /**
  * `{ instruction, hours? }` grants the time-boxed standing delivery approval (@ultimate only, on the user's typed
  * instruction entry; default 24 hours); `{ revoke: true }` revokes it (the user's click, or @ultimate).

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
 import { expect, it, vi } from 'vitest'
 import { git } from '../../../lib/git.ts'
@@ -21,6 +22,7 @@ import type { QueueEntry, StandingGrant } from '../types.ts'
 
 vi.mock('../../../lib/git.ts', () => ({ git: vi.fn<typeof git>() }))
 
+const shaFor = (key: string) => createHash('sha1').update(key).digest('hex')
 const MIN = 60_000
 const END = 150
 const repository = 'example/my-app'
@@ -113,7 +115,7 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
   const approvals: string[] = []
   const runs = new Map<string, Check[][]>()
   let minute = 0
-  let main = 'initial-main'
+  let main = shaFor('initial-main')
   let slotHold = 0,
     stuck = 0,
     clicks = 0,
@@ -132,8 +134,8 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
       stage,
       risk: s.approval && e.id === 'A' ? 'medium' : 'low',
       baseline: main,
-      candidate: `${e.id}-sha${suffix}`,
-      tree: `${e.id}-tree${suffix}`,
+      candidate: shaFor(`${e.id}-sha${suffix}`),
+      tree: shaFor(`${e.id}-tree${suffix}`),
       branch: `ultimate-delivery/${e.id}${suffix}`,
       review: 'Independent review of the fixture tree',
       checkedAt: minute * MIN,
@@ -156,11 +158,11 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
   const finish = (p: ReturnType<typeof create>) => {
     p.merged = true
     p.state = 'closed'
-    main = p.merge_commit_sha = `merge-${p.head.sha}`
+    main = p.merge_commit_sha = shaFor(`merge-${p.head.sha}`)
   }
   const startRun = (sha: string) => {
     const history = runs.get(sha) ?? []
-    const scripted = sha === 'A-sha' && s.checks ? s.checks[history.length] : success
+    const scripted = sha === shaFor('A-sha') && s.checks ? s.checks[history.length] : success
     if (scripted === undefined) throw new Error(`Unexpected CI run for ${sha}`)
     history.push(scripted ? [{ ...scripted, atMinute: minute + scripted.atMinute }] : [])
     runs.set(sha, history)
@@ -176,7 +178,7 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
     const p = publishPR(d)
     entries[0].delivery = { ...d, pr: p.number, since: 0, published: true, slot: true }
     if (s.stale) entries[0].delivery.pollAt = MIN
-    if (s.approval) runs.get(d.candidate)![0] = [check(0, 'success')]
+    if (s.approval || s.external) runs.get(d.candidate)![0] = [check(0, 'success')]
     if (s.external) finish(p)
   }
   if (s.stale) entries[1].delivery = build(entries[1])
@@ -188,11 +190,20 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
       pushes.set(ref, { sha, minute })
       return ''
     }
+    if (s.external && command === '--no-replace-objects') {
+      const first = pulls[0]
+      if (args[0] === 'show' && args.at(-1) === first.merge_commit_sha)
+        return `${first.base.sha} ${first.head.sha}`
+      if (args[0] === 'rev-parse') return entries[0].delivery!.tree
+      if (args[0] === 'cat-file' || args[0] === 'merge-base') return ''
+    }
     throw new Error(`Unexpected git command: ${command} ${args.join(' ')}`)
   })
   const api: Github = async (path, method = 'GET', fields = {}) => {
     calls.push({ path, method, minute, body: fields.body })
     const p = pulls[Number(/\/(?:pulls|issues)\/(\d+)/.exec(path)?.[1]) - 1]
+    if (path.endsWith('/git/ref/heads/main'))
+      return { ref: 'refs/heads/main', object: { type: 'commit', sha: main } } as never
     const query = new URLSearchParams(path.split('?')[1])
     const branch = path.split('/git/matching-refs/heads/')[1]
     if (branch) {
@@ -285,6 +296,10 @@ async function replay(s: Scenario, mode: 'OLD' | 'NEW', mergeIntent = false) {
     if (!before) {
       // Local verification occupies this tick; publication can start next minute.
       e.delivery = build(e)
+      return true
+    }
+    if (mode === 'OLD' && s.external && e.id === 'A') {
+      e.delivery = { ...before, stage: 'blocked', cause: 'safety' }
       return true
     }
     const d = await advanceDelivery(
@@ -467,11 +482,17 @@ it.each(slow)('$name', async (s) => {
   expect(r.wasted).toBe(exhausted ? 3 : 0)
 })
 
-it('parks an externally merged PR for reconciliation', async () => {
+it('records an externally merged PR and continues without writing to it', async () => {
   const r = await replay(external, 'NEW')
-  expect(r.entries[0].delivery).toMatchObject(blocked('safety', 'user'))
-  expect(waits(r.entries[0].delivery!)?.on).toBe('user')
-  expect([...r.merged.keys()]).toEqual(['B'])
+  expect(r.entries[0].delivery).toMatchObject({
+    stage: 'merged',
+    observedMerge: expect.any(Object),
+  })
+  expect(r.entries[0].delivery?.mergeIntent).toBeUndefined()
+  expect([...r.merged.keys()]).toEqual(['A', 'B'])
+  expect(
+    r.calls.filter(({ path, method }) => path.includes('/pulls/1') && method !== 'GET'),
+  ).toEqual([])
 })
 
 it.each([stale, green])('$name: B publishes after A merges', async (s) => {
@@ -488,7 +509,7 @@ it(`${stale.name}: rebuilds before spending a push or a CI run on the obsolete S
     delivery: { branch: 'ultimate-delivery/B-r1' },
   })
   expect(r.pushes.has('refs/heads/ultimate-delivery/B')).toBe(false)
-  expect(r.pulls.map((p) => p.head.sha)).toEqual(['A-sha', 'B-sha-r1'])
+  expect(r.pulls.map((p) => p.head.sha)).toEqual([shaFor('A-sha'), shaFor('B-sha-r1')])
   expect(r.wasted).toBe(0)
 })
 
@@ -512,7 +533,7 @@ it('lets three low PRs merge during the two-hour approval wait', async () => {
   expect([...r.merged.keys()]).toEqual(['B', 'C', 'D', 'A'])
   expect(r.merged.get('D')).toBeLessThan(120)
   expect(r.entries[0].rebuilds).toBe(1)
-  expect(r.approvals).toEqual(['A-sha', 'A-sha-r1'])
+  expect(r.approvals).toEqual([shaFor('A-sha'), shaFor('A-sha-r1')])
   expect(await replay(medium, 'OLD')).toMatchObject({ stuck: 3 })
   expect((await replay(medium, 'OLD')).clicks).toBeGreaterThan(0)
 })

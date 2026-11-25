@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { advanceDelivery, deliveryRuntime, github, GithubRequestError } from '../advance.ts'
+import {
+  advanceDelivery,
+  deliveryRuntime,
+  github,
+  GithubRequestError,
+  observePullOutcome,
+} from '../advance.ts'
 import type { Delivery } from '../delivery.ts'
 import type { Github } from '../advance.ts'
 import { exec } from '../../../lib/exec.ts'
@@ -52,6 +58,39 @@ const protection = {
 }
 
 describe('PR delivery', () => {
+  it.each(['number', 'head', 'branch', 'base', 'repository'] as const)(
+    'holds a purported terminal PR with a different %s',
+    async (field) => {
+      const d = { ...makeDelivery(), pr: 3, stage: 'ci' as const }
+      const response = pull(true)
+      switch (field) {
+        case 'number':
+          response.number++
+          break
+        case 'head':
+          response.head.sha = baseline
+          break
+        case 'branch':
+          response.head.ref = 'unrelated'
+          break
+        case 'base':
+          response.base.ref = 'unrelated'
+          break
+        case 'repository':
+          response.base.repo.full_name = 'example/unrelated'
+          break
+      }
+      const requests: string[] = []
+      const api: Github = async (path, method = 'GET') => {
+        requests.push(`${method} ${path}`)
+        return response as never
+      }
+      await expect(
+        observePullOutcome('/project', d, new AbortController().signal, api),
+      ).rejects.toThrow('PR identity changed')
+      expect(requests).toEqual(['GET repos/example/my-app/pulls/3'])
+    },
+  )
   it.each(['create', 'merge'] as const)(
     'can retry a definitively rejected %s without retaining a false uncertain intent',
     async (operation) => {

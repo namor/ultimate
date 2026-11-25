@@ -4,6 +4,7 @@ import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
 import { createLander } from '../lander.ts'
 import { advanceDelivery, deliveryRuntime } from '../advance.ts'
 import { pick } from '../delivery.ts'
+import { SubmissionFailed } from '../api.ts'
 import { deliveryAsk } from '../ask.ts'
 import type { Delivery } from '../delivery.ts'
 import type { WorkspaceIndex } from '../types.ts'
@@ -58,9 +59,10 @@ function fixture(delivery?: Delivery) {
       return result
     },
   }
+  const emit = vi.fn<(...args: unknown[]) => void>()
   const { land, next } = createLander(
     {
-      emit: async () => undefined,
+      emit,
       harness: () => ({ commit: runtime.commit, conversation: async () => undefined }),
       doc: () => undefined,
       notice: () => undefined,
@@ -76,7 +78,7 @@ function fixture(delivery?: Delivery) {
       context,
     )
   const schedule = () => next({ input: { source: '/fixture' } } as never, runtime as never, context)
-  return { index, commits, run, schedule }
+  return { index, commits, emit, run, schedule }
 }
 
 it('parks through the scheduler, so an approval committed after its snapshot is picked up next', async () => {
@@ -205,4 +207,63 @@ it('rejects a changed runtime before reading cached check results or touching Gi
     reason: 'verification runtime changed; submit again',
   })
   expect(f.index.queue).toEqual([])
+})
+
+it('reports a manual close as a terminal failure even when the merge waited for approval', async () => {
+  const settings = {
+    repository: 'example/my-app',
+    remote: 'origin',
+    base: 'main',
+    checks: ['verify'],
+    requiredChecks: ['verify'],
+  }
+  const d: Delivery = {
+    settings,
+    candidate: 'a'.repeat(40),
+    baseline: 'b'.repeat(40),
+    tree: 'c'.repeat(40),
+    branch: 'ultimate-delivery/test',
+    checkedAt: 1,
+    runtime: deliveryRuntime(),
+    stage: 'merge',
+    risk: 'medium',
+    review: 'review of fixture tree',
+    pr: 3,
+    url: 'https://github.com/example/my-app/pull/3',
+  }
+  const f = fixture(d)
+  const actual = await vi.importActual<typeof import('../advance.ts')>('../advance.ts')
+  const requests: string[] = []
+  const api: import('../advance.ts').Github = async (path, method = 'GET') => {
+    requests.push(`${method} ${path}`)
+    return {
+      number: 3,
+      state: 'closed',
+      merged: false,
+      head: { sha: d.candidate, ref: d.branch, repo: { full_name: settings.repository } },
+      base: { ref: settings.base, repo: { full_name: settings.repository } },
+    } as never
+  }
+  vi.mocked(advanceDelivery).mockImplementation((source, delivery, save, signal) =>
+    actual.advanceDelivery(
+      source,
+      { ...delivery, runtime: actual.deliveryRuntime() },
+      save,
+      signal,
+      api,
+    ),
+  )
+  await f.run()
+  expect(requests).toEqual(['GET repos/example/my-app/pulls/3'])
+  expect(f.index.queue).toEqual([])
+  expect(f.index.closing).toBeUndefined()
+  expect(f.index.results.submission).toMatchObject({
+    outcome: 'failed',
+    reason: 'Delivery PR was closed without merging',
+    delivery: { cause: 'closed', stage: 'closed', pr: 3 },
+  })
+  expect(f.index.results.submission.delivery?.mergeApproved).toBeUndefined()
+  expect(f.index.results.submission.delivery?.mergeIntent).toBeUndefined()
+  expect(f.emit.mock.calls.map(([, event]) => event)).toEqual([SubmissionFailed])
+  expect(f.commits.at(-1)).toMatchObject({ checkpoint: { phase: 'report', id: 'submission' } })
 })

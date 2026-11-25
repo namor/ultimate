@@ -33,6 +33,7 @@ import {
   IsolationAction,
   PendingAction,
   ProgressAction,
+  ReconcileAction,
   RepoAction,
   StandingAction,
   StatsAction,
@@ -211,6 +212,34 @@ function deliveryDevice(ctx: ActionContext) {
 }
 
 export const actions = {
+  reconcile: implementAction(ReconcileAction, async (args, ctx) => {
+    const { host, conversationId } = ctx
+    const device = deliveryDevice(ctx)
+    if (
+      !args ||
+      typeof args !== 'object' ||
+      Array.isArray(args) ||
+      typeof args.id !== 'string' ||
+      typeof args.candidate !== 'string' ||
+      typeof args.tree !== 'string'
+    )
+      throw new Error('Expected a delivery id, candidate and tree')
+    const standing = host.doc('ultimate.standing-agents')
+    const ultimate =
+      standing && (await host.harness().snapshot(standing, ROOT_CONVERSATION_ID, context))?.ultimate
+    const actors =
+      device || (conversationId !== undefined && conversationId === ultimate)
+        ? undefined
+        : conversationId === undefined
+          ? []
+          : [conversationId]
+    return workspaces(host).reconcileDelivery(
+      { id: args.id, candidate: args.candidate, tree: args.tree },
+      actors,
+      ctx.signal,
+      context,
+    )
+  }),
   delivery: implementAction(DeliveryAction, async (args, ctx) => {
     const { host, conversationId } = ctx
     const device = deliveryDevice(ctx)

@@ -171,19 +171,20 @@ person, it ends, and the action that clears the wait (an approval, a recheck, a 
 (`delivery.ts`) is the single source of truth for "who clears it"; the card, the sidebar, the questions pill and `authorize`
 all read it.
 
-| stage                         | waits on                                      | holds the slot | who moves it                                                                   | bounded by                                               |
-| ----------------------------- | --------------------------------------------- | -------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------- |
-| queued, verifying             | the lander                                    | yes            | lander                                                                         | check watchdog                                           |
-| `review`                      | independent review of the integration tree    | no             | the branch resubmits with `reviewedTree`                                       | none                                                     |
-| `publish` (high risk)         | PR approval for publish and conditional merge | no             | user or @ultimate on instruction; standing approval can authorize publish only | none                                                     |
-| `publish` (sibling in flight) | the repository's in-flight PR                 | no             | lander, once that PR merges or parks                                           | none                                                     |
-| `pr`, `ci`                    | GitHub                                        | no             | lander, every 30 s                                                             | a required check idle for 60 min is rerun, at most twice |
-| `merge` (without approval)    | PR approval                                   | no             | user, @ultimate on instruction or standing approval                            | none                                                     |
-| `merge` (low or approved)     | GitHub                                        | no             | lander: head-sha merge after a fresh base check                                | none                                                     |
-| `merged`                      | the lander                                    | yes            | lander: fast-forwards the local target                                         | none                                                     |
-| `blocked`, branch             | the submitting branch                         | no             | branch or @ultimate: recheck (3 per candidate), stop, resubmit (supersedes)    | 3 wakes per branch chain, then @ultimate                 |
-| `blocked`, user               | the user                                      | no             | user, or @ultimate on instruction: recheck or stop                             | none                                                     |
-| `blocked`, `stale`            | the lander                                    | yes (briefly)  | lander: closes its PR, rebuilds the same submission on the current base        | 3 rebuilds, then @ultimate                               |
+| stage                         | waits on                                      | holds the slot | who moves it                                                                    | bounded by                                               |
+| ----------------------------- | --------------------------------------------- | -------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| queued, verifying             | the lander                                    | yes            | lander                                                                          | check watchdog                                           |
+| `review`                      | independent review of the integration tree    | no             | the branch resubmits with `reviewedTree`                                        | none                                                     |
+| `publish` (high risk)         | PR approval for publish and conditional merge | no             | user or @ultimate on instruction; standing approval can authorize publish only  | none                                                     |
+| `publish` (sibling in flight) | the repository's in-flight PR                 | no             | lander, once that PR merges or parks                                            | none                                                     |
+| `pr`, `ci`                    | GitHub                                        | no             | lander, every 30 s                                                              | a required check idle for 60 min is rerun, at most twice |
+| `merge` (without approval)    | PR approval                                   | no             | user, @ultimate on instruction or standing approval                             | none                                                     |
+| `merge` (low or approved)     | GitHub                                        | no             | lander: head-sha merge after a fresh base check                                 | none                                                     |
+| `merged`                      | the lander                                    | yes            | lander: fast-forwards the local target if it does not already contain the merge | none                                                     |
+| `closed`                      | the lander                                    | yes (briefly)  | lander: records a failed outcome and reports it to the branch                   | none                                                     |
+| `blocked`, branch             | the submitting branch                         | no             | branch or @ultimate: recheck (3 per candidate), stop, resubmit (supersedes)     | 3 wakes per branch chain, then @ultimate                 |
+| `blocked`, user               | the user                                      | no             | user, or @ultimate on instruction: recheck or stop                              | none                                                     |
+| `blocked`, `stale`            | the lander                                    | yes (briefly)  | lander: closes its PR, rebuilds the same submission on the current base         | 3 rebuilds, then @ultimate                               |
 
 **Mechanical decisions are the lander's code.** Every block carries a structured `cause` (`check-failed`, `infra`, `closed`,
 `runtime`, `github`, `uncertain-write`, `auth`, `safety`, `stale`); nothing matches reason text. A required check that
@@ -215,14 +216,14 @@ the PR link. `watcher`, `scout` and `worker` were considered and rejected: a wat
 the lander already polls durably, a scout cannot act, and a worker lacks the branch's context.
 
 **Blocked deliveries are the branch's to repair.** Each block is reported once (`delivery.wake`, numbered by `blocks`, with a
-per-block request id). A block the branch can repair (a failed check, a timeout, a closed PR) wakes the submitting branch with
+per-block request id). A block the branch can repair (a failed check or a timeout) wakes the submitting branch with
 the reason, the candidate and the PR's checks page; a concluded branch is resumed by that input. The branch, or @ultimate,
 then calls `delivery` with `recheck` or `stop` itself, without an instruction: recorded as `by: 'agent'` with its conversation,
 and a stop reads "Stopped by conversation #id". Agents get at most three rechecks per candidate; after that the user's click
 (or @ultimate on their instruction) can still recheck, and stop is always allowed. A repaired candidate is a fresh `workspace
 submit`, with its own review and approvals. A branch is woken for at most three blocks across its resubmissions (reset when it
 lands); a later block, or one that needs the user (an uncertain remote write, a GitHub login or credential, a publish or merge
-approval, a safety hold such as a branch collision or an outside merge), wakes no model: it goes to @ultimate's conversation as
+approval, a safety hold such as a branch collision), wakes no model: it goes to @ultimate's conversation as
 a card to ask the user, and to the branch as a note, and agents cannot recheck it. Agents never publish or merge this way;
 those stay with the user as below.
 
@@ -231,6 +232,24 @@ Automatic merge requires strict required-check protection including administrato
 candidate. Empty, missing, skipped, neutral, cancelled and timed-out checks are not success. The current base must descend from the
 recorded baseline and be contained in the checked candidate. An ordinary head-SHA-guarded merge preserves its tested tree; local main
 advances only after GitHub confirms that merge and its tree. Publication, CI and merge are distinct stages on the submit card.
+
+### Manual PR outcomes
+
+The lander recognizes a manual merge on its next PR read. It checks the repository, PR number, head branch, candidate and
+base. It requires passing checks on that candidate. The reported merge must be on the GitHub target, with the exact candidate
+as the second parent and the verified tree on both the merge and candidate. The first parent must descend from the verified baseline.
+Squash and rebase merges do not provide this parent evidence. If the local target is behind, the lander fast-forwards it. If it
+already contains the merge, the lander leaves it alone. Conflicting evidence stays on hold. An exact PR closed without a merge
+ends as a failed delivery. It wakes the submitting branch and does not emit `workspaces.landed`.
+
+For a parked delivery, the submitting branch or @ultimate can call `workspaces/reconcile` with `{ id, candidate, tree }`.
+The action reads GitHub without publishing, merging, closing or retrying the PR. It queues a proven terminal outcome for the
+lander. An open PR leaves the wait unchanged. The same action can correct a retained failed result with an exact stop decision
+if the local target already contains the proven merge. It keeps the stop in the audit, emits the first `workspaces.landed` for
+that submission, and does not conclude the branch or overwrite a newer landing. Repeating it does not emit another event.
+Neither path records an approval or a merge intent.
+
+### Approval rules
 
 Low-risk work needs independent review but no approval. Medium risk shows **Approve PR** after required GitHub checks pass.
 High risk needs scope agreement before sensitive implementation or publication. After local verification and independent review,

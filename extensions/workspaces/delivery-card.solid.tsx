@@ -16,6 +16,7 @@ const stageLabels = {
   ci: 'Waiting for GitHub checks',
   merge: 'Merging',
   merged: 'Merged; advancing local target',
+  closed: 'PR closed without merging',
   blocked: 'Delivery blocked',
 }
 

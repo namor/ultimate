@@ -93,10 +93,13 @@ export async function closePull(api: Github, repository: string, pr: number, com
 export function assertPull(delivery: Delivery, pull: Pull) {
   const { repository, base } = delivery.settings
   if (
-    pull.head.sha !== delivery.candidate ||
+    !Number.isSafeInteger(pull.number) ||
+    pull.number < 1 ||
+    (delivery.pr !== undefined && pull.number !== delivery.pr) ||
+    pull.head?.sha !== delivery.candidate ||
     pull.head.ref !== delivery.branch ||
     pull.head.repo?.full_name !== repository ||
-    pull.base.repo.full_name !== repository ||
+    pull.base?.repo?.full_name !== repository ||
     pull.base.ref !== base
   )
     throw new Block('safety', 'PR identity changed; delivery stopped')
@@ -133,6 +136,130 @@ export function checksPassed(delivery: Delivery, protection: Protection, checks:
       matches[0].app.id === expected.app_id
     )
   })
+}
+
+const fullSha = (sha: unknown): sha is string =>
+  typeof sha === 'string' && /^[a-f0-9]{40}$/.test(sha)
+
+async function readChecks(api: Github, d: Delivery) {
+  const { repository, base } = d.settings
+  const protection = await api<Protection>(
+    `repos/${repository}/branches/${encodeURIComponent(base)}/protection`,
+  )
+  const pages = await api<{ check_runs: Check[]; total_count: number }>(
+    `repos/${repository}/commits/${d.candidate}/check-runs?filter=latest&per_page=100`,
+  )
+  if (
+    !Array.isArray(pages.check_runs) ||
+    pages.total_count !== pages.check_runs.length ||
+    pages.total_count > 100
+  )
+    throw new Block('safety', 'GitHub did not report a complete check list')
+  return { protection, checks: pages.check_runs }
+}
+
+export async function observePullOutcome(
+  source: string,
+  delivery: Delivery,
+  signal: AbortSignal,
+  api = github(source, signal),
+  now = Date.now(),
+) {
+  if (!delivery.pr || !Number.isSafeInteger(delivery.pr) || delivery.pr < 1)
+    throw new Block('safety', 'No exact recorded delivery PR to reconcile')
+  const pull = await api<Pull>(`repos/${delivery.settings.repository}/pulls/${delivery.pr}`)
+  return terminalPull(source, delivery, pull, signal, api, now, true)
+}
+
+async function terminalPull(
+  source: string,
+  d: Delivery,
+  pull: Pull,
+  signal: AbortSignal,
+  api: Github,
+  now: number,
+  verifyObserved = !d.mergeIntent,
+): Promise<Delivery | undefined> {
+  assertPull(d, pull)
+  if (typeof pull.merged !== 'boolean')
+    throw new Block('safety', 'GitHub did not report whether the PR merged')
+  if (pull.state === 'open' && !pull.merged) return undefined
+  if (pull.state !== 'closed')
+    throw new Block('safety', 'GitHub did not report a consistent PR state')
+  const result = { ...d, since: now }
+  delete result.cause
+  delete result.reason
+  delete result.resumeStage
+  delete result.wake
+  const decide = (what: string, why?: string) => {
+    result.decisions = [
+      ...(d.decisions ?? []).slice(-19),
+      { at: now, what, ...(why ? { why } : {}) },
+    ]
+  }
+  if (!pull.merged) {
+    result.stage = 'closed'
+    result.cause = 'closed'
+    result.reason = 'Delivery PR was closed without merging'
+    decide('PR closed without merge')
+    return result
+  }
+  const sha = pull.merge_commit_sha
+  if (!fullSha(sha)) throw new Block('safety', 'GitHub did not report an exact merge commit')
+  result.stage = 'merged'
+  result.merged = sha
+  if (verifyObserved) {
+    if (![d.baseline, d.candidate, d.tree].every(fullSha))
+      throw new Block(
+        'safety',
+        'The delivery does not record an exact baseline, candidate and tree',
+      )
+    const { protection, checks } = await readChecks(api, d)
+    if (!checksPassed(d, protection, checks))
+      throw new Block('safety', 'Required GitHub checks did not pass on the recorded candidate')
+    const { repository, base, remote } = d.settings
+    const ref = `refs/heads/${base}`
+    const target = await api<{ ref: string; object: { type: string; sha: string } }>(
+      `repos/${repository}/git/ref/heads/${base.split('/').map(encodeURIComponent).join('/')}`,
+    )
+    const targetTip = target.object?.sha
+    if (target.ref !== ref || target.object?.type !== 'commit' || !fullSha(targetTip))
+      throw new Block('safety', 'GitHub did not report the exact target ref')
+    const options = { cwd: source, signal, timeout: 300000 }
+    const local = (...args: string[]) => git(options, '--no-replace-objects', ...args)
+    if (
+      !(await local('cat-file', '-e', `${targetTip}^{commit}`).then(
+        () => true,
+        () => false,
+      ))
+    )
+      await local('fetch', '--no-tags', '--no-write-fetch-head', '--refmap=', remote, ref)
+    const ancestor = (older: string, newer: string) =>
+      local('merge-base', '--is-ancestor', older, newer).then(
+        () => true,
+        () => false,
+      )
+    if (!(await ancestor(sha, targetTip)))
+      throw new Block('safety', 'The GitHub target does not contain the reported merge commit')
+    const [parent, candidate, extra] = (await local('show', '-s', '--format=%P', sha)).split(' ')
+    if (!fullSha(parent) || candidate !== d.candidate || extra !== undefined)
+      throw new Block(
+        'safety',
+        'The reported merge does not have the exact candidate as second parent',
+      )
+    if (!(await ancestor(d.baseline, parent)))
+      throw new Block('safety', 'The merge target parent does not contain the verified baseline')
+    if (
+      (await local('rev-parse', `${sha}^{tree}`)) !== d.tree ||
+      (await local('rev-parse', `${candidate}^{tree}`)) !== d.tree
+    )
+      throw new Block('safety', 'The reported merge and candidate must match the verified tree')
+    result.observedMerge = { targetTip, parent }
+    decide(
+      d.mergeIntent ? 'observed GitHub merge after recorded intent' : 'observed external merge',
+    )
+  }
+  return result
 }
 
 const causeOf = (error: unknown): Cause => {
@@ -188,7 +315,8 @@ export async function advanceDelivery(
     throw new Block('stale', `${base} moved to ${target.slice(0, 7)} since the candidate was built`)
   }
   let write: 'create' | 'merge' | undefined
-  if (d.stage === 'blocked' || d.stage === 'merged' || d.stage === 'review') return d
+  if (d.stage === 'blocked' || d.stage === 'merged' || d.stage === 'closed' || d.stage === 'review')
+    return d
   try {
     if (d.runtime !== deliveryRuntime())
       throw new Block('runtime', 'Verification runtime changed; verify a new delivery')
@@ -270,26 +398,14 @@ export async function advanceDelivery(
       return persist()
     }
     const pull = await api<Pull>(`${prefix}/pulls/${d.pr}`)
-    assertPull(d, pull)
-    if (pull.merged) {
-      if (!d.mergeIntent)
-        throw new Block('safety', 'PR merged outside this delivery; human reconciliation required')
-      if (!pull.merge_commit_sha) throw new Block('github', 'GitHub did not report a merge commit')
-      d.merged = pull.merge_commit_sha
-      d.stage = 'merged'
-      return persist()
+    const terminal = await terminalPull(source, d, pull, signal, api, now)
+    if (terminal) {
+      await save(terminal)
+      return terminal
     }
-    if (pull.state !== 'open') throw new Block('closed', 'Delivery PR was closed without merging')
     if (d.mergeIntent)
       throw new Block('uncertain-write', 'Merge outcome is uncertain; reconcile before retrying')
-    const protection = await api<Protection>(
-      `${prefix}/branches/${encodeURIComponent(base)}/protection`,
-    )
-    const pages = await api<{ check_runs: Check[]; total_count: number }>(
-      `${prefix}/commits/${d.candidate}/check-runs?filter=latest&per_page=100`,
-    )
-    if (pages.total_count > 100)
-      throw new Block('safety', 'Too many checks to establish unambiguous delivery evidence')
+    const { protection, checks } = await readChecks(api, d)
     const required = assertProtection(d, protection)
     const ours = (check: Check) =>
       check.head_sha === d.candidate &&
@@ -320,7 +436,7 @@ export async function advanceDelivery(
       await persist()
       await api(`${prefix}/actions/runs/${run.id}/${done ? 'rerun' : 'cancel'}`, 'POST')
     }
-    const failed = pages.check_runs.find(
+    const failed = checks.find(
       (check) =>
         ours(check) &&
         check.status === 'completed' &&
@@ -334,9 +450,9 @@ export async function advanceDelivery(
       d.stage = 'ci'
       return persist()
     }
-    if (!checksPassed(d, protection, pages.check_runs)) {
+    if (!checksPassed(d, protection, checks)) {
       if (now - (d.since ?? d.checkedAt) > CI_LIMIT_MS) {
-        const stuck = pages.check_runs.find((check) => ours(check) && check.status !== 'completed')
+        const stuck = checks.find((check) => ours(check) && check.status !== 'completed')
         if (!stuck)
           throw new Block(
             'infra',
@@ -352,9 +468,20 @@ export async function advanceDelivery(
       return persist()
     }
     if (d.risk !== 'low' && !d.mergeApproved) return d
+    let stale: Block | undefined
+    try {
+      await requireBaseline()
+    } catch (error) {
+      if (!(error instanceof Block) || error.cause !== 'stale') throw error
+      stale = error
+    }
     const fresh = await api<Pull>(`${prefix}/pulls/${d.pr}`)
-    assertPull(d, fresh)
-    await requireBaseline()
+    const settled = await terminalPull(source, d, fresh, signal, api, now)
+    if (settled) {
+      await save(settled)
+      return settled
+    }
+    if (stale) throw stale
     d.mergeIntent = true
     try {
       await persist()
