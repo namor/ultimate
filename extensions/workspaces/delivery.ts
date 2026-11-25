@@ -16,6 +16,7 @@ export type Cause =
   | 'safety'
   | 'stale'
 export type Decision = { at: number; what: string; why?: string }
+export type ChangePreview = { count: number; items: string[] }
 export type Delivery = {
   settings: DeliverySettings
   risk: DeliveryRisk
@@ -32,6 +33,7 @@ export type Delivery = {
   since?: number
   pollAt?: number
   pullRequest?: PullRequestCopy
+  changes?: { commits: ChangePreview; paths: ChangePreview }
   published?: boolean
   publishIntent?: boolean
   createIntent?: boolean

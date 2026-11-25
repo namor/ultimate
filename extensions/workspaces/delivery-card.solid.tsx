@@ -1,9 +1,10 @@
 import { createMemo, createSignal, For, Show } from 'solid-js'
+import { Markdown } from '@/components/markdown/markdown.solid.tsx'
 import { Button } from '@/components/ui/button.solid.tsx'
 import { api, cn, plural, ROOT, useDocOf, useNow } from '@/sdk/solid'
 import { deliveryAsk } from './ask.ts'
 import { BRANCH_WAKES, CI_LIMIT_MS, MAX_RERUNS, waits } from './delivery.ts'
-import type { Approval, Delivery } from './delivery.ts'
+import type { Approval, ChangePreview, Delivery } from './delivery.ts'
 import { Open } from './landing.solid.tsx'
 import { Elapsed, LogFold, short, time } from './log-parts.solid.tsx'
 import { DeliveryAction, StandingAction, WorkspacesDoc } from './refs.ts'
@@ -131,6 +132,46 @@ const approvalLabels = {
   stop: 'Stopped',
 }
 
+function ChangeList(props: { changes: ChangePreview; noun: string; code?: boolean }) {
+  return (
+    <div class="min-w-0">
+      <p class="text-xs text-muted-foreground">
+        {plural(props.changes.count, props.noun)}
+        <Show when={props.changes.count > props.changes.items.length}>
+          {' · showing '}
+          {props.changes.items.length}
+        </Show>
+      </p>
+      <Show when={props.changes.items.length}>
+        <ul class="mt-1 space-y-0.5 wrap-anywhere">
+          <For each={props.changes.items}>
+            {(item) => <li>{props.code ? <code class="text-xs">{item}</code> : item}</li>}
+          </For>
+        </ul>
+      </Show>
+    </div>
+  )
+}
+
+function CandidateChanges(props: { delivery: Delivery }) {
+  return (
+    <Show
+      when={props.delivery.changes}
+      fallback={
+        <p class="text-muted-foreground">No PR description or candidate summary available.</p>
+      }
+    >
+      {(changes) => (
+        <>
+          <p class="font-medium">Candidate changes</p>
+          <ChangeList changes={changes().commits} noun="commit" />
+          <ChangeList changes={changes().paths} noun="changed path" code />
+        </>
+      )}
+    </Show>
+  )
+}
+
 export function DeliveryCard(props: { id: string; delivery: Delivery; context: string }) {
   const index = useDocOf(() => ROOT, WorkspacesDoc)
   const now = useNow(1000)
@@ -205,6 +246,19 @@ export function DeliveryCard(props: { id: string; delivery: Delivery; context: s
         {waitLine(delivery())} In this state for{' '}
         <Elapsed since={delivery().since ?? delivery().checkedAt} />.
       </p>
+      <div class="min-w-0 space-y-2 border-t border-border/70 pt-2">
+        <Show
+          when={delivery().pullRequest?.body.trim()}
+          fallback={<CandidateChanges delivery={delivery()} />}
+        >
+          {(body) => (
+            <>
+              <p class="font-medium">PR description</p>
+              <Markdown text={body()} without={['img']} />
+            </>
+          )}
+        </Show>
+      </div>
       <Show when={delivery().decisions?.length}>
         {(count) => (
           <LogFold

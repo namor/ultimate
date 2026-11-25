@@ -189,20 +189,25 @@ it('rebuilds with the renewed review and without the public copy its owner withd
   await harness.commit(async (tx) => {
     const entry = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue[0]
     entry.deliveryConfig = settings
-    entry.delivery = {
-      ...old,
-      settings,
-      candidate: entry.tip,
-      baseline: workspace.base,
-      tree,
-      branch: 'ultimate-delivery/test',
-      checkedAt: Date.now(),
-      runtime: advance.deliveryRuntime(),
-      stage: 'review',
-    }
   }, context)
+  const snapshot = () => harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context)
+  harness.release()
+  await until(async () => (await snapshot())?.queue[0]?.delivery?.stage === 'review')
+  harness.hold()
+  const initial = (await snapshot())!.queue[0].delivery!
   const revised = { risk: 'high' as const, review: 'renewed review', reviewedTree: tree }
   await service.submit(id, 'None', context, revised)
+  const renewed = (await snapshot())!.queue[0].delivery!
+  expect(renewed).toMatchObject({
+    candidate: initial.candidate,
+    tree,
+    stage: 'publish',
+    changes: {
+      commits: { count: 1, items: ['first tip'] },
+      paths: { count: 1, items: ['change.txt'] },
+    },
+  })
+  expect(renewed.pullRequest).toBeUndefined()
   // Resume at the durable checkpoint after the stale candidate was discarded.
   await harness.commit(async (tx) => {
     const entry = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue[0]
@@ -211,7 +216,6 @@ it('rebuilds with the renewed review and without the public copy its owner withd
     entry.state = 'queued'
   }, context)
   harness.release()
-  const snapshot = () => harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context)
   await until(async () => !!(await snapshot())?.queue[0]?.delivery)
   const rebuilt = (await snapshot())!.queue[0].delivery!
   expect(rebuilt).toMatchObject({
