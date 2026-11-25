@@ -325,6 +325,10 @@ configured commands or divergence. The submitter must remove private data from p
 common forms, not arbitrary secrets. After an integration changes the reviewed tree, supply fresh copy on review
 resubmission. The lander never rewrites an existing PR description.
 
+The delivery card shows the authored description without the receipt or embedded images. If the description is missing,
+it shows a bounded list of commit subjects and changed paths between the delivery's recorded base and candidate. The card
+says when neither is available. These details do not change what the approval authorizes.
+
 ## Lander
 
 The lander is the only way to a project's target branch, and it is code: no model runs in it. Each submission and its

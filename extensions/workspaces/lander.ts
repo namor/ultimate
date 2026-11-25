@@ -43,6 +43,7 @@ import {
   waits,
 } from './delivery.ts'
 import { advanceDelivery, closePull, deliveryRuntime, github } from './advance.ts'
+import { readCandidateChanges } from './candidate-changes.ts'
 import type { Delivery } from './delivery.ts'
 import { addCheckout, treePath } from './tree.ts'
 import type { Landed, LanderEntry, LanderOutcome, QueueEntry, WorkspaceIndex } from './types.ts'
@@ -1363,6 +1364,14 @@ export function createLander(
               stage: entry.assessment.reviewedTree === tree ? 'publish' : 'review',
               since: Date.now(),
               ...(entry.approvals ? { approvals: entry.approvals } : {}),
+            }
+            if (!record.pullRequest?.body.trim()) {
+              const changes = await readCandidateChanges(source, record, signal).catch(() => {
+                signal.throwIfAborted()
+                host.notice(`Could not summarize the changes for delivery ${id}`)
+                return undefined
+              })
+              if (changes) record.changes = changes
             }
             await runtime.commit(async (tx) => {
               const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(

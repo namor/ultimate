@@ -354,7 +354,17 @@ it('renders candidate and wait changes and binds person-only decisions to the di
   expect(card().textContent).toContain(tree)
   expect(card().querySelector('code')?.title).toBe(candidate)
   expect(card().textContent).toContain('sample/project → main')
-  await publish({ stage: 'publish' })
+  expect(card().textContent).toContain('No PR description or candidate summary available.')
+  await publish({
+    stage: 'publish',
+    pullRequest: {
+      title: 'Remember the sidebar width',
+      body: '## Why\n\nKeep the **sidebar width** after reopening the app.\n\n![Preview](https://example.com/screenshot.png)',
+    },
+  })
+  expect(card().querySelector('h2')?.textContent).toBe('Why')
+  expect(card().querySelector('.markdown strong')?.textContent).toBe('sidebar width')
+  expect(card().querySelector('img')).toBeNull()
   expect(card().getAttribute('data-delivery-ask')).toBe('approve-pr')
   expect(card().textContent).toContain('merge it only if its required GitHub checks pass')
   expect(card().textContent).toContain('Standing approval until')
@@ -391,7 +401,25 @@ it('renders candidate and wait changes and binds person-only decisions to the di
   expect(container.textContent).toContain('Waiting for GitHub checks')
   expect(card().textContent).toContain('1/2 reruns used')
   expect(card().querySelector('a')?.getAttribute('href')).toBe(url)
-  await publish({ stage: 'merge', url, pr: 7, candidate: nextCandidate, tree: nextTree })
+  const changes = {
+    commits: { count: 1, items: ['Remember the sidebar width'] },
+    paths: { count: 10, items: ['web/sidebar.ts', 'web/settings.ts'] },
+  }
+  await publish({ stage: 'merge', url, pr: 7, candidate: nextCandidate, tree: nextTree, changes })
+  expect(card().textContent).toContain(changes.commits.items[0])
+  await publish({
+    stage: 'merge',
+    url,
+    pr: 7,
+    candidate: nextCandidate,
+    tree: nextTree,
+    changes,
+    pullRequest: { title: 'Sidebar width', body: ' \n\t' },
+  })
+  expect(card().textContent).not.toContain('PR description')
+  expect(card().textContent).toContain('Candidate changes')
+  expect(card().textContent).toContain('10 changed paths · showing 2')
+  expect(card().querySelector('li code')?.textContent).toBe('web/sidebar.ts')
   await action('Approve PR', 'merge', nextCandidate, nextTree)
   await publish({ stage: 'blocked', resumeStage: 'merge', reason: 'Approval needed', url, pr: 7 })
   expect(card().textContent).toContain('Approval needed')
