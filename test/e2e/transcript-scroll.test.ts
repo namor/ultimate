@@ -112,9 +112,30 @@ it('follows, escapes, returns and keeps the read row in place while history page
   await streamed
 
   // The reader scrolls up: the view stays, the button shows, and it brings the end back.
-  await page.locator('[data-ui="transcript"]').hover()
+  const transcript = page.locator('[data-ui="transcript"]')
+  await transcript.hover()
+  const wheelEnded = await transcript.evaluateHandle((content) => {
+    const scroll = content.parentElement!
+    const before = scroll.scrollTop
+    const state = { done: false }
+    const finish = () => {
+      if (scroll.scrollTop >= before) return
+      state.done = true
+      scroll.removeEventListener('scrollend', finish)
+    }
+    scroll.addEventListener('wheel', () => scroll.addEventListener('scrollend', finish), {
+      once: true,
+      passive: true,
+    })
+    return state
+  })
   await page.mouse.wheel(0, -600)
-  await until(async () => (await place()).button, 5_000)
+  // The button can appear on the wheel event, before the transcript moves.
+  await until(
+    async () => (await place()).button && (await wheelEnded.evaluate((state) => state.done)),
+    5_000,
+  )
+  await wheelEnded.dispose()
   const held = (await place()).top
   const shownRows = await page.locator('[data-ui="transcript"] > [data-entry-id]').count()
   await say('after')
