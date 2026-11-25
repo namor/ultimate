@@ -275,6 +275,7 @@ export function DeliveryCard(props: { id: string; delivery: Delivery; context: s
       <Show
         when={
           delivery().stage !== 'merged' &&
+          delivery().stage !== 'closed' &&
           !(delivery().createIntent && !delivery().pr) &&
           !delivery().mergeIntent
         }
