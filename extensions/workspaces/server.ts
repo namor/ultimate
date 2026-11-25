@@ -2,13 +2,14 @@ import { offsetEntryId, parseConversationId, parseEntryId } from '../../lib/ids.
 import type { JsonValue } from '@earendil-works/chord/json'
 import { onCommit } from '../../lib/commits.ts'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
-import { obj, opt, str } from '@earendil-works/pi-schema'
+import { num, obj, opt, str } from '@earendil-works/pi-schema'
 import { strEnum } from '../../lib/schema.ts'
 import {
   configure,
   defineExtension,
   defineTool,
   GenerationTask,
+  LiveDoc,
   hook,
   ROOT_CONVERSATION_ID,
   section,
@@ -23,6 +24,7 @@ import type { ActionContext } from '../../server/actions.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { ConversationsApi, Release } from '../conversations/api.ts'
 import { Branches, WorkspacesApi } from './api.ts'
+import { follow, resolveContinuations } from './continuation.ts'
 import {
   DiskAction,
   DeliveryAction,
@@ -323,6 +325,7 @@ export const actions = {
           conversationId: entry.conversationId,
           ...(entry.subject ? { subject: entry.subject } : {}),
         }
+        await resolveContinuations(tx, index, entry.id, workspaces(host).Continuation, false)
         index.queue = index.queue.filter((item) => item.id !== entry.id)
         if (delivery.pr)
           index.closing = [
@@ -565,7 +568,7 @@ export default function workspaceExtension(host: ExtensionHost) {
   })
   return defineExtension({
     name: 'workspaces',
-    tasks: [service.Preparation, service.Lander],
+    tasks: [service.Preparation, service.Lander, service.Continuation],
     hooks: [
       hook(ToolTask, {
         beforeTool: async (call, api, caller) => {
@@ -590,7 +593,26 @@ export default function workspaceExtension(host: ExtensionHost) {
         description:
           'Inspect your workspace and source tips, or submit your clean, verified tip to the lander (submit requires divergence from the original request).',
         parameters: obj({
-          action: strEnum(['status', 'submit']),
+          action: strEnum(['status', 'submit', 'follow', 'unfollow']),
+          after: opt(
+            str({
+              description:
+                'For follow: exact queued submission or retained result to reassess, regardless of success.',
+            }),
+          ),
+          outcome: opt(
+            str({
+              maxLength: 500,
+              description:
+                'For follow, or to track your own submit: name the approved workspace landing. This does not grant approval.',
+            }),
+          ),
+          continueFrom: opt(
+            num({
+              description:
+                'Current continuation key from status. Required to replace or withdraw a wait. Pass to submit to link the next attempt.',
+            }),
+          ),
           risk: opt(strEnum(['low', 'medium', 'high'])),
           pullRequest: opt(
             obj({
@@ -629,7 +651,17 @@ export default function workspaceExtension(host: ExtensionHost) {
           ),
         }),
         async execute(
-          { action, divergence, risk, review, reviewedTree, pullRequest },
+          {
+            action,
+            divergence,
+            risk,
+            review,
+            reviewedTree,
+            pullRequest,
+            after,
+            outcome,
+            continueFrom,
+          },
           api,
           caller,
         ) {
@@ -649,6 +681,48 @@ export default function workspaceExtension(host: ExtensionHost) {
             )
               throw new Error(`Only a top-level main conversation can ${action} its own workspace`)
           }, caller)
+          if (action === 'follow' || action === 'unfollow')
+            return finish(
+              await api.commit(async (tx) => {
+                const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+                if (action === 'follow') {
+                  const owner = api.conversationId
+                  const admitted = (await tx.doc(LiveDoc, owner)).run?.inputs.at(-1)
+                  const wait = await follow(
+                    tx,
+                    index,
+                    owner,
+                    after ?? '',
+                    outcome ?? '',
+                    'prerequisite',
+                    continueFrom,
+                  )
+                  if (wait.state === 'needs-action') {
+                    const result = index.results[wait.submission].outcome
+                    if (admitted === undefined)
+                      throw new Error(
+                        'No active input to observe. Inspect the retained result and arrange an acknowledged handoff instead.',
+                      )
+                    await tx.createTask(
+                      service.Continuation,
+                      { owner, key: wait.key, submission: wait.submission, result, admitted },
+                      {
+                        conversationId: owner,
+                        ownership: { kind: 'conversation' },
+                        background: true,
+                      },
+                    )
+                    return { ...wait, result }
+                  }
+                  return wait
+                }
+                const item = index.items[String(api.conversationId)]
+                if (!item?.continuation || item.continuation.key !== continueFrom)
+                  throw new Error('Continuation changed; inspect workspace status first')
+                delete item.continuation
+                return 'Stopped following. No delivery was stopped or completed.'
+              }, caller),
+            )
           return finish(
             await service.submit(
               api.conversationId,
@@ -662,6 +736,8 @@ export default function workspaceExtension(host: ExtensionHost) {
                     ...(pullRequest ? { pullRequest } : {}),
                   }
                 : undefined,
+              continueFrom,
+              outcome,
             ),
           )
         },

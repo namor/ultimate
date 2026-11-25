@@ -1677,42 +1677,53 @@ it("routes a branch's final answer as its report after it answered its starter's
     ['Done', undefined, true],
   ])
 })
-it("leaves a branch's final answer as a note while its work is under way", async () => {
-  const f = await fixture()
-  const b = await branched(f)
-  // The branch has a submission in the lander's queue: its answer is an update, not a report.
-  await f.opened.harness.commit(async (tx) => {
-    ;(await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.push({
-      conversationId: b.id,
-    } as never)
-  }, context)
-  await b.later('Submitted; waiting on the lander')
-  await until(async () => (await b.from()).length === 2)
-  const [, routed] = await b.from()
-  expect(routed).toMatchObject({ reply: false })
-  expect(routed.report).toBeUndefined()
-  const view = await f.opened.root.context(context)
-  const note = view.entries.find(
-    (e) => e.kind === 'board.message' && (e.data as { id?: number })?.id === routed.id,
-  )
-  expect([note?.data, note?.input]).toEqual([
-    expect.objectContaining({ delivery: 'note' }),
-    undefined,
-  ])
-  expect(view.entries.filter((e) => e.id > note!.id && e.kind === 'pi.assistant')).toHaveLength(0)
-  await f.opened.close()
-  await f.open()
-  await b.settled()
-  const reopened = await f.opened.root.context(context)
-  expect(reopened.entries.filter((e) => e.id > note!.id && e.kind === 'pi.assistant')).toHaveLength(
-    0,
-  )
-  const held = (await f.opened.harness.conversation(b.id as ConversationId, context))!
-  expect((await held.context(context)).entries.filter((e) => e.id > note!.id && e.input)).toEqual(
-    [],
-  )
-  expect(inboxItems((await f.log())!.messages)).toEqual([])
-})
+it.each(['queue entry', 'continuation'] as const)(
+  "leaves a branch's final answer as a note while its %s is pending",
+  async (kind) => {
+    const f = await fixture()
+    const b = await branched(f)
+    await f.opened.harness.commit(async (tx) => {
+      const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+      if (kind === 'queue entry') index.queue.push({ conversationId: b.id } as never)
+      else
+        index.items[String(b.id)] = {
+          continuation: {
+            key: 1,
+            submission: 'another-submission',
+            state: 'waiting',
+            tracks: 'prerequisite',
+            outcome: 'Land this branch',
+          },
+        } as never
+    }, context)
+    await b.later('Submitted; waiting on the lander')
+    await until(async () => (await b.from()).length === 2)
+    const [, routed] = await b.from()
+    expect(routed).toMatchObject({ reply: false })
+    expect(routed.report).toBeUndefined()
+    const view = await f.opened.root.context(context)
+    const note = view.entries.find(
+      (e) => e.kind === 'board.message' && (e.data as { id?: number })?.id === routed.id,
+    )
+    expect([note?.data, note?.input]).toEqual([
+      expect.objectContaining({ delivery: 'note' }),
+      undefined,
+    ])
+    expect(view.entries.filter((e) => e.id > note!.id && e.kind === 'pi.assistant')).toHaveLength(0)
+    await f.opened.close()
+    await f.open()
+    await b.settled()
+    const reopened = await f.opened.root.context(context)
+    expect(
+      reopened.entries.filter((e) => e.id > note!.id && e.kind === 'pi.assistant'),
+    ).toHaveLength(0)
+    const held = (await f.opened.harness.conversation(b.id as ConversationId, context))!
+    expect((await held.context(context)).entries.filter((e) => e.id > note!.id && e.input)).toEqual(
+      [],
+    )
+    expect(inboxItems((await f.log())!.messages)).toEqual([])
+  },
+)
 it('leaves the final answer of a branch its landing concluded as a note, since the landing woke the starter', async () => {
   const f = await fixture()
   const b = await branched(f)
