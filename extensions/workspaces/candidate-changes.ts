@@ -1,13 +1,42 @@
-import { exec } from '../../lib/exec.ts'
-import type { Delivery } from './delivery.ts'
+import { once } from 'node:events'
+import { spawn } from '../../lib/spawn.ts'
+import type { ChangePreview, Delivery } from './delivery.ts'
 
-function preview(entries: string[], limit: number) {
-  return {
-    count: entries.length,
-    items: entries
-      .slice(0, limit)
-      .map((entry) => (entry.length > 240 ? `${entry.slice(0, 180)}…${entry.slice(-59)}` : entry)),
+async function readPreview(
+  cwd: string,
+  signal: AbortSignal,
+  limit: number,
+  separator: string,
+  ...args: string[]
+): Promise<ChangePreview> {
+  signal.throwIfAborted()
+  const git = spawn('git', ['--no-replace-objects', ...args], {
+    cwd,
+    signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+    stdio: ['ignore', 'pipe', 'ignore'],
+  })
+  const preview = async () => {
+    const items: string[] = []
+    let count = 0
+    let tail = ''
+    for await (const chunk of git.stdout.setEncoding('utf8')) {
+      const entries = (tail + chunk).split(separator)
+      tail = entries.pop()!
+      for (const entry of entries) {
+        if (count < limit)
+          items.push(
+            entry.length > 240
+              ? `${entry.slice(0, 180)}…${entry.slice(-59)}`
+              : entry || '(no subject)',
+          )
+        count++
+      }
+    }
+    return { count, items }
   }
+  const [[code], changes] = await Promise.all([once(git, 'close'), preview()])
+  if (code !== 0) throw new Error('Git could not read the candidate changes')
+  return changes
 }
 
 export async function readCandidateChanges(
@@ -15,16 +44,11 @@ export async function readCandidateChanges(
   { baseline, candidate }: Pick<Delivery, 'baseline' | 'candidate'>,
   signal: AbortSignal,
 ): Promise<NonNullable<Delivery['changes']>> {
-  const read = async (...args: string[]) =>
-    (
-      await exec('git', ['--no-replace-objects', ...args], {
-        cwd,
-        signal,
-        timeout: 5000,
-        maxBuffer: 1024 * 1024,
-      })
-    ).stdout
-  const commits = await read(
+  const commits = await readPreview(
+    cwd,
+    signal,
+    6,
+    '\0',
     'log',
     '--no-show-signature',
     '-z',
@@ -32,7 +56,11 @@ export async function readCandidateChanges(
     `${baseline}..${candidate}`,
     '--',
   )
-  const paths = await read(
+  const paths = await readPreview(
+    cwd,
+    signal,
+    8,
+    '\n',
     '-c',
     'core.quotePath=false',
     'diff',
@@ -45,14 +73,5 @@ export async function readCandidateChanges(
     candidate,
     '--',
   )
-  return {
-    commits: preview(
-      commits
-        .split('\0')
-        .slice(0, -1)
-        .map((subject) => subject || '(no subject)'),
-      6,
-    ),
-    paths: preview(paths.split('\n').slice(0, -1), 8),
-  }
+  return { commits, paths }
 }

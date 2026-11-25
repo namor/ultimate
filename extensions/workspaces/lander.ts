@@ -1365,14 +1365,12 @@ export function createLander(
               since: Date.now(),
               ...(entry.approvals ? { approvals: entry.approvals } : {}),
             }
-            if (!record.pullRequest?.body.trim()) {
-              const changes = await readCandidateChanges(source, record, signal).catch(() => {
-                signal.throwIfAborted()
-                host.notice(`Could not summarize the changes for delivery ${id}`)
-                return undefined
-              })
-              if (changes) record.changes = changes
-            }
+            const changes = await readCandidateChanges(source, record, signal).catch(() => {
+              signal.throwIfAborted()
+              host.notice(`Could not summarize the changes for delivery ${id}`)
+              return undefined
+            })
+            if (changes) record.changes = changes
             await runtime.commit(async (tx) => {
               const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
                 (item) => item.id === id,
