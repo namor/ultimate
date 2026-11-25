@@ -397,6 +397,9 @@ it('renders candidate and wait changes and binds person-only decisions to the di
   expect(card().textContent).toContain('Approval needed')
   await action('Recheck outcome', 'recheck')
   await action('Stop delivery · close its PR', 'stop')
+  await publish({ stage: 'closed', cause: 'closed', url, pr: 7 })
+  expect(container.textContent).toContain('PR closed without merging')
+  expect(card().querySelector('button[aria-label^="Stop delivery"]')).toBeNull()
   harness.writes.mockClear()
   await press('Revoke standing approval from workspace call delivery-call')
   expect(harness.writes).toHaveBeenCalledExactlyOnceWith(

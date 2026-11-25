@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { lstat, mkdir, readdir, realpath, rm } from 'node:fs/promises'
 import { isAbsolute, join, relative, sep } from 'node:path'
 import type { Context } from '@earendil-works/chord/context'
+import { withAbortSignal } from '@earendil-works/chord/context'
 import {
   configure,
   defineDoc,
@@ -20,7 +21,7 @@ import { needsRestart as restartNeeded } from '../../lib/layers.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { ConversationsApi } from '../conversations/api.ts'
 import { Branches } from './api.ts'
-import { WorkspacesDoc } from './refs.ts'
+import { LanderReportEntry, WorkspacesDoc } from './refs.ts'
 import { setup } from './setup.ts'
 import {
   addCheckout,
@@ -34,11 +35,14 @@ import {
   contains,
   createLander,
   activeLandingCards,
+  emitLanding,
   hasPendingLanderReport,
   landerCheckout,
   landerPath,
   log,
+  mergedDeliveryOutcome,
 } from './lander.ts'
+import { observePullOutcome } from './advance.ts'
 import { deliverySettings } from './delivery-settings.ts'
 import { supersedes } from './delivery.ts'
 import { continuationTask, follow, resolveContinuations } from './continuation.ts'
@@ -321,6 +325,146 @@ export function workspaces(host: Host) {
       return stopped.length
     }, context)
     if (restarted) host.harness().resume()
+  }
+  async function reconcileDelivery(
+    { id, candidate, tree }: { id: string; candidate: string; tree: string },
+    actors: readonly number[] | undefined,
+    signal: AbortSignal,
+    context: Context,
+  ) {
+    context = withAbortSignal(signal, context)
+    const read = (index: WorkspaceIndex) => {
+      const queued = index.queue.find((item) => item.id === id)
+      const retained = Object.hasOwn(index.results, id) ? index.results[id] : undefined
+      const attempt = queued ?? retained
+      if (!attempt || attempt.conversationId === undefined)
+        throw new Error('Delivery is not queued or retained')
+      if (actors && !actors.includes(attempt.conversationId))
+        throw new Error('Only the user, the submitting branch, or @ultimate can reconcile this PR')
+      const delivery = attempt.delivery
+      if (!delivery?.pr || delivery.candidate !== candidate || delivery.tree !== tree)
+        throw new Error('No recorded PR matches this delivery candidate and tree')
+      if (attempt.target !== delivery.settings.base)
+        throw new Error('Delivery PR base differs from the recorded target')
+      if (queued?.state === 'landing')
+        throw new Error('The lander is working on this delivery; check again once it parks')
+      const sources = queued
+        ? [queued.source]
+        : Object.keys(index.landerConversations).filter(
+            (key) => index.landerConversations[key] === retained?.lander,
+          )
+      if (sources.length !== 1) throw new Error('Cannot establish the original source checkout')
+      return {
+        queued,
+        retained,
+        attempt,
+        delivery,
+        source: sources[0],
+        owner: attempt.conversationId,
+      }
+    }
+    const prior = read((await host.harness().snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!)
+    if (prior.retained?.outcome === 'landed') return { status: 'landed' as const }
+    if (prior.retained?.outcome === 'failed' && prior.delivery.stage === 'closed')
+      return { status: 'closed' as const }
+    if (
+      prior.retained &&
+      (prior.retained.sha ||
+        prior.delivery.mergeIntent ||
+        !prior.delivery.approvals?.some(
+          (approval) => approval.action === 'stop' && approval.candidate === candidate,
+        ))
+    )
+      throw new Error('Only a retained result with a matching stop decision can be corrected')
+    const observed = await observePullOutcome(prior.source, prior.delivery, signal)
+    if (!observed)
+      throw new Error(`Delivery PR #${prior.delivery.pr} is still open; no outcome to reconcile`)
+    if (prior.retained && observed.stage === 'closed') return { status: 'closed' as const }
+    const status = await serializeSourceWrites(prior.source, async () => {
+      signal.throwIfAborted()
+      const ref = `refs/heads/${prior.attempt.target}`
+      const sha = observed.merged
+      if (sha && !(await contains(prior.source, sha, ref))) {
+        if (prior.retained) throw new Error('The local target does not contain the reported merge')
+        if (!(await contains(prior.source, ref, sha)))
+          throw new Error('The local target diverges from the reported merge')
+      }
+      const outcome =
+        prior.retained &&
+        (await mergedDeliveryOutcome(prior.source, prior.attempt.target, observed))
+      return host.harness().commit(async (tx) => {
+        const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+        const current = read(index)
+        if (current.retained?.outcome === 'landed' && current.retained.sha === sha)
+          return 'landed' as const
+        if (
+          Boolean(current.queued) !== Boolean(prior.queued) ||
+          current.attempt.at !== prior.attempt.at ||
+          current.attempt.target !== prior.attempt.target ||
+          current.attempt.tip !== prior.attempt.tip ||
+          current.source !== prior.source ||
+          current.owner !== prior.owner ||
+          JSON.stringify(current.delivery) !== JSON.stringify(prior.delivery)
+        )
+          throw new Error('Delivery changed during reconciliation; check the current attempt')
+        if (current.queued) {
+          delete observed.pollAt
+          current.queued.delivery = observed
+          current.queued.state = 'queued'
+          return 'queued' as const
+        }
+        if (!outcome || current.retained?.outcome !== 'failed')
+          throw new Error('Retained delivery is no longer eligible for correction')
+        const { reason, output: _o, hint: _h, ...retained } = current.retained
+        observed.decisions = [
+          ...(observed.decisions ?? []).slice(-19),
+          {
+            at: Date.now(),
+            what: 'retained stop reconciled',
+            ...(reason ? { why: reason } : {}),
+          },
+        ]
+        const result = { ...retained, ...outcome }
+        const owner = await tx.conversation(current.owner)
+        index.results[id] = result
+        index.closing = index.closing?.filter(
+          (item) =>
+            !(
+              item.source === current.source &&
+              item.pr === observed.pr &&
+              item.repository === observed.settings.repository
+            ),
+        )
+        const workspace = index.items[String(current.owner)]
+        if (
+          workspace?.source === current.source &&
+          workspace.target === result.target &&
+          workspace.continuation?.tracks === 'delivery' &&
+          workspace.continuation.submission === id
+        )
+          delete workspace.continuation
+        await log(tx, result.lander, { ...result, id, conversationId: current.owner }, outcome)
+        await resolveContinuations(tx, index, id, Continuation, false)
+        await emitLanding(host, tx, id, current.owner, result)
+        if (owner)
+          await tx.appendEntry(LanderReportEntry, current.owner, {
+            data: { id, outcome: result },
+            model: [
+              {
+                role: 'user',
+                content: `[lander] Reconciled ${id}: ${observed.url} merged as ${outcome.sha.slice(0, 7)}.`,
+                timestamp: Date.now(),
+              },
+            ],
+          })
+        return 'landed' as const
+      }, context)
+    })
+    if (status === 'queued') {
+      await resume(context)
+      host.harness().resume()
+    }
+    return { status }
   }
   const get = async (id: ConversationId, context: Context) =>
     (await host.harness().snapshot(Workspaces, ROOT_CONVERSATION_ID, context))?.items[String(id)]
@@ -1064,6 +1208,7 @@ export function workspaces(host: Host) {
     Lander,
     Continuation,
     resume,
+    reconcileDelivery,
     standLander,
     started: tasksStartedByThisModule,
     get,

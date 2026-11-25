@@ -43,6 +43,7 @@ import {
   waits,
 } from './delivery.ts'
 import { advanceDelivery, closePull, deliveryRuntime, github } from './advance.ts'
+import type { Delivery } from './delivery.ts'
 import { addCheckout, treePath } from './tree.ts'
 import type { Landed, LanderEntry, LanderOutcome, QueueEntry, WorkspaceIndex } from './types.ts'
 import { LanderLog } from './entries.ts'
@@ -343,7 +344,7 @@ export const landerSettings = async (host: Pick<Host, 'projectSettings'>): Promi
   }
 }
 export const contains = (cwd: string, ancestor: string, descendant: string) =>
-  git(cwd, 'merge-base', '--is-ancestor', ancestor, descendant).then(
+  git(cwd, '--no-replace-objects', 'merge-base', '--is-ancestor', ancestor, descendant).then(
     () => true,
     () => false,
   )
@@ -358,7 +359,7 @@ export async function fastForwardOnlyTargetBranch(
     .map((record) => record.split('\n'))
     .find((record) => record.includes(`branch refs/heads/${target}`))?.[0]
     .slice('worktree '.length)
-  if (worktree) await git(worktree, 'merge', '-q', '--ff-only', integrated)
+  if (worktree) await git(worktree, '--no-replace-objects', 'merge', '-q', '--ff-only', integrated)
   else await git(source, 'update-ref', `refs/heads/${target}`, integrated, base)
 }
 const lines = (text: string) => text.split('\n').filter(Boolean)
@@ -370,6 +371,59 @@ const failure = (error: unknown) => {
 }
 const remote = (cwd: string, signal: AbortSignal, ...args: string[]) =>
   git({ cwd, signal, timeout: 300000 }, ...args)
+
+export async function mergedDeliveryOutcome(
+  source: string,
+  target: string,
+  delivery: Delivery,
+): Promise<LanderOutcome & { sha: string; base: string }> {
+  const sha = delivery.merged!
+  const base = delivery.observedMerge?.parent ?? delivery.baseline
+  return {
+    outcome: 'landed',
+    delivery,
+    sha,
+    base,
+    commits: lines(
+      await git(source, '--no-replace-objects', 'log', '--oneline', `${base}..${sha}`),
+    ),
+    paths: lines(await git(source, '--no-replace-objects', 'diff', '--name-only', base, sha)),
+    flaky: [],
+    ...(delivery.observedMerge ? {} : { pushed: `${delivery.settings.remote}/${target}` }),
+    pr: delivery.url,
+  }
+}
+
+export async function emitLanding(
+  host: Pick<Host, 'emit' | 'metadata'>,
+  tx: Tx,
+  id: string,
+  conversationId: ConversationId,
+  result: WorkspaceIndex['results'][string],
+) {
+  const subject = result.subject ?? {}
+  const commits = (result.commits ?? []).map((commit) => {
+    const space = commit.indexOf(' ')
+    return { sha: commit.slice(0, space), subject: commit.slice(space + 1) }
+  })
+  await host.emit(tx, SubmissionLanded, {
+    submission: id,
+    conversationId,
+    at: result.at,
+    sha: result.sha!,
+    base: result.base!,
+    target: result.target,
+    lander: result.lander,
+    divergence: result.divergence,
+    title: subject.title ?? (await tx.doc(host.metadata, conversationId)).title ?? '',
+    ...(subject.summary ? { summary: subject.summary } : {}),
+    ...(subject.feature ? { feature: subject.feature } : {}),
+    commits: commits.slice(0, 10),
+    commitCount: commits.length,
+    paths: (result.paths ?? []).slice(0, 8),
+    ...(result.pushed ? { pushed: result.pushed } : {}),
+  })
+}
 
 type CheckedIntegration = {
   checkedAt: number
@@ -856,31 +910,8 @@ export function createLander(
                 target: entry.target,
                 reason: outcome.reason ?? '',
               })
-            if (outcome.outcome === 'landed') {
-              const subject = entry.subject ?? {}
-              const commits = (outcome.commits ?? []).map((commit) => {
-                const space = commit.indexOf(' ')
-                return { sha: commit.slice(0, space), subject: commit.slice(space + 1) }
-              })
-              await host.emit(tx, SubmissionLanded, {
-                submission: id,
-                conversationId: entry.conversationId,
-                at: entry.at,
-                sha: outcome.sha!,
-                base: outcome.base!,
-                target: entry.target,
-                lander: runtime.conversationId,
-                divergence: entry.divergence,
-                title:
-                  subject.title ?? (await tx.doc(host.metadata, entry.conversationId)).title ?? '',
-                ...(subject.summary ? { summary: subject.summary } : {}),
-                ...(subject.feature ? { feature: subject.feature } : {}),
-                commits: commits.slice(0, 10),
-                commitCount: commits.length,
-                paths: (outcome.paths ?? []).slice(0, 8),
-                ...(outcome.pushed ? { pushed: outcome.pushed } : {}),
-              })
-            }
+            if (outcome.outcome === 'landed')
+              await emitLanding(host, tx, id, entry.conversationId, draft.results[id])
             return {
               status: 'running',
               checkpoint: {
@@ -991,6 +1022,8 @@ export function createLander(
                 : await landerSettings(host)
           if (entry.delivery) {
             const previous = entry.delivery
+            if (target !== previous.settings.base)
+              throw new Error('Delivery PR base differs from the local target')
             const save = (delivery: NonNullable<QueueEntry['delivery']>) =>
               runtime.commit(async (tx) => {
                 const draft = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
@@ -1042,40 +1075,49 @@ export function createLander(
               }, context)
             if (delivery.stage !== previous.stage || delivery.reason !== previous.reason)
               await step(
-                delivery.reason
+                delivery.stage === 'blocked'
                   ? `delivery blocked: ${delivery.reason}`
                   : `delivery: ${delivery.stage}`,
               )
-            if (delivery.stage === 'merged') {
-              await remote(
-                source,
-                signal,
-                'fetch',
-                '--no-tags',
-                delivery.settings.remote,
-                `refs/heads/${delivery.settings.base}`,
-              )
-              const sha = delivery.merged!
-              if ((await git(source, 'rev-parse', `${sha}^{tree}`)) !== delivery.tree)
-                throw new Error('GitHub merge tree differs from the verified candidate')
-              await serializeSourceWrites(source, async () => {
-                const current = await git(source, 'rev-parse', `refs/heads/${target}`)
-                if (!(await contains(source, current, sha)))
-                  throw new Error('Local target advanced outside the merged delivery')
-                await fastForwardOnlyTargetBranch(source, target, current, sha)
-              })
-              return commitLandingOutcome(`merged as ${sha.slice(0, 7)} through ${delivery.url}.`, {
-                outcome: 'landed',
+            if (delivery.stage === 'closed')
+              return commitLandingOutcome(`was not landed: ${delivery.reason}`, {
+                outcome: 'failed',
                 delivery,
-                sha,
-                base: delivery.baseline,
-                commits: lines(
-                  await git(source, 'log', '--oneline', `${delivery.baseline}..${sha}`),
-                ),
-                paths: lines(await git(source, 'diff', '--name-only', delivery.baseline, sha)),
-                flaky: [],
-                pushed: `${delivery.settings.remote}/${target}`,
+                reason: delivery.reason,
                 pr: delivery.url,
+              })
+            if (delivery.stage === 'merged') {
+              if (!delivery.observedMerge)
+                await remote(
+                  source,
+                  signal,
+                  'fetch',
+                  '--no-tags',
+                  delivery.settings.remote,
+                  `refs/heads/${delivery.settings.base}`,
+                )
+              const outcome = await mergedDeliveryOutcome(source, target, delivery)
+              const { sha } = outcome
+              if (
+                (await git(source, '--no-replace-objects', 'rev-parse', `${sha}^{tree}`)) !==
+                delivery.tree
+              )
+                throw new Error('GitHub merge tree differs from the verified candidate')
+              return await serializeSourceWrites(source, async () => {
+                const current = await git(source, 'rev-parse', `refs/heads/${target}`)
+                if (!(await contains(source, sha, current))) {
+                  if (!(await contains(source, current, sha)))
+                    throw new Error('Local target diverges from the merged delivery')
+                  await fastForwardOnlyTargetBranch(source, target, current, sha)
+                }
+                if (!(await contains(source, sha, `refs/heads/${target}`)))
+                  throw new Error('Local target does not contain the merged delivery')
+                const how =
+                  delivery.observedMerge && !delivery.mergeIntent ? 'manually merged' : 'merged'
+                return commitLandingOutcome(
+                  `${how} as ${sha.slice(0, 7)} through ${delivery.url}.`,
+                  outcome,
+                )
               })
             }
             if (delivery.stage === 'blocked' && delivery.cause === 'stale')
@@ -1414,9 +1456,14 @@ export function createLander(
               saved.delivery = {
                 ...current,
                 stage: 'blocked',
-                cause: 'github',
+                cause: current.stage === 'merged' ? 'safety' : 'github',
                 resumeStage: current.stage === 'blocked' ? current.resumeStage : current.stage,
-                reason: 'Delivery recovery failed; inspect the lander log',
+                reason:
+                  current.stage === 'merged'
+                    ? error instanceof Error
+                      ? error.message.split('\n')[0].slice(0, 240)
+                      : 'Could not settle the merged delivery'
+                    : 'Delivery recovery failed; inspect the lander log',
               }
               park(saved)
             }, context)

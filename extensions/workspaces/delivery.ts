@@ -4,7 +4,7 @@ import type { PullRequestCopy } from './pull-request.ts'
 import type { QueueEntry, StandingGrant } from './types.ts'
 
 export type DeliveryRisk = 'low' | 'medium' | 'high'
-export type Stage = 'review' | 'publish' | 'pr' | 'ci' | 'merge' | 'merged' | 'blocked'
+export type Stage = 'review' | 'publish' | 'pr' | 'ci' | 'merge' | 'merged' | 'closed' | 'blocked'
 export type Cause =
   | 'check-failed'
   | 'infra'
@@ -36,9 +36,11 @@ export type Delivery = {
   publishIntent?: boolean
   createIntent?: boolean
   mergeIntent?: boolean
+  mergeReceipt?: string
   pr?: number
   url?: string
   merged?: string
+  observedMerge?: { targetTip: string; parent: string }
   publishApproved?: boolean
   mergeApproved?: boolean
   approvals?: Approval[]
@@ -267,7 +269,7 @@ export function authorize(
     }
   }
   if (action === 'stop') {
-    if (d.stage === 'merged') return 'Delivery is merged; nothing to stop'
+    if (d.stage === 'merged' || d.stage === 'closed') return 'The PR already has an outcome'
     if (state === 'landing') return 'The lander is working on this delivery; stop it once it parks'
     if (uncertainWrite(d)) return 'Reconcile the uncertain write before stopping this delivery'
     if (actor.by === 'agent' && d.stage !== 'blocked')
