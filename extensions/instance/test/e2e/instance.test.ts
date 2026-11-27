@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { cp, readFile, stat, symlink, writeFile } from 'node:fs/promises'
+import { cp, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import {
   fauxAssistantMessage,
@@ -47,7 +47,13 @@ async function assertProject(
   }
   expect((await fetch(`${preview.url}/api/models`)).status).toBe(200)
 }
-async function fixture({ foreign = false } = {}) {
+async function installDependencies(checkout: string) {
+  await exec('pnpm', ['install', '--frozen-lockfile', '--prefer-offline'], {
+    cwd: checkout,
+    timeout: 120000,
+  })
+}
+async function fixture({ foreign = false, previewSource = false } = {}) {
   const root = await temp('ultimate-preview-')
   // Child hosts must sweep only this fixture, never the machine's real temporary directory.
   vi.stubEnv('TMPDIR', root)
@@ -58,22 +64,13 @@ async function fixture({ foreign = false } = {}) {
   // The preview runs the clone's committed code: give it this checkout's preview and landing code.
   for (const path of ['extensions/instance', 'extensions/workspaces', 'lib'])
     await cp(join(checkout, path), join(source, path), { recursive: true })
-  await symlink(join(checkout, 'node_modules'), join(source, 'node_modules'))
-  await writeFile(
-    join(source, '.ultimate/settings.json'),
-    JSON.stringify({
-      isolates: { worktree: { setup: [`ln -s '${join(checkout, 'node_modules')}' node_modules`] } },
-    }),
-  )
-  await writeFile(
-    join(source, '.gitignore'),
-    (await readFile(join(source, '.gitignore'), 'utf8')) + '\n/node_modules\n',
-  )
+  // Only install where a preview boots. The nested landing test creates a Git-only worktree.
+  if (foreign || previewSource) await installDependencies(source)
+  await writeFile(join(source, '.ultimate/settings.json'), '{}')
   await git(
     source,
     'add',
     '.ultimate/settings.json',
-    '.gitignore',
     'extensions/instance',
     'extensions/workspaces',
     'lib',
@@ -188,7 +185,9 @@ async function fixture({ foreign = false } = {}) {
       context,
     )
     await service.ready(conversation.id, context)
-    return { id: conversation.id, workspace: (await service.get(conversation.id, context))! }
+    const workspace = (await service.get(conversation.id, context))!
+    if (!foreign) await installDependencies(workspace.path)
+    return { id: conversation.id, workspace }
   }
   async function close() {
     const previews = JSON.parse(await run({ action: 'list' })) as Preview[]
@@ -227,11 +226,15 @@ const listed = (preview: Preview, conversationId: number) => ({
   running: true,
 })
 it('selects shared, isolated main and owned child checkouts with the main project decision', async () => {
-  const f = await fixture()
+  const f = await fixture({ previewSource: true })
   try {
     expect(await f.call('instance', { action: 'start', subagent: 999999 })).toContain(
       'Unknown subagent',
     )
+    const metadataPaths = ['node_modules/.modules.yaml', 'node_modules/.pnpm/lock.yaml']
+    const sourceMetadata = () =>
+      Promise.all(metadataPaths.map((path) => readFile(join(f.source, path), 'utf8')))
+    const before = await sourceMetadata()
     const main = await f.main()
     const own = JSON.parse(await f.call('instance', { action: 'start' }, main.id)) as Preview
     expect(
@@ -246,6 +249,7 @@ it('selects shared, isolated main and owned child checkouts with the main projec
     )[0]
     const childWorkspace = (await f.service.get(child.conversationId, context))!
     expect(childWorkspace.source).toBe(main.workspace.path)
+    await installDependencies(childWorkspace.path)
     const shared = JSON.parse(await f.call('instance', { action: 'start' })) as Preview
     const selected = JSON.parse(
       await f.call('instance', { action: 'start', subagent: child.conversationId }, main.id),
@@ -255,6 +259,11 @@ it('selects shared, isolated main and owned child checkouts with the main projec
     await assertProject(shared, f.source, true)
     await assertProject(own, main.workspace.path, true)
     await assertProject(selected, childWorkspace.path, true)
+    for (const checkout of [f.source, main.workspace.path, childWorkspace.path]) {
+      for (const path of metadataPaths)
+        expect(await realpath(join(checkout, path))).toBe(join(await realpath(checkout), path))
+    }
+    expect(await sourceMetadata()).toEqual(before)
     expect(await f.run({ action: 'start' })).toContain('At most three')
     expect(await f.list()).toEqual(
       expect.arrayContaining([
@@ -480,7 +489,7 @@ it('lands a preview submission on its own branch, never the previewed branch or 
 }, 120000)
 
 it('removes preview registrations, branches and temporary homes on stop and shutdown', async () => {
-  const f = await fixture()
+  const f = await fixture({ previewSource: true })
   try {
     const beforeTrees = await git(f.source, 'worktree', 'list', '--porcelain')
     const beforeBranches = await git(f.source, 'branch', '--format=%(refname)')

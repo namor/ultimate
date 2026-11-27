@@ -40,7 +40,14 @@ export function extensionApis(
     if (!provider) throw absent(caller, 'needs', api.name)
     const value = provider.value as Record<string, (...args: unknown[]) => unknown>
     return trace(
-      { kind: 'service', caller, callee: provider.extension, name: `${api.name}.${method}`, args },
+      {
+        kind: 'service',
+        caller,
+        callee: provider.extension,
+        name: `${api.name}.${method}`,
+        args,
+        ...(api.privateMethods?.includes(method) ? { sealed: true } : {}),
+      },
       () => Reflect.apply(value[method], value, args),
     )
   }

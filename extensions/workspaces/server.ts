@@ -2,13 +2,14 @@ import { offsetEntryId, parseConversationId, parseEntryId } from '../../lib/ids.
 import type { JsonValue } from '@earendil-works/chord/json'
 import { onCommit } from '../../lib/commits.ts'
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context'
-import { obj, opt, str } from '@earendil-works/pi-schema'
+import { num, obj, opt, str } from '@earendil-works/pi-schema'
 import { strEnum } from '../../lib/schema.ts'
 import {
   configure,
   defineExtension,
   defineTool,
   GenerationTask,
+  LiveDoc,
   hook,
   ROOT_CONVERSATION_ID,
   section,
@@ -23,6 +24,7 @@ import type { ActionContext } from '../../server/actions.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { ConversationsApi, Release } from '../conversations/api.ts'
 import { Branches, WorkspacesApi } from './api.ts'
+import { follow, resolveContinuations } from './continuation.ts'
 import {
   DiskAction,
   DeliveryAction,
@@ -31,6 +33,7 @@ import {
   IsolationAction,
   PendingAction,
   ProgressAction,
+  ReconcileAction,
   RepoAction,
   StandingAction,
   StatsAction,
@@ -38,7 +41,7 @@ import {
 import type { GithubRepo } from './refs.ts'
 import { githubRepo, readGithubRepo } from '../../lib/project-identity.ts'
 import { UserInputEvent } from '../../shared/events.ts'
-import { authorize, park, spent } from './delivery.ts'
+import { authorize, matchingRefStandingWithdrawn, park, spent, standingFor } from './delivery.ts'
 import type { Actor, Approval } from './delivery.ts'
 import { deliveryRuntime } from './advance.ts'
 import { sweepChecks } from './lander.ts'
@@ -90,6 +93,16 @@ async function rootAgent(host: ExtensionHost, ctx: Pick<ActionContext, 'conversa
     throw new Error("Only the user or @ultimate on the user's instruction can act on a delivery")
   return ultimate as ConversationId
 }
+async function establishInstructionFloor(
+  tx: Tx,
+  index: { instructionFloor?: number },
+  primary: ConversationId | undefined,
+) {
+  index.instructionFloor ??= primary
+    ? ((await tx.scanEntries({ conversationId: primary }, 1)).items[0]?.id ?? 0)
+    : 0
+}
+
 async function typedInstruction(
   host: ExtensionHost,
   ultimate: ConversationId,
@@ -101,7 +114,11 @@ async function typedInstruction(
     throw new Error(
       "Pass instruction: the entry id of the user's input that told you to act on this delivery",
     )
-  const entry = await harness.commit((tx) => tx.entry(parseEntryId(instruction)), context)
+  const entry = await harness.commit(async (tx) => {
+    const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+    await establishInstructionFloor(tx, index, ultimate)
+    return tx.entry(parseEntryId(instruction))
+  }, context)
   if (!entry || entry.conversationId !== ultimate || (since !== undefined && entry.id <= since))
     throw new Error(
       since === undefined
@@ -118,7 +135,13 @@ async function typedInstruction(
   let typed: (typeof events)[number] | undefined
   for (const event of events) {
     const { data } = event
-    if (data.conversation !== ultimate || !data.device || data.kind === 'dismiss') continue
+    if (
+      data.conversation !== ultimate ||
+      data.source !== 'person' ||
+      !data.device ||
+      data.kind === 'dismiss'
+    )
+      continue
     if (data.entry === entry.id || (message !== undefined && data.message === message))
       typed = event
     else if (data.submission !== undefined) {
@@ -162,11 +185,64 @@ async function approver(
   return { action, at: Date.now(), by: 'ultimate', conversation: ultimate, instruction }
 }
 
+export async function initializeApprovalHistory(host: ExtensionHost) {
+  const standing = host.doc('ultimate.standing-agents')
+  await host.harness().commit(async (tx) => {
+    const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+    if (index.instructionFloor === undefined && standing) {
+      const primary = (await tx.doc(standing, ROOT_CONVERSATION_ID)).ultimate
+      if (primary === undefined || typeof primary === 'number')
+        await establishInstructionFloor(tx, index, primary as ConversationId | undefined)
+    }
+    for (const item of index.queue) {
+      if (!item.delivery || !matchingRefStandingWithdrawn(item.delivery, index.standing)) continue
+      delete item.delivery.publishApproved
+      if (item.state !== 'landing') park(item)
+    }
+  }, context)
+}
+
 const standingMaxHours = 7 * 24
 const grantWindow = 10 * 60_000
 
+function deliveryDevice(ctx: ActionContext) {
+  if (ctx.origin === 'agent') return undefined
+  if (ctx.origin === 'ui' && ctx.source === 'person' && ctx.device) return ctx.device
+  throw new Error('This delivery action requires a person or the responsible conversation agent')
+}
+
 export const actions = {
-  delivery: implementAction(DeliveryAction, async (args, { host, conversationId, device }) => {
+  reconcile: implementAction(ReconcileAction, async (args, ctx) => {
+    const { host, conversationId } = ctx
+    const device = deliveryDevice(ctx)
+    if (
+      !args ||
+      typeof args !== 'object' ||
+      Array.isArray(args) ||
+      typeof args.id !== 'string' ||
+      typeof args.candidate !== 'string' ||
+      typeof args.tree !== 'string'
+    )
+      throw new Error('Expected a delivery id, candidate and tree')
+    const standing = host.doc('ultimate.standing-agents')
+    const ultimate =
+      standing && (await host.harness().snapshot(standing, ROOT_CONVERSATION_ID, context))?.ultimate
+    const actors =
+      device || (conversationId !== undefined && conversationId === ultimate)
+        ? undefined
+        : conversationId === undefined
+          ? []
+          : [conversationId]
+    return workspaces(host).reconcileDelivery(
+      { id: args.id, candidate: args.candidate, tree: args.tree },
+      actors,
+      ctx.signal,
+      context,
+    )
+  }),
+  delivery: implementAction(DeliveryAction, async (args, ctx) => {
+    const { host, conversationId } = ctx
+    const device = deliveryDevice(ctx)
     if (
       !args ||
       typeof args !== 'object' ||
@@ -175,7 +251,7 @@ export const actions = {
       typeof args.candidate !== 'string' ||
       typeof args.tree !== 'string' ||
       typeof args.action !== 'string' ||
-      !['publish', 'merge', 'recheck', 'stop'].includes(args.action)
+      !['approve-pr', 'publish', 'merge', 'recheck', 'stop'].includes(args.action)
     )
       throw new Error('Expected an immutable delivery approval')
     const action = args.action as Approval['action']
@@ -234,16 +310,28 @@ export const actions = {
           approval.standing !== undefined ? `Standing approval refused: ${refusal}` : refusal,
         )
       if (approval.standing !== undefined) approval.standing = index.standing!.instruction
-      if (
-        approval.instruction !== undefined &&
-        [...index.queue, ...Object.entries(index.results).map(([id, r]) => ({ id, ...r }))].some(
-          (item) =>
-            item.id !== entry.id && spent(item).some((a) => a.instruction === approval.instruction),
+      const instruction = approval.instruction
+      if (instruction !== undefined) {
+        if (index.instructionFloor === undefined || instruction <= index.instructionFloor)
+          throw new Error('Instruction is too old to approve this delivery; ask the user again')
+        if (
+          (action === 'approve-pr' || action === 'publish' || action === 'merge') &&
+          index.standing &&
+          instruction <= index.standing.instruction
         )
-      )
-        throw new Error(
-          'instruction already decided another delivery; the user must decide this one',
+          throw new Error('Explicit PR approval needs an instruction newer than the standing grant')
+        if (spent(entry).some((a) => a.instruction === instruction))
+          throw new Error('Instruction already decided this delivery; the user must decide again')
+        if (
+          [
+            ...index.queue.filter((item) => item.id !== entry.id),
+            ...Object.values(index.results),
+          ].some((item) => spent(item).some((a) => a.instruction === instruction))
         )
+          throw new Error(
+            'instruction already decided another delivery; the user must decide this one',
+          )
+      }
       delivery.approvals = [...(delivery.approvals ?? []), approval]
       if (action === 'stop') {
         const by =
@@ -266,6 +354,7 @@ export const actions = {
           conversationId: entry.conversationId,
           ...(entry.subject ? { subject: entry.subject } : {}),
         }
+        await resolveContinuations(tx, index, entry.id, workspaces(host).Continuation, false)
         index.queue = index.queue.filter((item) => item.id !== entry.id)
         if (delivery.pr)
           index.closing = [
@@ -277,6 +366,9 @@ export const actions = {
               note: `Stopped by ${by}.`,
             },
           ]
+      } else if (action === 'approve-pr') {
+        delivery.publishApproved = true
+        delivery.mergeApproved = true
       } else if (action === 'publish') delivery.publishApproved = true
       else if (action === 'merge') delivery.mergeApproved = true
       else {
@@ -293,7 +385,9 @@ export const actions = {
     host.harness().resume()
     return { ok: true as const }
   }),
-  standing: implementAction(StandingAction, async (args, { host, conversationId, device }) => {
+  standing: implementAction(StandingAction, async (args, ctx) => {
+    const { host, conversationId } = ctx
+    const device = deliveryDevice(ctx)
     if (!args || typeof args !== 'object' || Array.isArray(args))
       throw new Error('Expected { grant } or { revoke }')
     if (args.revoke === true) {
@@ -308,27 +402,23 @@ export const actions = {
         grant.boundary = (
           await tx.scanEntries({ conversationId: grant.conversation }, 1)
         ).items[0]?.id
-        const standingLast = (
-          d: NonNullable<(typeof index.queue)[number]['delivery']>,
-          a: string,
-        ) => d.approvals?.findLast((approval) => approval.action === a)?.standing !== undefined
         for (const item of index.queue) {
           const d = item.delivery
           if (!d) continue
           delete d.asked
           const stage = d.stage === 'blocked' ? d.resumeStage : d.stage
           if (
-            stage === 'publish' &&
+            (stage === 'publish' || (stage === 'pr' && !d.createIntent)) &&
             d.publishApproved &&
             !d.publishIntent &&
-            standingLast(d, 'publish')
+            standingFor(d, 'publish') !== undefined
           )
             delete d.publishApproved
           if (
             (stage === 'ci' || stage === 'merge') &&
             d.mergeApproved &&
             !d.mergeIntent &&
-            standingLast(d, 'merge')
+            standingFor(d, 'merge') !== undefined
           )
             delete d.mergeApproved
           if (item.state !== 'landing') park(item)
@@ -346,7 +436,11 @@ export const actions = {
       throw new Error(`hours must be more than 0 and at most ${standingMaxHours}`)
     const { id: instruction, event } = await typedInstruction(host, ultimate, args.instruction)
     const latest = (await host.eventLog.recent({ events: [UserInputEvent], limit: 1000 })).find(
-      ({ data }) => data.conversation === ultimate && data.device && data.kind !== 'dismiss',
+      ({ data }) =>
+        data.conversation === ultimate &&
+        data.source === 'person' &&
+        data.device &&
+        data.kind !== 'dismiss',
     )
     if (latest?.id !== event.id || Date.now() - Date.parse(event.at) > grantWindow)
       throw new Error(
@@ -360,6 +454,8 @@ export const actions = {
       if (previous && Math.max(previous.instruction, previous.boundary ?? 0) >= instruction)
         throw new Error('Renewing a standing approval needs a newer instruction from the user')
       if (
+        index.instructionFloor === undefined ||
+        instruction <= index.instructionFloor ||
         [...index.queue, ...Object.values(index.results)].some((item) =>
           spent(item).some((a) => a.instruction === instruction),
         )
@@ -456,25 +552,26 @@ export default function workspaceExtension(host: ExtensionHost) {
     service.resume(context).catch((error: unknown) => {
       host.notice(`Lander resume failed: ${String(error)}`)
     })
-  let unsubscribe: (() => void) | undefined
-  let releasing: Promise<unknown> | undefined
-  let releaseController: AbortController | undefined
   const stand = () =>
     service.standLander(context).catch((error: unknown) => {
       host.notice(`Lander setup failed: ${String(error)}`)
     })
-  host.onOpen(async () => {
-    releaseController = new AbortController()
+  host.onOpen(async (opened) => {
+    await initializeApprovalHistory(host)
+    const releaseController = new AbortController()
     const { signal } = releaseController
-    releasing = conversations
+    const releasing = conversations
       .concluded(context)
       .then((ids) => service.release([...ids], context, signal))
       .then(() => service.sweep(context, signal))
       .catch((error: unknown) => {
         host.notice(`Workspace release failed: ${String(error)}`)
       })
-    unsubscribe?.()
-    unsubscribe = onCommit(host.harness(), (publication) => {
+    opened.defer(async () => {
+      releaseController.abort()
+      await releasing
+    })
+    const unsubscribe = onCommit(host.harness(), (publication) => {
       for (const change of publication.changes) {
         if (
           change.type !== 'task' ||
@@ -491,21 +588,16 @@ export default function workspaceExtension(host: ExtensionHost) {
         else rebuiltOnOpen('open resumes every lander queue', resume())
       }
     })
+    opened.defer(unsubscribe)
     await stand()
     await sweepChecks(host.home).catch((error: unknown) => {
       host.notice(`Lander check sweep failed: ${String(error)}`)
     })
     await resume()
   })
-  host.onClose(async () => {
-    releaseController?.abort()
-    await releasing
-    unsubscribe?.()
-    unsubscribe = undefined
-  })
   return defineExtension({
     name: 'workspaces',
-    tasks: [service.Preparation, service.Lander],
+    tasks: [service.Preparation, service.Lander, service.Continuation],
     hooks: [
       hook(ToolTask, {
         beforeTool: async (call, api, caller) => {
@@ -530,7 +622,26 @@ export default function workspaceExtension(host: ExtensionHost) {
         description:
           'Inspect your workspace and source tips, or submit your clean, verified tip to the lander (submit requires divergence from the original request).',
         parameters: obj({
-          action: strEnum(['status', 'submit']),
+          action: strEnum(['status', 'submit', 'follow', 'unfollow']),
+          after: opt(
+            str({
+              description:
+                'For follow: exact queued submission or retained result to reassess, regardless of success.',
+            }),
+          ),
+          outcome: opt(
+            str({
+              maxLength: 500,
+              description:
+                'For follow, or to track your own submit: name the approved workspace landing. This does not grant approval.',
+            }),
+          ),
+          continueFrom: opt(
+            num({
+              description:
+                'Current continuation key from status. Required to replace or withdraw a wait. Pass to submit to link the next attempt.',
+            }),
+          ),
           risk: opt(strEnum(['low', 'medium', 'high'])),
           pullRequest: opt(
             obj({
@@ -569,7 +680,17 @@ export default function workspaceExtension(host: ExtensionHost) {
           ),
         }),
         async execute(
-          { action, divergence, risk, review, reviewedTree, pullRequest },
+          {
+            action,
+            divergence,
+            risk,
+            review,
+            reviewedTree,
+            pullRequest,
+            after,
+            outcome,
+            continueFrom,
+          },
           api,
           caller,
         ) {
@@ -589,6 +710,48 @@ export default function workspaceExtension(host: ExtensionHost) {
             )
               throw new Error(`Only a top-level main conversation can ${action} its own workspace`)
           }, caller)
+          if (action === 'follow' || action === 'unfollow')
+            return finish(
+              await api.commit(async (tx) => {
+                const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+                if (action === 'follow') {
+                  const owner = api.conversationId
+                  const admitted = (await tx.doc(LiveDoc, owner)).run?.inputs.at(-1)
+                  const wait = await follow(
+                    tx,
+                    index,
+                    owner,
+                    after ?? '',
+                    outcome ?? '',
+                    'prerequisite',
+                    continueFrom,
+                  )
+                  if (wait.state === 'needs-action') {
+                    const result = index.results[wait.submission].outcome
+                    if (admitted === undefined)
+                      throw new Error(
+                        'No active input to observe. Inspect the retained result and arrange an acknowledged handoff instead.',
+                      )
+                    await tx.createTask(
+                      service.Continuation,
+                      { owner, key: wait.key, submission: wait.submission, result, admitted },
+                      {
+                        conversationId: owner,
+                        ownership: { kind: 'conversation' },
+                        background: true,
+                      },
+                    )
+                    return { ...wait, result }
+                  }
+                  return wait
+                }
+                const item = index.items[String(api.conversationId)]
+                if (!item?.continuation || item.continuation.key !== continueFrom)
+                  throw new Error('Continuation changed; inspect workspace status first')
+                delete item.continuation
+                return 'Stopped following. No delivery was stopped or completed.'
+              }, caller),
+            )
           return finish(
             await service.submit(
               api.conversationId,
@@ -602,6 +765,8 @@ export default function workspaceExtension(host: ExtensionHost) {
                     ...(pullRequest ? { pullRequest } : {}),
                   }
                 : undefined,
+              continueFrom,
+              outcome,
             ),
           )
         },

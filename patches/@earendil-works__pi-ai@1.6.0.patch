@@ -1,0 +1,63 @@
+diff --git a/dist/api/constrained-sampling.js b/dist/api/constrained-sampling.js
+--- a/dist/api/constrained-sampling.js
++++ b/dist/api/constrained-sampling.js
+@@ -128,11 +128,8 @@
+     return (strict === true ? makeStrictJsonSchema(tool.parameters) : tool.parameters);
+ }
+ export function getGrammarToolInput(toolName, arguments_, inputProperty) {
+-    const input = arguments_[inputProperty];
+-    if (typeof input !== "string") {
+-        throw new Error(`Grammar tool call "${toolName}" requires argument "${inputProperty}" to be a string.`);
+-    }
+-    return input;
++    const input = arguments_?.[inputProperty];
++    return typeof input === "string" ? input : JSON.stringify(arguments_ ?? {});
+ }
+ /**
+  * Append `inputDelta` to a streaming grammar tool input and return the matching piece of its JSON arguments text, or
+diff --git a/dist/api/openai-responses-shared.js b/dist/api/openai-responses-shared.js
+--- a/dist/api/openai-responses-shared.js
++++ b/dist/api/openai-responses-shared.js
+@@ -119,6 +119,8 @@
+     const transformedMessages = transformMessages(normalizedContext.messages, model, normalizeToolCallId);
+     const toolSupport = getResponsesToolSupport(options ?? {});
+     const transcriptTools = resolveTranscriptTools(normalizedContext.messages, toolSupport);
++    const inlineToolInputProperties = new Map();
++    const replayedCustomCalls = new Map();
+     let declaredAdditionalTools = false;
+     /** Tools announced as removed and not declared again since. */
+     const unavailableTools = new Set();
+@@ -129,6 +131,10 @@
+         if (tools.length === 0)
+             return;
+         if (toolSupport === "changes") {
++            if (options?.toolOptions?.supportsOpenAIGrammarTools) {
++                for (const tool of tools)
++                    inlineToolInputProperties.set(tool.name, resolveGrammarConstrainedSampling(tool, true)?.inputProperty);
++            }
+             if (declaredAdditionalTools) {
+                 messages.push({ role: instructionRole, content: renderIncrementalToolsNotice(unavailableTools) });
+             }
+@@ -261,7 +267,12 @@
+                 else if (block.type === "toolCall") {
+                     const toolCall = block;
+                     const [callId, itemIdRaw] = toolCall.id.split("|");
+-                    const customInputProperty = options?.grammarToolInputProperties?.get(toolCall.name);
++                    const hasInlineDeclaration = inlineToolInputProperties.has(toolCall.name);
++                    const customInputProperty = hasInlineDeclaration
++                        ? inlineToolInputProperties.get(toolCall.name)
++                        : options?.grammarToolInputProperties?.get(toolCall.name);
++                    if (hasInlineDeclaration)
++                        replayedCustomCalls.set(callId, customInputProperty !== undefined);
+                     let itemId = itemIdRaw;
+                     // For different-model messages, set id to undefined to avoid pairing validation.
+                     // OpenAI tracks which item IDs were paired with rs_xxx reasoning items.
+@@ -307,7 +318,7 @@
+         else if (msg.role === "toolResult") {
+             const [callId] = msg.toolCallId.split("|");
+             const output = convertToolResultOutput(model, msg.content);
+-            if (options?.grammarToolInputProperties?.has(msg.toolName)) {
++            if (replayedCustomCalls.get(callId) ?? options?.grammarToolInputProperties?.has(msg.toolName)) {
+                 messages.push({
+                     type: "custom_tool_call_output",
+                     call_id: callId,

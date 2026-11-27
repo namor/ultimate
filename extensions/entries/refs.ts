@@ -15,14 +15,13 @@ export type AbstractData = {
   anchor?: EntryId
 }
 
-/** A note's data: from another conversation or tally catch-up, or with `source: 'lander'` a landing card's. */
+/** A note's data: from another conversation or a commit catch-up, or with `source: 'lander'` a landing card's. */
 export type NoteData =
   | {
       text: string
       from?: ConversationId
       title?: string
       source?: 'finished' | 'main'
-      tally?: EntryId
     }
   | {
       source: 'lander'
@@ -44,7 +43,7 @@ export type NoteData =
       abstract?: Omit<AbstractData, 'conversation'>
     }
 
-/** A note received from another conversation, the lander, or tally catch-up. Lineage writes it. */
+/** A note received from another conversation, the lander, or a commit catch-up. Lineage writes it. */
 export const NoteEntry = defineEntry<NoteData>('lineage.note')
 
 /**
@@ -80,7 +79,15 @@ export type DeliveredMessage = {
   stopped?: boolean
   /** A remote reply sent while work serving the request goes on: the request stays open for the result. */
   interim?: true
+  /** A branch's final answer the judge weighed before it went to the starter. */
+  judged?: Judged
 }
+
+/**
+ * The judge's verdict on a branch's final answer `answer` (its entry in the branch): `report`, the probability that it
+ * wakes the starter, or `error`, why no verdict came (it then reports).
+ */
+export type Judged = { answer: EntryId } & ({ report: number } | { error: string })
 
 /** Message delivered as a conversation input. */
 export const MessageEntry = defineEntry<DeliveredMessage>('board.message')
@@ -99,3 +106,6 @@ export type AutomationInput = {
 
 /** Fired trigger delivered to a subscriber. */
 export const FiredEntry = defineEntry<AutomationInput>('automations.fired')
+
+/** A prompt run's answer, or its failure, delivered to a subscriber when the run ends. */
+export const FinishedEntry = defineEntry<AutomationInput>('automations.finished')

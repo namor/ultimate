@@ -18,7 +18,7 @@ other is disabled or removed.
 
 Every extension folder is on by default, built-in, user or project: adding the folder is the opt-in. The exception is
 the built-ins listed in `defaultOff` (`shared/extension-api.ts`; see [settings](../settings.md)), which need
-something of their own and ship off until `extensions.enable` names them (including `voice-live`, the live voice relay). Turn one off
+something of their own and ship off until `extensions.enable` names them (including `voice-live`, voice mode). Turn one off
 with `{ "extensions": { "disable": ["hello"] } }` in `~/.ultimate/settings.json` (this machine) or
 `<project>/.ultimate/settings.json` (this project), and back on with `extensions.enable`. Settings layer defaults →
 machine → project; later layers win. Settings changes apply live without a restart; unknown names produce a notice.
@@ -41,8 +41,8 @@ The project is the directory Ultimate was started in (`ultimate [dir]`); the Inf
 source when `info` is enabled; the building-blocks prompt names the clone root. Put a project's app in its `.ultimate/extensions/<name>/`. When the
 project is Ultimate itself, that is `.ultimate/extensions/` in the clone, not `extensions/`, which holds the built-ins.
 
-Extensions outside the clone import exactly what built-ins import (`@/sdk`, `@/components/…`, `react`,
-`lucide-react`, any package installed in the clone): Ultimate resolves those from its clone, and Tailwind picks up their
+Extensions outside the clone import exactly what built-ins import (`@/sdk/solid`, `@/components/…`,
+`@lucide/solid`, any package installed in the clone): Ultimate resolves those from its clone, and Tailwind picks up their
 classes. In the clone, `pnpm check` type-checks and lints `extensions/` and `.ultimate/extensions/`. Elsewhere,
 `node <clone>/scripts/check-extension.ts [folder…]` type-checks them against the clone (default: the current project's
 `.ultimate/extensions/*`; pass a user extension's folder to check it) and writes nothing into the clone or the project.

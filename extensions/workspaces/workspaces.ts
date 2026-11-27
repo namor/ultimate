@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { lstat, mkdir, readdir, realpath, rm } from 'node:fs/promises'
 import { isAbsolute, join, relative, sep } from 'node:path'
 import type { Context } from '@earendil-works/chord/context'
+import { withAbortSignal } from '@earendil-works/chord/context'
 import {
   configure,
   defineDoc,
@@ -15,12 +16,12 @@ import {
 import { exec } from '../../lib/exec.ts'
 import { git, isolatable } from '../../lib/git.ts'
 import { readWorktreeSetup } from '../../lib/worktree-setup.ts'
-import { meansNone, overshadowed, settled } from '../../lib/errors.ts'
+import { isMissing, meansNone, overshadowed, settled } from '../../lib/errors.ts'
 import { needsRestart as restartNeeded } from '../../lib/layers.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { ConversationsApi } from '../conversations/api.ts'
 import { Branches } from './api.ts'
-import { WorkspacesDoc } from './refs.ts'
+import { LanderReportEntry, WorkspacesDoc } from './refs.ts'
 import { setup } from './setup.ts'
 import {
   addCheckout,
@@ -34,13 +35,17 @@ import {
   contains,
   createLander,
   activeLandingCards,
+  emitLanding,
   hasPendingLanderReport,
   landerCheckout,
   landerPath,
   log,
+  mergedDeliveryOutcome,
 } from './lander.ts'
+import { observePullOutcome } from './advance.ts'
 import { deliverySettings } from './delivery-settings.ts'
 import { supersedes } from './delivery.ts'
+import { continuationTask, follow, resolveContinuations } from './continuation.ts'
 import type { DeliveryRisk } from './delivery.ts'
 import type { PullRequestCopy } from './pull-request.ts'
 import type {
@@ -86,6 +91,7 @@ export const Workspaces = defineDoc<WorkspaceIndex>({
 export async function landingPending(tx: Tx, id: ConversationId) {
   const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
   return (
+    !!index.items[String(id)]?.continuation ||
     index.queue.some((item) => item.conversationId === id) ||
     (await hasPendingLanderReport(tx, index, id))
   )
@@ -168,13 +174,17 @@ async function workLostWithCheckout(
     ),
   }
 }
+const failure = (error: unknown) => (error instanceof Error ? error.message : String(error))
 const workHeldByRegisteredCheckout = (
   id: ConversationId,
   workspace: WorkspaceIndex['items'][string],
   registered: boolean,
 ): Promise<KeptWork> =>
   registered
-    ? workLostWithCheckout(workspace).then((work) => ({ id, ...work }))
+    ? workLostWithCheckout(workspace).then(
+        (work) => ({ id, ...work }),
+        (error: unknown) => ({ id, uncommitted: 0, unlanded: 0, reason: failure(error) }),
+      )
     : Promise.resolve({ id, uncommitted: 0, unlanded: 0 })
 async function listedBySource(workspace: WorkspaceIndex['items'][string]) {
   return (await git(workspace.source, 'worktree', 'list', '--porcelain'))
@@ -184,6 +194,7 @@ async function listedBySource(workspace: WorkspaceIndex['items'][string]) {
 async function onlyIgnored(workspace: WorkspaceIndex['items'][string]) {
   const entries = await readdir(workspace.path, { withFileTypes: true })
   if (!entries.length) return true
+  if (entries.some((entry) => entry.name === '.git')) return false
   const paths = entries.map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
   const ignored = await git(workspace.source, 'check-ignore', '--no-index', '--', ...paths).catch(
     () => '',
@@ -216,9 +227,12 @@ export function workspaces(host: Host) {
     'workspaces.disk',
     (): { last?: WorkspaceDisk; running?: Promise<WorkspaceDisk> } => ({}),
   )
+  const Continuation = continuationTask(host, Workspaces)
   const Lander = createLander(host, Workspaces, serializeSourceWrites, {
     starter: async (id, context) => host.want(Branches)?.starter(id, context),
-    working: async (tx, id) => (await host.want(Branches)?.working(tx, id)) ?? false,
+    working: async (tx, id) =>
+      Boolean((await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).items[String(id)]?.continuation) ||
+      ((await host.want(Branches)?.working(tx, id)) ?? false),
     conclude: async (tx, id) =>
       void (await host.need(ConversationsApi).concludeIn(tx, [id], 'landing')),
     reserveLanding: async (tx, id, result) => {
@@ -311,6 +325,146 @@ export function workspaces(host: Host) {
       return stopped.length
     }, context)
     if (restarted) host.harness().resume()
+  }
+  async function reconcileDelivery(
+    { id, candidate, tree }: { id: string; candidate: string; tree: string },
+    actors: readonly number[] | undefined,
+    signal: AbortSignal,
+    context: Context,
+  ) {
+    context = withAbortSignal(signal, context)
+    const read = (index: WorkspaceIndex) => {
+      const queued = index.queue.find((item) => item.id === id)
+      const retained = Object.hasOwn(index.results, id) ? index.results[id] : undefined
+      const attempt = queued ?? retained
+      if (!attempt || attempt.conversationId === undefined)
+        throw new Error('Delivery is not queued or retained')
+      if (actors && !actors.includes(attempt.conversationId))
+        throw new Error('Only the user, the submitting branch, or @ultimate can reconcile this PR')
+      const delivery = attempt.delivery
+      if (!delivery?.pr || delivery.candidate !== candidate || delivery.tree !== tree)
+        throw new Error('No recorded PR matches this delivery candidate and tree')
+      if (attempt.target !== delivery.settings.base)
+        throw new Error('Delivery PR base differs from the recorded target')
+      if (queued?.state === 'landing')
+        throw new Error('The lander is working on this delivery; check again once it parks')
+      const sources = queued
+        ? [queued.source]
+        : Object.keys(index.landerConversations).filter(
+            (key) => index.landerConversations[key] === retained?.lander,
+          )
+      if (sources.length !== 1) throw new Error('Cannot establish the original source checkout')
+      return {
+        queued,
+        retained,
+        attempt,
+        delivery,
+        source: sources[0],
+        owner: attempt.conversationId,
+      }
+    }
+    const prior = read((await host.harness().snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!)
+    if (prior.retained?.outcome === 'landed') return { status: 'landed' as const }
+    if (prior.retained?.outcome === 'failed' && prior.delivery.stage === 'closed')
+      return { status: 'closed' as const }
+    if (
+      prior.retained &&
+      (prior.retained.sha ||
+        prior.delivery.mergeIntent ||
+        !prior.delivery.approvals?.some(
+          (approval) => approval.action === 'stop' && approval.candidate === candidate,
+        ))
+    )
+      throw new Error('Only a retained result with a matching stop decision can be corrected')
+    const observed = await observePullOutcome(prior.source, prior.delivery, signal)
+    if (!observed)
+      throw new Error(`Delivery PR #${prior.delivery.pr} is still open; no outcome to reconcile`)
+    if (prior.retained && observed.stage === 'closed') return { status: 'closed' as const }
+    const status = await serializeSourceWrites(prior.source, async () => {
+      signal.throwIfAborted()
+      const ref = `refs/heads/${prior.attempt.target}`
+      const sha = observed.merged
+      if (sha && !(await contains(prior.source, sha, ref))) {
+        if (prior.retained) throw new Error('The local target does not contain the reported merge')
+        if (!(await contains(prior.source, ref, sha)))
+          throw new Error('The local target diverges from the reported merge')
+      }
+      const outcome =
+        prior.retained &&
+        (await mergedDeliveryOutcome(prior.source, prior.attempt.target, observed))
+      return host.harness().commit(async (tx) => {
+        const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+        const current = read(index)
+        if (current.retained?.outcome === 'landed' && current.retained.sha === sha)
+          return 'landed' as const
+        if (
+          Boolean(current.queued) !== Boolean(prior.queued) ||
+          current.attempt.at !== prior.attempt.at ||
+          current.attempt.target !== prior.attempt.target ||
+          current.attempt.tip !== prior.attempt.tip ||
+          current.source !== prior.source ||
+          current.owner !== prior.owner ||
+          JSON.stringify(current.delivery) !== JSON.stringify(prior.delivery)
+        )
+          throw new Error('Delivery changed during reconciliation; check the current attempt')
+        if (current.queued) {
+          delete observed.pollAt
+          current.queued.delivery = observed
+          current.queued.state = 'queued'
+          return 'queued' as const
+        }
+        if (!outcome || current.retained?.outcome !== 'failed')
+          throw new Error('Retained delivery is no longer eligible for correction')
+        const { reason, output: _o, hint: _h, ...retained } = current.retained
+        observed.decisions = [
+          ...(observed.decisions ?? []).slice(-19),
+          {
+            at: Date.now(),
+            what: 'retained stop reconciled',
+            ...(reason ? { why: reason } : {}),
+          },
+        ]
+        const result = { ...retained, ...outcome }
+        const owner = await tx.conversation(current.owner)
+        index.results[id] = result
+        index.closing = index.closing?.filter(
+          (item) =>
+            !(
+              item.source === current.source &&
+              item.pr === observed.pr &&
+              item.repository === observed.settings.repository
+            ),
+        )
+        const workspace = index.items[String(current.owner)]
+        if (
+          workspace?.source === current.source &&
+          workspace.target === result.target &&
+          workspace.continuation?.tracks === 'delivery' &&
+          workspace.continuation.submission === id
+        )
+          delete workspace.continuation
+        await log(tx, result.lander, { ...result, id, conversationId: current.owner }, outcome)
+        await resolveContinuations(tx, index, id, Continuation, false)
+        await emitLanding(host, tx, id, current.owner, result)
+        if (owner)
+          await tx.appendEntry(LanderReportEntry, current.owner, {
+            data: { id, outcome: result },
+            model: [
+              {
+                role: 'user',
+                content: `[lander] Reconciled ${id}: ${observed.url} merged as ${outcome.sha.slice(0, 7)}.`,
+                timestamp: Date.now(),
+              },
+            ],
+          })
+        return 'landed' as const
+      }, context)
+    })
+    if (status === 'queued') {
+      await resume(context)
+      host.harness().resume()
+    }
+    return { status }
   }
   const get = async (id: ConversationId, context: Context) =>
     (await host.harness().snapshot(Workspaces, ROOT_CONVERSATION_ID, context))?.items[String(id)]
@@ -486,9 +640,17 @@ export function workspaces(host: Host) {
   async function recordedCheckout(id: ConversationId, context: Context) {
     const workspace = await presentCheckout(id, context)
     if (!workspace) return undefined
-    const registered = await listedBySource(workspace)
-    const potentiallyForeignFolder = !registered && workspace.state !== 'ready'
-    if (potentiallyForeignFolder) return undefined
+    const registered = await listedBySource(workspace).catch(async (error: unknown) => {
+      if (!isMissing(error) || (await onDisk(workspace.source))) throw error
+      return undefined
+    })
+    if (registered === undefined)
+      return { workspace, registered: false, reason: 'Workspace source checkout is missing' }
+    if (!registered) {
+      if (workspace.state !== 'ready') return undefined
+      if (!(await onlyIgnored(workspace)))
+        return { workspace, registered: false, reason: 'Workspace checkout is not registered' }
+    }
     return { workspace, registered }
   }
   async function progress(ids: ConversationId[], context: Context): Promise<KeptWork[]> {
@@ -507,6 +669,7 @@ export function workspaces(host: Host) {
     const result: KeptWork[] = []
     for (const id of (await candidates(ids, context)).ids) {
       const checkout = await recordedCheckout(id, context)
+      if (checkout?.reason) throw new Error(checkout.reason)
       if (!checkout?.registered) continue
       const item = await changes(id, checkout.workspace)
       if (item.uncommitted || item.unlanded) result.push(item)
@@ -554,7 +717,7 @@ export function workspaces(host: Host) {
       }
       return undefined
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
+      const reason = failure(error)
       const present = await registeredCheckout(workspace)
       await host.harness().commit(async (tx) => {
         const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).items[String(id)]
@@ -586,6 +749,10 @@ export function workspaces(host: Host) {
           return
         }
         const checkout = await recordedCheckout(id, context)
+        if (checkout?.reason) {
+          kept.push({ id, uncommitted: 0, unlanded: 0, reason: checkout.reason })
+          return
+        }
         const present = Boolean(checkout)
         const registered = Boolean(checkout?.registered)
         const item: KeptWork = present
@@ -608,26 +775,18 @@ export function workspaces(host: Host) {
               if (descendant.state !== 'removed') item.descendant = Number(child)
             }
           } while (size !== sources.size)
-          if (!item.uncommitted && !item.unlanded && !item.descendant)
+          if (!item.uncommitted && !item.unlanded && !item.reason && !item.descendant)
             index.items[String(id)].state = 'removed'
           else if (registered && index.items[String(id)].state === 'removed')
             index.items[String(id)].state = 'ready'
           return undefined
         }, context)
         if (reason) item.busy = reason
-        if (item.uncommitted || item.unlanded || item.busy || item.descendant) {
+        if (item.uncommitted || item.unlanded || item.reason || item.busy || item.descendant) {
           kept.push(item)
           return
         }
-        if (
-          !present &&
-          !(await lstat(workspace.source).catch((error: NodeJS.ErrnoException) => {
-            if (error.code !== 'ENOENT') throw error
-            return undefined
-          }))
-        )
-          return
-        if (present && !registered) await rm(workspace.path, { recursive: true, force: true })
+        if (!present && !(await onDisk(workspace.source))) return
         const remaining = await finishRemoval(id, workspace, context)
         if (remaining) kept.push(remaining)
       })
@@ -675,8 +834,10 @@ export function workspaces(host: Host) {
         const branch = record
           .find((line) => line.startsWith('branch refs/heads/'))
           ?.slice('branch refs/heads/'.length)
-        const work = await workLostWithCheckout({ path, branch: branch ?? '', target })
-        if (work.uncommitted || work.unlanded) {
+        const work = await workLostWithCheckout({ path, branch: branch ?? '', target }).catch(
+          (error: unknown) => ({ uncommitted: 0, unlanded: 0, reason: failure(error) }),
+        )
+        if (work.uncommitted || work.unlanded || work.reason) {
           kept.push(path)
           return
         }
@@ -771,6 +932,8 @@ export function workspaces(host: Host) {
       reviewedTree?: string
       pullRequest?: PullRequestCopy
     },
+    continueFrom?: number,
+    outcome?: string,
   ): Promise<SubmitResult> {
     if (!divergence?.trim())
       throw new Error(
@@ -805,10 +968,17 @@ export function workspaces(host: Host) {
       if (at === undefined)
         throw new Error('Submitting requires a conversation entry for its breadcrumb')
       const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
-      const { source, target } = index.items[String(id)]
+      const { source, target, continuation } = index.items[String(id)]
+      if (continuation?.key !== continueFrom)
+        throw new Error('Continuation changed; inspect workspace status first')
       const idleReadBeforeWrites = await landerIdle(tx, index, source)
       const lander = await ensureLanderBeforeWrites(tx, index, source, target, path)
-      const queued = index.queue.find((item) => item.conversationId === id && item.tip === tip)
+      const queued = index.queue.find(
+        (item) =>
+          item.conversationId === id &&
+          item.tip === tip &&
+          !(item.delivery?.cause === 'runtime' && supersedes(item, { conversationId: id, target })),
+      )
       if (queued?.delivery?.stage === 'review' && assessment) {
         if (reviewedTree !== queued.delivery.tree)
           throw new Error('Review does not cover the integration candidate tree')
@@ -849,6 +1019,7 @@ export function workspaces(host: Host) {
                 note: `Superseded by a newer submission of the same branch (${newId}).`,
               },
             ]
+          await resolveContinuations(tx, index, old.id, Continuation, false)
           await log(tx, lander, old, { outcome: 'failed', reason: index.results[old.id].reason })
         }
       index.queue = index.queue.filter((item) => !index.results[item.id])
@@ -868,10 +1039,29 @@ export function workspaces(host: Host) {
         ...(subject ? { subject } : {}),
         steps: [],
       }
+      if (continuation && outcome !== undefined && continuation.outcome !== outcome.trim())
+        throw new Error('Do not replace an open delivery with a different outcome')
+      if (
+        continuation &&
+        continueFrom === continuation.key &&
+        (entry.id !== continuation.submission || continuation.tracks !== 'delivery')
+      ) {
+        continuation.key = (
+          await tx.appendEntry(id, {
+            kind: 'workspaces.continued',
+            data: { previous: continueFrom, submission: entry.id },
+          })
+        ).id
+        continuation.submission = entry.id
+        continuation.tracks = 'delivery'
+        continuation.state = 'waiting'
+      }
       if (!queued) {
         await log(tx, lander, entry, { step: 'queued' })
         index.queue.push(entry)
       }
+      if (!continuation && outcome !== undefined)
+        await follow(tx, index, id, entry.id, outcome, 'delivery')
       if (idleReadBeforeWrites) await startIdleLander(tx, index, source)
       const position = index.queue
         .filter((item) => item.source === source)
@@ -1016,7 +1206,9 @@ export function workspaces(host: Host) {
   return {
     Preparation,
     Lander,
+    Continuation,
     resume,
+    reconcileDelivery,
     standLander,
     started: tasksStartedByThisModule,
     get,

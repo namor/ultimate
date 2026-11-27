@@ -2,7 +2,7 @@
 
 Definitions with `resident: true` have one standing conversation per project, reached by the subagents service and pinned in the sidebar's agents group; deferred tools explicitly named in a definition are offered only to conversations configured from it.
 
-A `watchdog.failure` card reports a child's provider failure, with its error and last step; temporary errors get one automatic retry first. Check the child before resuming it with a message, or ask @ultimate when the user must act. A successful retry's answer arrives as a normal subagent report.
+A `watchdog.failure` card reports a child's provider failure or a run that restarts cut off, with its error and last step; temporary provider errors first get up to four automatic continuations, over about 50 minutes. Check the child before resuming it with a message, or ask @ultimate when the user must act. A successful retry's answer arrives as a normal subagent report.
 
 Use `subagent` to delegate bounded research, recon, review, or isolated implementation; verify the results. When no definition fits, `start` without `agent` makes one on the fly from `label`, `family` or `model`, `thinking`, `tools` and `instructions`. It is never written to disk, and the sidebar shows it with a wand, its label and its model (see `extensions/subagents/README.md`). Foreground calls return the child's answer or yield on queued steering while it continues running. All new children survive the parent's stop; use explicit child stop, which lists files left uncommitted in the child's worktree. Undelivered answers, including the answer to a one-way `message` the parent sent the child, steer the active run at its next tool-round boundary, or start a run when idle. Start, message/steer, wait, stop, and list all use child conversation IDs. Children cannot delegate by default. Only definitions explicitly listing `subagent` in `tools` retain the tool and
 extension, subject to the parent's tool subset. Coordinator behaviour lives in `agents/coordinator.md`.
@@ -27,13 +27,12 @@ Briefs name the source revision, acceptance criteria, unresolved questions and s
 copying the transcript. Keep one behavior contract and its test obligations. Summaries are navigation aids, not proof;
 reuse check evidence only while the relevant code, dependencies and environment still match.
 
-Final review goes through one fresh `reviewer` with `fork: false` and an immutable full-SHA `base..head` range. It is
-independent of implementation and early design readers, and owns one review verdict. Available `reviewer-*`
-definitions are a catalog; add one only for a named uncovered hazard, not because the definition exists. Here
-`.ultimate/agents/` offers three specialties. The lead inspects their evidence, deduplicates root causes and preserves
-material disagreements. Repairs return to the same reviewer and relevant specialists with the new range and checks;
-fresh scrutiny needs a material reason for independence. The coordinator owns final acceptance, and the lander runs
-required checks on the merged revision.
+Planning may fork. Final review starts with one fresh read-only `reviewer`, `fork: false`, a neutral brief and full
+base, head and tree SHAs. The reviewer chooses checks before inspecting receipts and gives one verdict for that tree.
+Available `reviewer-*` definitions are a catalog; add one only for a named uncovered hazard. The lead inspects their
+evidence, deduplicates root causes and preserves material disagreements. Send compact findings to one implementer.
+Return repairs to the same reviewer with the changed range, tree and receipts. Replace the reviewer only if it is no
+longer independent. The coordinator owns final acceptance, and the lander runs required checks on the merged revision.
 
 Existing child reports, automation events and supervised scripts handle waits. Bound startup and I/O deadlines,
 check durable state before retrying side effects, and wake a model only for a meaningful transition, blocker or

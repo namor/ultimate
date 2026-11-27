@@ -8,10 +8,11 @@ Durable messages between conversations, standing agents and the user. Built in a
 conversation as `#123` or `123`, a standing agent as `@name`, or `user`.
 
 - **Who may message whom.** @ultimate, standing agents and branches may message `user`; a message to the user ends
-  the run like a final answer. A subagent may message only its parent, so its work reaches the user through its
-  coordinator. Automation runs and other top-level conversations may message any
-  agent. Self-messages, unknown conversations and tallies (use `note`) are refused, as is the lander, which takes no
-  messages; an unknown standing name lists the valid ones.
+  the run like a final answer. A regular side chat of @ultimate may message `user` as itself, not as @ultimate.
+  A question side chat is read-only. A subagent may message only its parent, so its work reaches the user through its
+  coordinator. Automation runs and other top-level conversations may message any agent. Self-messages, unknown
+  conversations and tallies (use `note`) are refused, as is the lander, which takes no messages; an unknown standing
+  name lists the valid ones.
 - **Delivery.** An idle recipient wakes. A busy one gets a follow-up after its current run, or steering with
   `steer: true`, the default for @ultimate's messages and `false` for everyone else. A message to a concluded
   conversation resumes it.
@@ -35,7 +36,22 @@ report.**
 - **Reports.** After each run of a branch, its final answer goes to its starter, unless it already returned as a reply.
   When nothing of the branch is under way (no run, queued input, busy subagent, pending submission or open
   reply-enabled message), it goes as a one-way message with `report: true`, which wakes the starter; otherwise as a
-  note, since the branch will run again. A landing concludes the branch and wakes the starter itself, asking through
+  note, since the branch will run again. Before a report goes out, a judge weighs it: back-and-forth the user drives in
+  the branch (an iteration round, an answer to their idea, an acknowledgement) goes as a note instead, while a decision,
+  a result, a blocker or a request for the starter reports. The `messages.judge` point asks it; classify provides it
+  with one Jev `choice` (about 0.2 s, a fraction of a cent), sending the branch's previous answer (last 600 characters),
+  each input's source and first 500 characters, and the final answer's first 1200 to TypeSafe. The `board.route` task
+  marks the call before it asks and memoizes the verdict, so a crash in between reports instead of asking twice. The
+  verdict goes on the message and in the branch's `board.judged` document by answer entry (`{ answer, report }`, the
+  probability it reports; below 0.5 it is a note). Without classify, after 10 s, on any error or a score outside [0, 1]
+  the answer reports, with `{ answer, error }` naming only the cause (an HTTP status, `timed out`, `interrupted`): a
+  wrong wake costs one turn, a lost answer stalls a flow. A branch's routes run one at a time in answer order: each `board.route` waits for the previous
+  one (`board.started.lastRoute`), so a late verdict holds back newer answers rather than being overtaken. In the
+  transaction that sends it the work checks run again; a branch that got busy or concluded meanwhile sends the answer
+  as a note, which its next report promotes like any work update. A judged note is never promoted. The
+  judge's error message is a short cause (classify keeps only `TypeSafe <status>`); a provider's response body never
+  crosses it. The message card and the branch's final answer show the verdict as a
+  chip. A landing concludes the branch and wakes the starter itself, asking through
   the `workspaces.branches` point this extension provides (`starter`, `underway`).
 - **Answers back down.** The primary agent's final answer goes to each branch whose reply or report was an input of
   that run (not concluded, not messaged in the run) with `routed: true`, so a weigh-in reaches the branch. The run's
@@ -49,12 +65,11 @@ report.**
 
 Routing cannot loop: an answer to a routed answer is an `echo`, placed as a note that wakes no one and routes no
 further. Conversation waits are derived from existing records: work, an open user question, an open agent or remote
-request, a subscribed timer, then an unconcluded branch's starter. Rows name the wait (`waits on @ultimate`,
-`waits on #N`, `waits on ultimate-eval`, or `waits on <timer> · <time>`); a branch waiting on @ultimate also shows
-its remote dependency, one hop only. Remote waits poll the target's optional Status progress every 15 seconds and
-append ` · run 2/4` (using its label and counts), or ` · not running` when it cannot be reached. The Open messages
-popover counts branches the conversation started that currently wait on it, rather than inferring a debt from past
-reports. The browser reads `board.started` read-only.
+request, and a subscribed timer. Rows name the wait (`waits on @ultimate`, `waits on #N`, `waits on ultimate-eval`,
+or `waits on <timer> · <time>`); a branch waiting on @ultimate also shows its remote dependency, one hop only.
+Remote waits poll the target's optional Status progress every 15 seconds and append ` · run 2/4` (using its label
+and counts), or ` · not running` when it cannot be reached. A branch's recorded starter is not a request. The
+Open messages popover lists delivered requests that still need this agent's reply and opens their sender.
 
 ### Messages to the user
 
@@ -97,7 +112,7 @@ with `questions` in its own conversation. Reports that need no answer use `reply
 One @ultimate can message another project's @ultimate, on this machine or over the tailnet; nothing else crosses, and the
 message is never the user's.
 
-- **Sender:** codemode `ultimate.tell({ project, text, reply? })` (@ultimate only) posts the target's `messages.remote`
+- **Sender:** codemode `tools.tell({ project, text, reply? })` (@ultimate only) posts the target's `messages.remote`
   action, located as codemode's `{ project }` reads are (`lib/remote.ts`). A failed post throws a sentence naming the
   project and machine. Telling an Ultimate whose question to you is still open is refused: answer it instead.
 - **Target:** `messages.remote { key, text, reply, from: { project, machine } }` delivers to its own primary agent only,
@@ -126,7 +141,7 @@ the log keeps the newest 300 items, and transcripts retain delivered inputs. `Me
 are a conversation id, `'user'` or `'remote'`; `state` is `sent`, `delivered`, `answered`, `dismissed`, `failed` or
 `stopped`; `re`, `entry`, `answer`, `error`, `via`, `remote`, `report`, `questions` and `call` are optional.
 
-- `board.message` data: `{ id, from, text, reply, delivery: 'steer' | 'followUp' | 'note', images?, remote? }`.
+- `board.message` data: `{ id, from, text, reply, delivery: 'steer' | 'followUp' | 'note', images?, remote?, judged? }`.
 - `board.reply` data: `{ id, re, from, text, failed, stopped?, images?, remote?, interim? }`; `stopped` also sets
   `failed`; an `interim` reply is placed as a note (`delivery: 'note'`).
 - Each post emits `board.sent` `{ message, from, to, reply, steer }` (`MessageSent`), never the text; replies emit
@@ -156,18 +171,19 @@ Server side, imported in one direction (`log`, `images`, `addresses`, `questions
   point.
 - `send.ts`: `send()`, validation, receipts, and turning a message to a sender you owe into that answer.
 - `delivery.ts`: the `board.delivery` task, owner-output admission and the `board.settle` task that waits for that input.
-- `route.ts`: the `board.route` task: notes, reports and answers back down.
+- `route.ts`: the `board.route` task: notes, reports (weighed by the judge) and answers back down.
+- `judged.solid.tsx`: the judge's verdict chip on a message card and a branch's final answer.
 - `outcomes.ts`: fail requests whose owner has stopped, failed or been deleted.
 - `remote.ts`: `tell`, the `remote` and `remoteReply` actions.
 - `branch.ts`: the `branch` tool.
 - `addresses.ts`: resolving `to`, sender names, a subagent's parent and the lander.
 - `images.ts`, `questions.ts`, `log.ts`: forwarded images, questions and the `board.open` line, the bounded log.
 
-`api.ts` and `refs.ts` are the contract; `caller.ts` is shared with the browser; the `.tsx` files are the UI.
+`api.ts` and `refs.ts` are the contract; `caller.ts` is shared with the browser; the `.solid.tsx` files are the UI.
 
 ## UI
 
-There is no Messages surface: everything renders in transcripts. Every sender has a stable accent (`accent.tsx`).
+There is no Messages surface: everything renders in transcripts. Every sender has a stable accent (`accent.ts`).
 
 - **Cards:** typed messages and replies render as compact cards with Source / Return navigation, showing reply or
   one-way and the delivery mode. A `message` call renders as an outgoing card with its live state; a `branch` call as a

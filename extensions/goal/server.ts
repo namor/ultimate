@@ -16,16 +16,19 @@ import { implementAction } from '../../lib/actions.ts'
 import { imagesOf, latestImagesEntry } from '../../lib/entries.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { AutomationsApi } from '../automations/api.ts'
+import { ConversationsApi } from '../conversations/api.ts'
 import { Standing } from '../subagents/api.ts'
-import { deliver, deliverTask } from './delivery.ts'
-import { reminderTask } from './reminder.ts'
+import { LegacyDelivery } from './delivery.ts'
+import { LegacyReminderTask, retireReminders } from './reminder.ts'
+import type { GoalState } from './reminder.ts'
+import { eventFence, withdrawWakes, workWakes } from './wake.ts'
 import { EndAction, GoalDoc, ImagesAction, StartAction } from './refs.ts'
 import type { Criterion, Decision, Ending, Goal } from './refs.ts'
 
 export const TRIES = 3
 const TEXT_CHARS = 2000
 
-export const Goals = defineDoc<{ next: number; goals: Goal[] }>({
+export const Goals = defineDoc<GoalState>({
   kind: GoalDoc.kind,
   checkpointWhen: () => false,
   version: 1,
@@ -51,17 +54,28 @@ const text = (value: unknown, name: string) => {
   return value.trim()
 }
 
-export async function start(tx: Tx, words: unknown, now: number) {
+export async function start(
+  tx: Tx,
+  words: unknown,
+  now: number,
+  options?: { afterEvent?: EntryId; proposal?: unknown },
+) {
+  const { afterEvent, proposal } = options ?? {}
   const goals = await tx.doc(Goals, ROOT_CONVERSATION_ID)
   const open = goals.goals.find((goal) => !goal.ended)
   if (open) throw new Error(`Goal ${open.id} is still open; end it first`)
+  const earlier = goals.goals.find((goal) => proposal !== undefined && goal.proposal === proposal)
+  if (earlier) throw new Error(`This proposal already started goal ${earlier.id}`)
   const goalText = text(words, 'The goal')
   const goal: Goal = {
     id: goals.next++,
     text: goalText,
     startedAt: now,
+    workEvents: true,
+    ...(afterEvent === undefined ? {} : { afterEvent }),
     criteria: [],
     decisions: [],
+    ...(typeof proposal === 'string' ? { proposal } : {}),
   }
   goals.goals.push(goal)
   return goal
@@ -79,22 +93,17 @@ const status = (criterion: Criterion) =>
     ? `open, ${criterion.tries}/${TRIES} failed tries`
     : criterion.status
 
-export function noteText(goal: Goal, reminded = false) {
+export function noteText(goal: Goal) {
   const criteria = goal.criteria.length
     ? goal.criteria.map((item, index) => `${index + 1}. [${status(item)}] ${item.text}`).join('\n')
     : "None yet: write them first with goal {action: 'criteria', criteria}, each one you can check."
   return [
     `Hands-off goal ${goal.id}, granted by the user, who is away: ${goal.text}`,
     `Done means:\n${criteria}`,
-    `Work toward it without the user: decide what you would ask them yourself (a go, a decision, a UI preview approval against the criteria), record each with goal {action: 'decide'} and its reason, and keep going. ${goal.decisions.length} decided so far. Mark criteria met or failed as you check them; a criterion is blocked after ${TRIES} failed tries, so learn from each failure before the next try. Finish with goal {action: 'finish'} when every criterion is met or every open one is blocked. Only when you are truly blocked on the user, goal {action: 'pause', reason} stops the reminder that wakes you.`,
+    `Work toward it without the user: decide what you would ask them yourself (a go, a decision, a UI preview approval against the criteria), record each with goal {action: 'decide'} and its reason, and keep going. ${goal.decisions.length} decided so far. Mark criteria met or failed as you check them; a criterion is blocked after ${TRIES} failed tries, so learn from each failure before the next try. Finish with goal {action: 'finish'} when every criterion is met or every open one is blocked. Only when you are truly blocked on the user, goal {action: 'pause', reason} stops goal wakeups.`,
     ...(goal.waiting
       ? [
-          `Waiting on the user since ${new Date(goal.waiting.at).toISOString()}: ${goal.waiting.reason}. The reminder is paused. Once they answer and you can go on, goal {action: 'resume'} turns it back on.`,
-        ]
-      : []),
-    ...(reminded
-      ? [
-          "This is the goal reminder: check that the goal's branches are moving, the lander queue, reactor lag and watchdog cards. Nudge or fix what is stuck and record a decide only when you changed something; otherwise end the turn quietly.",
+          `Waiting on the user since ${new Date(goal.waiting.at).toISOString()}: ${goal.waiting.reason}. Goal wakeups are paused. Once they answer and you can go on, use goal {action: 'resume'}.`,
         ]
       : []),
   ].join('\n\n')
@@ -111,7 +120,8 @@ async function imagesEntry(tx: Tx, id: ConversationId, ref: 'latest' | EntryId) 
 }
 
 type ToolArgs = {
-  action: 'criteria' | 'decide' | 'met' | 'failed' | 'finish' | 'pause' | 'resume'
+  action: 'propose' | 'criteria' | 'decide' | 'met' | 'failed' | 'finish' | 'pause' | 'resume'
+  text?: string
   criteria?: string[]
   n?: number
   question?: string
@@ -123,7 +133,17 @@ type ToolArgs = {
   summary?: string
 }
 
-export async function act(tx: Tx, ultimate: ConversationId, args: ToolArgs, now: number) {
+export async function act(
+  tx: Tx,
+  ultimate: ConversationId,
+  args: ToolArgs,
+  now: number,
+  afterEvent?: EntryId,
+) {
+  if (args.action === 'propose') {
+    text(args.text, 'text')
+    return { answer: 'Proposed. The goal starts only when the user presses Start on its card.' }
+  }
   const goal = await openGoal(tx)
   if (!goal) throw new Error('No hands-off goal is open; ask the user as usual.')
   const criterion = () => {
@@ -173,18 +193,14 @@ export async function act(tx: Tx, ultimate: ConversationId, args: ToolArgs, now:
   }
   if (args.action === 'pause') {
     goal.waiting = { reason: text(args.reason, 'reason'), at: now }
-    return {
-      answer: `Goal ${goal.id} waits on the user; the reminder is paused. Ask them now.`,
-      sync: goal.id,
-    }
+    await withdrawWakes(tx, ultimate, goal.id)
+    return { answer: `Goal ${goal.id} waits on the user; goal wakeups are paused. Ask them now.` }
   }
   if (args.action === 'resume') {
     if (!goal.waiting) throw new Error(`Goal ${goal.id} is not paused`)
     delete goal.waiting
-    return {
-      answer: `Goal ${goal.id} goes on; the reminder wakes you again.`,
-      sync: goal.id,
-    }
+    if (afterEvent !== undefined) goal.afterEvent = afterEvent
+    return { answer: `Goal ${goal.id} goes on; new work events can wake you again.` }
   }
   if (args.outcome !== 'met' && args.outcome !== 'blocked')
     throw new Error("finish needs outcome 'met' or 'blocked'")
@@ -194,6 +210,7 @@ export async function act(tx: Tx, ultimate: ConversationId, args: ToolArgs, now:
     outcome: args.outcome,
     summary: text(args.summary, 'summary'),
   })
+  await withdrawWakes(tx, ultimate, ended.id)
   return {
     answer: `Goal ${goal.id} finished: ${args.outcome}. The report is in your conversation.`,
     ended,
@@ -205,7 +222,7 @@ const reportText = (goal: Goal) =>
     ? `The user ended hands-off goal ${goal.id}. From now on ask them as usual.`
     : `Hands-off goal ${goal.id} ended (${goal.ended?.outcome}); its report card is here for the user. From now on ask them as usual.`
 
-async function enqueueGoalNotice(
+async function goalNotice(
   host: ExtensionHost,
   tx: Tx,
   kind: 'goal.started' | 'goal.report',
@@ -213,44 +230,52 @@ async function enqueueGoalNotice(
 ) {
   const to = await ultimateOf(tx)
   if (to === undefined) throw new Error('@ultimate has no conversation yet')
-  await deliver(host, tx, {
+  const requestId = `${kind}:${goal.id}`
+  const data = { goal: goal.id }
+  await host.need(ConversationsApi).submitAfter(
+    tx,
     to,
-    goal: goal.id,
-    kind,
-    content:
-      kind === 'goal.started' ? `The user started hands-off goal ${goal.id}.` : reportText(goal),
-  })
+    kind === 'goal.started'
+      ? {
+          type: 'input',
+          requestId,
+          content: `The user started hands-off goal ${goal.id}.`,
+          entry: { kind, data },
+          whenBusy: 'followUp',
+        }
+      : {
+          type: 'write',
+          requestId,
+          entry: {
+            kind,
+            data,
+            model: [{ role: 'user', content: reportText(goal), timestamp: Date.now() }],
+          },
+        },
+  )
 }
 
 const field = (args: unknown, name: string) =>
   args && typeof args === 'object' ? (args as Record<string, unknown>)[name] : undefined
 
-const enqueueReminderSync = (host: ExtensionHost, tx: Tx, goal: number) =>
-  tx.createTask(
-    reminderTask(host, Goals),
-    { goal },
-    {
-      conversationId: ROOT_CONVERSATION_ID,
-      ownership: { kind: 'conversation' },
-      background: true,
-    },
-  )
-
 export const userActions = ['start', 'end']
 export const actions = {
   start: implementAction(StartAction, (args, { host }) =>
     host.harness().commit(async (tx) => {
-      const goal = await start(tx, field(args, 'text'), Date.now())
-      await enqueueGoalNotice(host, tx, 'goal.started', goal)
-      await enqueueReminderSync(host, tx, goal.id)
+      const goal = await start(tx, field(args, 'text'), Date.now(), {
+        afterEvent: await eventFence(host, tx),
+        proposal: field(args, 'proposal'),
+      })
+      await goalNotice(host, tx, 'goal.started', goal)
       return detachGoal(goal)
     }, context),
   ),
   end: implementAction(EndAction, (_args, { host }) =>
     host.harness().commit(async (tx) => {
       const goal = await end(tx, { at: Date.now(), by: 'user', outcome: 'ended' })
-      await enqueueGoalNotice(host, tx, 'goal.report', goal)
-      await enqueueReminderSync(host, tx, goal.id)
+      const to = await ultimateOf(tx)
+      if (to !== undefined) await withdrawWakes(tx, to, goal.id)
+      await goalNotice(host, tx, 'goal.report', goal)
       return goal
     }, context),
   ),
@@ -272,26 +297,30 @@ export const actions = {
 
 export default function goalExtension(host: ExtensionHost) {
   host.need(AutomationsApi)
+  host.onOpen(() => retireReminders(host, Goals))
+  const wake = workWakes(host, async (tx) => {
+    const goal = await openGoal(tx)
+    if (!goal || goal.waiting) return undefined
+    const to = await ultimateOf(tx)
+    return to === undefined ? undefined : { goal, to }
+  })
   return defineExtension({
     name: 'goal',
-    tasks: [deliverTask(host), reminderTask(host, Goals)],
+    tasks: [LegacyDelivery, LegacyReminderTask, wake],
     hooks: [
       hook(GenerationTask, {
-        // Pi upstream: @earendil-works/pi-durable@1.5.2 — patched transactional beforeInput hook.
-        beforeInput: async (input, { tx, conversationId }) => {
+        // Pi upstream: @earendil-works/pi-durable@1.6.0 — patched transactional beforeInput hook.
+        beforeInput: async (_input, { tx, conversationId }) => {
           if ((await ultimateOf(tx)) !== conversationId) return undefined
           const goal = await openGoal(tx)
           if (!goal) return undefined
-          const reminded =
-            input.kind === 'automations.fired' &&
-            (input.data as { id?: string } | undefined)?.id === goal.reminder
           const perRunGoalNote = {
             kind: 'goal.note',
             data: { goal: goal.id },
             model: [
               {
                 role: 'user' as const,
-                content: noteText(goal, reminded),
+                content: noteText(goal),
                 timestamp: Date.now(),
               },
             ],
@@ -306,9 +335,19 @@ export default function goalExtension(host: ExtensionHost) {
         deferred: true,
         replay: 'unsafe',
         description:
-          "The hands-off goal the user put you on (only while one is open; the goal note names it): criteria {criteria: [...]} writes what done means, each checkable; decide {question, picked, reason, conversation?, images?} records a decision you took instead of asking the user (images: \"latest\" or an entry id of your conversation with screenshots you judged); met {n} / failed {n} mark criterion n; finish {outcome: 'met' | 'blocked', summary} ends the goal and leaves the report card; pause {reason} when you are truly blocked on the user stops the 30-minute goal reminder and shows them what you wait on, resume turns it back on once you can go on.",
+          "propose {text} shows the user a card with a hands-off goal they start with one press, never starting it yourself; call it directly, not from codemode, or no card shows. The hands-off goal the user put you on (only while one is open; the goal note names it): criteria {criteria: [...]} writes what done means, each checkable; decide {question, picked, reason, conversation?, images?} records a decision you took instead of asking the user (images: \"latest\" or an entry id of your conversation with screenshots you judged); met {n} / failed {n} mark criterion n; finish {outcome: 'met' | 'blocked', summary} ends the goal and leaves the report card; pause {reason} when you are truly blocked on the user stops goal wakeups and shows them what you wait on, resume lets new work events wake you once you can go on.",
         parameters: obj({
-          action: strEnum(['criteria', 'decide', 'met', 'failed', 'finish', 'pause', 'resume']),
+          action: strEnum([
+            'propose',
+            'criteria',
+            'decide',
+            'met',
+            'failed',
+            'finish',
+            'pause',
+            'resume',
+          ]),
+          text: opt(str()),
           criteria: opt(arr(str())),
           n: opt(int({ minimum: 1 })),
           question: opt(str()),
@@ -336,10 +375,9 @@ export default function goalExtension(host: ExtensionHost) {
                 images: typeof args.images === 'number' ? parseEntryId(args.images) : args.images,
               },
               Date.now(),
+              args.action === 'resume' ? await eventFence(host, tx) : undefined,
             )
-            if (acted.ended) await enqueueGoalNotice(host, tx, 'goal.report', acted.ended)
-            const changed = acted.sync ?? acted.ended?.id
-            if (changed !== undefined) await enqueueReminderSync(host, tx, changed)
+            if (acted.ended) await goalNotice(host, tx, 'goal.report', acted.ended)
             return acted
           }, ctx)
           return { output: [{ type: 'text', text: result.answer }] }

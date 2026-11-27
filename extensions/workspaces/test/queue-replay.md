@@ -11,7 +11,7 @@
 | 3c. Three runner timeouts                  | OLD  |           149 |            1 |           0 |              1 | A: -, C: -                     |
 | 3c. Three runner timeouts                  | NEW  |             4 |            0 |           0 |              3 | A: -, C: 13                    |
 | 4. Externally merged PR                    | OLD  |           149 |            1 |           0 |              0 | A: -, B: -                     |
-| 4. Externally merged PR                    | NEW  |             0 |            0 |           0 |              0 | A: -, B: 7                     |
+| 4. Externally merged PR                    | NEW  |             1 |            0 |           0 |              0 | A: 0, B: 7                     |
 | 5. Base moved                              | OLD  |             4 |            0 |           1 |              1 | A: 4, B: -, B': 16             |
 | 5. Base moved                              | NEW  |             3 |            0 |           0 |              0 | A: 4, B: 12                    |
 | 6. Two green low-risk PRs                  | OLD  |             2 |            0 |           0 |              0 | A: 6, B: 13                    |

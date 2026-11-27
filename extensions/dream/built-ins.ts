@@ -7,7 +7,7 @@ import type { ExtensionHost } from '../../server/extensions.ts'
 import { AutomationsApi } from '../automations/api.ts'
 import type { Automation } from '../automations/refs.ts'
 import { Standing } from '../subagents/api.ts'
-import { deliver } from './delivery.ts'
+import { ConversationsApi } from '../conversations/api.ts'
 import type { RequestedEntry } from './refs.ts'
 import type { Seed } from './types.ts'
 
@@ -111,10 +111,14 @@ async function ensureOne(host: ExtensionHost, builtIn: BuiltIn, seed: Seed | und
   await remember({ id: createdOrRecoveredByKey.id })
 }
 
-export async function fired(host: ExtensionHost, tx: Tx, id: string, fire: number) {
-  let builtIn: BuiltIn | undefined
+export async function builtInOf(tx: Tx, id: string) {
   for (const item of BUILT_INS)
-    if ((await tx.doc(item.doc, ROOT_CONVERSATION_ID)).id === id) builtIn = item
+    if ((await tx.doc(item.doc, ROOT_CONVERSATION_ID)).id === id) return item
+  return undefined
+}
+
+export async function fired(host: ExtensionHost, tx: Tx, id: string, fire: number) {
+  const builtIn = await builtInOf(tx, id)
   const ultimate = (await tx.doc(Standing, ROOT_CONVERSATION_ID)).ultimate
   if (!builtIn || ultimate === undefined) return
   const automation = await host.need(AutomationsApi).read(tx, id)
@@ -130,11 +134,19 @@ export async function fired(host: ExtensionHost, tx: Tx, id: string, fire: numbe
       ...(pause !== undefined ? { pause } : {}),
     },
   }
-  await deliver(host, tx, ultimate, {
+  await host.need(ConversationsApi).submitAfter(tx, ultimate, {
     type: 'write',
     requestId: `dream.requested:${id}:${fire}`,
-    kind: 'dream.requested',
-    data,
-    content: `Your context passed the threshold of automation ${id} "${data.automation!.name}"${pause !== undefined ? ` while the user has been away ${hoursOf(pause)}` : ''}. ${DREAM_ASK}`,
+    entry: {
+      kind: 'dream.requested',
+      data,
+      model: [
+        {
+          role: 'user',
+          content: `Your context passed the threshold of automation ${id} "${data.automation!.name}"${pause !== undefined ? ` while the user has been away ${hoursOf(pause)}` : ''}. ${DREAM_ASK}`,
+          timestamp: Date.now(),
+        },
+      ],
+    },
   })
 }

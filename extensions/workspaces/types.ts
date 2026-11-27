@@ -14,6 +14,13 @@ export type Workspace = {
   error?: string
   landed?: string
   deliveryWakes?: number
+  continuation?: {
+    key: EntryId
+    outcome: string
+    submission: string
+    tracks: 'prerequisite' | 'delivery'
+    state: 'waiting' | 'needs-action'
+  }
 }
 type SubmitTimeEntryId = EntryId
 type SubmitTimeSubject = ConversationSubject
@@ -112,6 +119,7 @@ export type WorkspaceIndex = {
     tries?: number
   }[]
   standing?: StandingGrant
+  instructionFloor?: number
   results: Record<
     string,
     LanderOutcome & {
