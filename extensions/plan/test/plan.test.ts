@@ -365,19 +365,18 @@ it('confirms criteria with met, raises estimates only upward, drops changed crit
     tx: Tx,
     event: { data: { conversationId: ConversationId; sha: string; submission: string } },
   ) => Promise<void>
-  prepared.registry.install(
-    planExtension({
-      react: (_name: string, _tokens: unknown, handler: typeof landed) => {
-        landed = handler
-      },
-      implement: (_api: unknown, value: PlanService) => {
-        service = value
-      },
-      metadata: Metadata,
-      harness: () => opened.harness,
-      onOpen: () => {},
-    } as unknown as ExtensionHost),
-  )
+  const plan = planExtension({
+    react: (_name: string, _tokens: unknown, handler: typeof landed) => {
+      landed = handler
+    },
+    implement: (_api: unknown, value: PlanService) => {
+      service = value
+    },
+    metadata: Metadata,
+    harness: () => opened.harness,
+    onOpen: () => {},
+  } as unknown as ExtensionHost)
+  prepared.registry.install(plan)
   opened = await prepared.open()
   const failed: string[] = []
   const call = async (args: JsonObject) => {
@@ -474,6 +473,17 @@ it('confirms criteria with met, raises estimates only upward, drops changed crit
 
     await call({ action: 'update', key: 'E1', status: 'done' })
     expect(await service.openCriteria(id, context)).toBeUndefined()
+
+    await call({ action: 'create', title: 'Copy the example', body: 'Request: r' })
+    await call({ action: 'update', key: 'E2', met: [1] })
+    const error = failed.pop()
+    expect(error).toContain('E2 has 0 acceptance criteria, not 1')
+    const example = /## Acceptance criteria\n1\. [^\n]+/
+    const bodyFromError = error?.match(example)?.[0]
+    expect(bodyFromError).toBeDefined()
+    expect(plan.tools![0].description.match(example)?.[0]).toBe(bodyFromError)
+    await call({ action: 'update', key: 'E2', body: bodyFromError!, met: [1] })
+    expect((await opened.harness.snapshot(Plan, id, context))?.epics.E2.met).toEqual([1])
     expect(failed).toEqual([])
   } finally {
     await opened.close()

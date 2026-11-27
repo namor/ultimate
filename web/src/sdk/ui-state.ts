@@ -3,6 +3,7 @@ import { UI_REVISION } from '../../../shared/protocol.ts'
 import { deadline } from '../../../lib/timers.ts'
 import type { Cancel } from '../../../lib/timers.ts'
 import type { UiUpdateRequest, UiUpdateResponse } from '../../../shared/protocol.ts'
+import { fitsKeepalive } from './keepalive.ts'
 import { writerNow } from './writer.ts'
 import type { UiWho } from './writer.ts'
 
@@ -30,7 +31,6 @@ const revision = (values: UiValues) => {
 }
 
 const movesTheUsersView = (key: string) => key.startsWith('shell.')
-const KEEPALIVE_BYTES = 60 * 1024
 
 export function tabWrites(tab: { driven: boolean; detached: boolean; webdriver: boolean }) {
   const automatedWithoutDrivenFlag = tab.webdriver && !tab.driven
@@ -125,8 +125,7 @@ export function createUiState(
     })),
     tab,
   })
-  const fitsKeepalive = (ops: PendingOp[]) =>
-    new TextEncoder().encode(JSON.stringify(request(ops))).byteLength <= KEEPALIVE_BYTES
+  const batchFitsKeepalive = (ops: PendingOp[]) => fitsKeepalive(JSON.stringify(request(ops)))
 
   function send(ops = oldestWriterRun(), exit = false) {
     if (!write || ops.length === 0) return undefined
@@ -140,7 +139,7 @@ export function createUiState(
       if (inFlight === sent) inFlight = undefined
       if (pending.length > 0) schedule(0)
     }
-    const keepalive = exit ? { keepalive: fitsKeepalive(ops) } : undefined
+    const keepalive = exit ? { keepalive: batchFitsKeepalive(ops) } : undefined
     const done = write(request(ops), ops[0].who, keepalive).then(
       (response) => {
         if (sentInServerEpoch !== serverProcessEpoch) return
@@ -239,7 +238,7 @@ export function createUiState(
       const copied = inFlight?.ops ?? []
       const unsent = pending.splice(0)
       const together = [...copied, ...unsent]
-      const requests = fitsKeepalive(together) ? [together] : [unsent, copied]
+      const requests = batchFitsKeepalive(together) ? [together] : [unsent, copied]
       const sent = requests.flatMap((ops) => send(ops, true) ?? [])
       const all = Promise.all(sent.map((each) => each.done)).then(() => undefined)
       const exiting = { ops: together, done: all }

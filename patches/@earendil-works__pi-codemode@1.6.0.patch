@@ -1,0 +1,32 @@
+diff --git a/dist/runtime/prelude-source.js b/dist/runtime/prelude-source.js
+index 213310de09005c192ed5c781e077e12a6b45f8ba..a0b38453c0293376e51a14b721e3216ec6e04e20 100644
+--- a/dist/runtime/prelude-source.js
++++ b/dist/runtime/prelude-source.js
+@@ -244,13 +244,6 @@ export const PRELUDE_SOURCE = `(function (bridge, toolsJson, globalsJson, storeJ
+ 			},
+ 		});
+ 	}
+-	const toolsProxy = guard(
+-		tools,
+-		"tools",
+-		allTools.map((tool) => tool.name),
+-		"ALL_TOOLS lists every tool; searchTools(query) finds tools by topic.",
+-	);
+-
+ 	const namespaces = new Map();
+ 	for (const { name, spread } of parse(globalsJson)) {
+ 		const fn = caller("global", name, spread);
+@@ -447,8 +440,12 @@ export const PRELUDE_SOURCE = `(function (bridge, toolsJson, globalsJson, storeJ
+ 	}
+ 	Object.freeze(console);
+ 
+-	Object.defineProperty(globalThis, "tools", { value: toolsProxy, enumerable: true });
+ 	Object.defineProperty(globalThis, "ALL_TOOLS", { value: allTools, enumerable: true });
++	const hints = [];
++	if ("ALL_TOOLS" in globalThis) hints.push("ALL_TOOLS lists available tools.");
++	if (typeof globalThis.searchTools === "function") hints.push("searchTools(query) finds tools by topic.");
++	const toolsProxy = guard(tools, "tools", allTools.map((tool) => tool.name), hints.join(" "));
++	Object.defineProperty(globalThis, "tools", { value: toolsProxy, enumerable: true });
+ 	Object.defineProperty(globalThis, "console", { value: console, enumerable: true });
+ 	Object.defineProperty(globalThis, "text", { value: text, enumerable: true });
+ 	Object.defineProperty(globalThis, "image", { value: image, enumerable: true });

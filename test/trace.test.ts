@@ -376,6 +376,35 @@ it('writes a repeated trace-starting action or service call once a minute and co
   }
 })
 
+it('keeps credential errors and explicitly sealed errors private under distinct labels', async () => {
+  const trace = callTrace(join(await temp(), 'trace.sqlite'))
+  trace.open()
+  try {
+    const fail = () => {
+      throw new Error('private-message-sentinel')
+    }
+    for (const action of [
+      { callee: 'models', name: 'models/answer' },
+      { callee: 'automatic-plan', name: 'automatic-plan/refine', sealed: true },
+    ])
+      expect(() =>
+        trace.run(
+          { kind: 'action', caller: 'ui', args: { text: 'private-input-sentinel' }, ...action },
+          fail,
+        ),
+      ).toThrow('private-message-sentinel')
+    const rows = trace.reader.query()
+    expect(rows.find((row) => row.name === 'models/answer')?.error).toBe('Error')
+    expect(rows.find((row) => row.name === 'automatic-plan/refine')?.error).toBe(
+      'Private call failed',
+    )
+    expect(JSON.stringify(rows)).not.toContain('private-message-sentinel')
+    expect(JSON.stringify(rows)).not.toContain('private-input-sentinel')
+  } finally {
+    trace.close()
+  }
+})
+
 const service = (name: string) => ({ kind: 'service', caller: 'x', callee: 'y', name }) as const
 
 it('writes a repeated poll with its ancestors when a model or failing call is made under it', async () => {

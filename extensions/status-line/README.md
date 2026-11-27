@@ -9,7 +9,7 @@ Conversation totals come from `pi.usage`, the model from `pi.agent`, and cwd, br
 **Task usage** opens an on-demand checkpoint for the shown conversation and every owned descendant. It lists each
 conversation's own usage once, with existing role labels, model/tool buckets, input/output, cache categories and cost.
 Refresh reads it again; it does not poll or store another ledger. Codemode reads the same result with
-`ultimate.action('status-line', 'usage', { conversation: id })` (omit `conversation` for the caller). A plan task's
+`tools.action({ extension: 'status-line', action: 'usage', args: { conversation: id } })` (omit `conversation` for the caller). A plan task's
 `child` selects that task's subtree; no stages or roles are guessed from message text.
 
 These are native durable `pi.usage` counters, so resumed work keeps its usage, forks start with their own usage,

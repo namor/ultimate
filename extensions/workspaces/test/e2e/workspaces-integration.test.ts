@@ -36,13 +36,14 @@ import { LineageApi, Roots } from '../../../lineage/api.ts'
 import {
   actions as conversationActions,
   concludeIn,
-  concludedIn,
   subject,
 } from '../../../conversations/server.ts'
+import { concludedIn } from '../../../conversations/projection.ts'
 import { ConversationsApi } from '../../../conversations/api.ts'
 import type { ConversationsService } from '../../../conversations/api.ts'
 import { setAutomaticSummaries, Summaries } from '../../../conversations/summary.ts'
 import { setStanding } from '../../../conversations/server.ts'
+import { SubmitAfter, submitAfter } from '../../../conversations/submit.ts'
 import self from '../../../self/server.ts'
 import messagesExtension from '../../../messages/server.ts'
 import { Messages, MessagesApi } from '../../../messages/api.ts'
@@ -50,11 +51,11 @@ import { Serving, Started } from '../../../messages/addresses.ts'
 import promptExtension, { order as promptOrder } from '../../../prompt/server.ts'
 import subagents from '../../../subagents/server.ts'
 import { Standing, Subagents } from '../../../subagents/api.ts'
-import { seedTally, temp, until } from '../../../../test/helpers.ts'
+import { openers, seedTally, temp, until } from '../../../../test/helpers.ts'
 
 /** The part of the conversations service a test stands in for; standing a lander turns its summaries off and marks it standing. */
 const conversations = (service: Partial<ConversationsService>) =>
-  ({ setAutomaticSummaries, setStanding, ...service }) as ConversationsService
+  ({ setAutomaticSummaries, setStanding, submitAfter, ...service }) as ConversationsService
 
 // Every test has its own repository and harness, so they all run concurrently; fixtures close when the file ends.
 vi.setConfig({ maxConcurrency: 16 })
@@ -103,8 +104,14 @@ async function fixture(
   const restart = vi.fn<ExtensionHost['restart']>(async () => 'RESTART_CALLED')
   const notice = vi.fn<ExtensionHost['notice']>()
   // As the server: openers run each time the harness opens, cleanups each time it closes.
-  const openers: (() => Promise<void>)[] = []
+  const lifecycle = openers()
   const closers: (() => Promise<void>)[] = []
+  const lateStops: (() => Promise<void>)[] = []
+  const closeAll = async () => {
+    for (const stop of lateStops.splice(0)) await stop()
+    await lifecycle.close()
+    for (const close of closers) await close()
+  }
   const lookup = ({ name }: { name: string }) => services.get(name)
   // As the server: the real event log, and reactors that run while the harness is open.
   const events = eventLog(
@@ -120,10 +127,15 @@ async function fixture(
     eventLog: events.eventLog,
     react: (...[name, tokens, handler]: Parameters<typeof events.reactor>) => {
       const reactor = events.reactor(name, tokens, handler)
-      openers.push(reactor.start)
-      closers.push(reactor.stop)
-      // oxlint-disable-next-line typescript/no-floating-promises -- reactor start waits for its drain chain, which records handler failures rather than rejecting.
-      if (started) void reactor.start()
+      lifecycle.onOpen(async (thisOpen) => {
+        thisOpen.defer(reactor.stop)
+        await reactor.start()
+      })
+      if (started) {
+        lateStops.push(reactor.stop)
+        // oxlint-disable-next-line typescript/no-floating-promises -- reactor start waits for its drain chain, which records handler failures rather than rejecting.
+        void reactor.start()
+      }
     },
     implement: (api: { name: string }, value: unknown) => {
       services.set(api.name, value)
@@ -139,7 +151,7 @@ async function fixture(
     },
     restart,
     notice,
-    onOpen: (callback: () => Promise<void>) => openers.push(callback),
+    onOpen: lifecycle.onOpen,
     onClose: (close: () => Promise<void>) => closers.push(close),
     doc: () => undefined,
     conversations: () => [],
@@ -159,6 +171,7 @@ async function fixture(
   const service = workspaces(host)
   if (messagesEnabled) prepared.registry.install(messagesExtension(host))
   prepared.registry.install(workspaceExtension(host))
+  prepared.registry.install(defineExtension({ name: 'conversations', tasks: [SubmitAfter] }))
   prepared.registry.install(self(host))
   prepared.registry.install(subagents(host))
   prepared.registry.install(CodingTools)
@@ -214,10 +227,10 @@ async function fixture(
   }
   prepared.faux!.setResponses([route])
   opened = await prepared.open()
-  for (const open of openers) await open()
+  await lifecycle.open()
   started = true
   cleanup.push(async () => {
-    for (const close of closers) await close()
+    await closeAll()
     await opened.close()
   })
   const create = async () => {
@@ -257,10 +270,10 @@ async function fixture(
     },
     asked,
     reopen: async () => {
-      for (const close of closers) await close()
+      await closeAll()
       await opened.close()
       opened = await prepared.open()
-      for (const open of openers) await open()
+      await lifecycle.open()
     },
   }
 }
@@ -1301,6 +1314,265 @@ it.concurrent('wakes only the submitter on a failed landing and leaves it open',
     ),
   ).toHaveLength(0)
 })
+it.concurrent('keeps a failed followed attempt open and hands a quiet recovery turn to its starter', async () => {
+  const { f, id } = await concluding()
+  const gate = join(f.directory, 'fail-check')
+  f.host.projectSettings = async () => ({
+    lander: { checks: [`while ! test -f '${gate}'; do sleep 0.05; done; exit 1`] },
+  })
+  await f.call(id, 'workspace', {
+    action: 'submit',
+    divergence: 'None',
+    outcome: 'Land the workspace delivery',
+  })
+  const { key, submission: attempt } = (await f.service.get(id, context))!.continuation!
+  await writeFile(gate, '')
+  const request = `workspaces.continuation:handoff:${key}:${attempt}`
+  await until(
+    async () =>
+      !!(await f.opened.harness.commit(
+        (tx) => tx.submissionByRequest(ROOT_CONVERSATION_ID, request),
+        context,
+      )),
+  )
+  await f.reopen()
+  expect((await f.service.get(id, context))!.continuation).toMatchObject({
+    key,
+    submission: attempt,
+    state: 'needs-action',
+  })
+  expect(
+    (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!.queue,
+  ).toHaveLength(0)
+  const owner = (await f.opened.harness.conversation(id, context))!
+  expect(
+    (await owner.context(context)).entries.filter((e) => e.kind === 'workspaces.lander-report'),
+  ).toHaveLength(1)
+})
+
+it.concurrent.each(['queued', 'retained'] as const)(
+  'keeps a distinct delivery open when its own %s prerequisite settles',
+  async (registration) => {
+    const { f, id } = await concluding()
+    const gate = join(f.directory, 'end-prerequisite')
+    f.host.projectSettings = async () => ({
+      lander: {
+        checks: [
+          `while ! test -f '${gate}'; do sleep 0.05; done; ${registration === 'queued' ? 'true' : 'false'}`,
+        ],
+      },
+    })
+    const attempt = await f.service.submit(id, 'None', context)
+    if (registration === 'retained') {
+      await writeFile(gate, '')
+      await submitted(f, id)
+      await f.reopen()
+    }
+    await f.call(id, 'workspace', {
+      action: 'follow',
+      after: attempt.id,
+      outcome: 'Land the separate follow-on change',
+    })
+    const open = (await f.service.get(id, context))!.continuation!
+    expect(open.tracks).toBe('prerequisite')
+    if (registration === 'queued') await writeFile(gate, '')
+    const request = `workspaces.continuation:handoff:${open.key}:${attempt.id}`
+    await until(
+      async () =>
+        !!(await f.opened.harness.commit(
+          (tx) => tx.submissionByRequest(ROOT_CONVERSATION_ID, request),
+          context,
+        )),
+    )
+    await f.reopen()
+    expect((await f.service.get(id, context))!.continuation).toMatchObject({
+      key: open.key,
+      state: 'needs-action',
+    })
+    expect(await concludedIds(f)).not.toContain(id)
+    const owner = (await f.opened.harness.conversation(id, context))!
+    expect(
+      (await owner.context(context)).entries.filter((e) => e.kind === 'workspaces.continuation'),
+    ).toHaveLength(registration === 'queued' ? 1 : 0)
+  },
+)
+
+it.concurrent.each(['registration', 'overlap repairs', 'overlap quiet'] as const)(
+  'settles late recovery once: %s',
+  async (mode) => {
+    const { f, id } = await concluding()
+    f.host.projectSettings = async () => ({ lander: { checks: ['test -f repaired.txt'] } })
+    const attempt = await f.service.submit(id, 'None', context)
+    await submitted(f, id)
+    await f.reopen()
+    const failed = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+      .results[attempt.id]
+    expect(failed.reason).toBe('check failed twice: test -f repaired.txt')
+    await commit((await f.service.get(id, context))!.path, 'repaired.txt')
+    let key: number | undefined
+    let overlap: number | undefined
+    const observer = () =>
+      f.opened.harness.commit(
+        async (tx) =>
+          (await tx.scanTasks({ kind: 'workspaces.continuation', conversationId: id }, 1)).items[0],
+        context,
+      )
+    const route: FauxResponseFactory = async ({ messages }) => {
+      f.prepared.faux!.appendResponses([route])
+      const last = messages.at(-1)!
+      if (last.role === 'user' && JSON.stringify(last.content).includes('REGISTER-REPAIR'))
+        return fauxAssistantMessage(
+          fauxToolCall('workspace', {
+            action: 'follow',
+            after: attempt.id,
+            outcome: 'Land the repaired change',
+          }),
+          { stopReason: 'toolUse' },
+        )
+      if (
+        last.role === 'toolResult' &&
+        JSON.stringify(last.content).includes('needs-action') &&
+        key === undefined
+      ) {
+        key = (await f.service.get(id, context))!.continuation!.key
+        if (mode !== 'registration') {
+          overlap = (
+            await owner.submit({ type: 'input', whenBusy: 'followUp', content: 'OVERLAP' }, context)
+          ).id
+          return fauxAssistantMessage('Finished registering')
+        }
+      }
+      if (last.role === 'user' && JSON.stringify(last.content).includes('OVERLAP')) {
+        await until(async () => {
+          const state = (await observer())?.state
+          if (!state || state.status === 'terminal') return !!state
+          const checkpoint =
+            'checkpoint' in state ? (state.checkpoint as { overlapping?: number[] }) : undefined
+          return overlap !== undefined && !!checkpoint?.overlapping?.includes(overlap)
+        })
+        if (mode === 'overlap quiet') return fauxAssistantMessage('Finished unrelated work')
+      }
+      if (
+        key !== undefined &&
+        ((mode === 'registration' &&
+          last.role === 'toolResult' &&
+          JSON.stringify(last.content).includes('needs-action')) ||
+          (mode === 'overlap repairs' &&
+            last.role === 'user' &&
+            JSON.stringify(last.content).includes('OVERLAP')))
+      )
+        return fauxAssistantMessage(
+          fauxToolCall('workspace', { action: 'submit', divergence: 'None', continueFrom: key }),
+          { stopReason: 'toolUse' },
+        )
+      return fauxAssistantMessage('finished')
+    }
+    f.prepared.faux!.setResponses([route])
+    const owner = (await f.opened.harness.conversation(id, context))!
+    await (await owner.submit({ type: 'input', content: 'REGISTER-REPAIR' }, context)).wait(context)
+    await until(async () => (await observer())?.state.status === 'terminal')
+    if (mode !== 'overlap quiet')
+      await until(async () =>
+        Object.values(
+          (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!.results,
+        ).some((r) => r.conversationId === id && r.outcome === 'landed'),
+      )
+    await f.reopen()
+    expect(key).toBeDefined()
+    const reopened = (await f.opened.harness.conversation(id, context))!
+    expect(
+      (await reopened.context(context)).entries.filter((e) => e.kind === 'workspaces.continuation'),
+    ).toHaveLength(0)
+    const handoff = await f.opened.harness.commit(
+      (tx) =>
+        tx.submissionByRequest(
+          ROOT_CONVERSATION_ID,
+          `workspaces.continuation:handoff:${key}:${attempt.id}`,
+        ),
+      context,
+    )
+    expect(!!handoff).toBe(mode === 'overlap quiet')
+    expect((await f.service.get(id, context))!.continuation?.state).toBe(
+      mode === 'overlap quiet' ? 'needs-action' : undefined,
+    )
+  },
+)
+
+it.concurrent('continues one approved delivery after its exact prerequisite fails across reopen', async () => {
+  const { f, id: owner } = await concluding()
+  const blocker = await f.create()
+  await f.service.ready(blocker, context)
+  await commit((await f.service.get(blocker, context))!.path, 'bad-candidate.txt')
+  const gate = join(f.directory, 'finish-check')
+  f.host.projectSettings = async () => ({
+    lander: {
+      checks: [`while ! test -f '${gate}'; do sleep 0.05; done; test ! -f bad-candidate.txt`],
+    },
+  })
+  const attempt = await f.service.submit(blocker, 'None', context)
+  const outcome = 'Land the approved change to concluded.txt'
+  expect(
+    JSON.stringify(
+      await f.call(owner, 'workspace', { action: 'follow', after: 'not-submitted', outcome }),
+    ),
+  ).toContain('Do not wait for an unsubmitted prerequisite')
+  await f.call(owner, 'workspace', { action: 'follow', after: attempt.id, outcome })
+  const wait = (await f.service.get(owner, context))!.continuation!
+  expect(wait).toMatchObject({ submission: attempt.id, state: 'waiting' })
+  await f.reopen()
+  const requests: string[] = []
+  const route: FauxResponseFactory = async ({ messages }) => {
+    f.prepared.faux!.appendResponses([route])
+    const last = messages.at(-1)!
+    if (
+      last.role === 'user' &&
+      JSON.stringify(last.content).includes(`Submission ${attempt.id} failed.`)
+    ) {
+      const index = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+      const failure = index.results[attempt.id]
+      const current = index.items[String(owner)].continuation!
+      if (
+        failure?.conversationId !== blocker ||
+        !failure.reason?.includes('test ! -f bad-candidate.txt') ||
+        current.submission !== attempt.id ||
+        current.state !== 'needs-action'
+      )
+        return fauxAssistantMessage('Need more evidence')
+      requests.push(attempt.id)
+      return fauxAssistantMessage(
+        fauxToolCall('workspace', {
+          action: 'submit',
+          divergence: 'None',
+          continueFrom: current.key,
+        }),
+        { stopReason: 'toolUse' },
+      )
+    }
+    return fauxAssistantMessage('finished')
+  }
+  f.prepared.faux!.setResponses([route])
+  await writeFile(gate, '')
+  await until(async () =>
+    Object.values(
+      (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!.results,
+    ).some((r) => r.conversationId === owner && r.outcome === 'landed'),
+  )
+  const index = (await f.opened.harness.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
+  expect(index.results[attempt.id].outcome).toBe('failed')
+  expect(index.items[String(owner)].continuation).toBeUndefined()
+  expect(
+    Object.values(index.results).filter(
+      (r) => r.conversationId === owner && r.outcome === 'landed',
+    ),
+  ).toHaveLength(1)
+  expect(await readFile(join(f.projectRoot, 'concluded.txt'), 'utf8')).toBe('concluded.txt')
+  await f.reopen()
+  expect(requests).toEqual([attempt.id])
+  await expect(f.service.submit(owner, 'None', context, undefined, wait.key)).rejects.toThrow(
+    /Continuation changed|Workspace is removed/,
+  )
+})
+
 it.concurrent('delivers a message to a resumed branch whose checkout conclude released', async () => {
   const { f, id } = await concluding()
   await f.service.submit(id, 'None', context)
@@ -2206,6 +2478,30 @@ it.concurrent('release handles failed checkouts but never removes detached unlan
   expect(await git(workspace.path, 'rev-parse', 'HEAD')).toBe(tip)
 })
 
+it.concurrent('release keeps a checkout whose commits git cannot read, naming the object', async () => {
+  const f = await fixture()
+  const id = await f.create()
+  await f.service.ready(id, context)
+  const workspace = (await f.service.get(id, context))!
+  await git(workspace.path, 'checkout', '--detach')
+  const lost = await commit(workspace.path, 'lost.txt')
+  await commit(workspace.path, 'tip.txt')
+  const objects = await git(
+    workspace.path,
+    'rev-parse',
+    '--path-format=absolute',
+    '--git-path',
+    'objects',
+  )
+  await unlink(join(objects, lost.slice(0, 2), lost.slice(2)))
+  await expect(f.service.pending([id], context)).rejects.toThrow(`Could not read ${lost}`)
+  expect(await f.service.release([id], context)).toEqual([
+    { id, uncommitted: 0, unlanded: 0, reason: expect.stringContaining(`Could not read ${lost}`) },
+  ])
+  expect((await f.service.get(id, context))!.state).toBe('ready')
+  expect(await readFile(join(workspace.path, 'tip.txt'), 'utf8')).toBe('tip.txt')
+})
+
 it.concurrent('aborting release finishes the current checkout and leaves the remaining batch untouched', async () => {
   const f = await fixture()
   const ids = [await f.create(), await f.create(), await f.create()]
@@ -2579,6 +2875,7 @@ async function leftover(unlanded: boolean) {
     await f.service.land(id, context)
   }
   await git(workspace.source, 'worktree', 'remove', workspace.path)
+  await writeFile(join(workspace.source, '.git', 'info', 'exclude'), '.wrangler/\n')
   await mkdir(join(workspace.path, '.wrangler'), { recursive: true })
   await writeFile(join(workspace.path, '.wrangler/state.json'), '{}')
   return { f, id, workspace }
@@ -2601,6 +2898,40 @@ it.concurrent('release keeps the unlanded branch of a worktree Git already remov
   expect((await f.service.get(id, context))!.state).toBe('removed')
   await expect(access(workspace.path)).rejects.toThrow('ENOENT')
 })
+it.concurrent('release retains a checkout with a missing source and still releases healthy siblings', async () => {
+  const f = await fixture()
+  const orphan = await f.create()
+  const clean = await f.create()
+  await f.service.ready(orphan, context)
+  await f.service.ready(clean, context)
+  const orphanPath = (await f.service.get(orphan, context))!.path
+  const cleanPath = (await f.service.get(clean, context))!.path
+  const source = join(f.directory, 'missing-source')
+  await writeFile(join(orphanPath, 'precious.txt'), 'keep me')
+  await f.opened.harness.commit(async (tx) => {
+    const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+    index.items[String(orphan)].source = source
+  }, context)
+
+  await expect(f.service.pending([orphan, clean], context)).rejects.toThrow(
+    'Workspace source checkout is missing',
+  )
+  expect(await f.service.release([orphan, clean], context)).toEqual([
+    { id: orphan, uncommitted: 0, unlanded: 0, reason: 'Workspace source checkout is missing' },
+  ])
+  expect((await f.service.get(orphan, context))!.state).toBe('ready')
+  expect(await readFile(join(orphanPath, 'precious.txt'), 'utf8')).toBe('keep me')
+  expect((await f.service.get(clean, context))!.state).toBe('removed')
+  await expect(access(cleanPath)).rejects.toMatchObject({ code: 'ENOENT' })
+
+  await mkdir(source)
+  await git(source, 'init', '-q')
+  expect(await f.service.release([orphan], context)).toEqual([
+    { id: orphan, uncommitted: 0, unlanded: 0, reason: 'Workspace checkout is not registered' },
+  ])
+  expect((await f.service.get(orphan, context))!.state).toBe('ready')
+  expect(await readFile(join(orphanPath, 'precious.txt'), 'utf8')).toBe('keep me')
+})
 it.concurrent('release never removes a registered checkout whose .git file is broken', async () => {
   const f = await fixture()
   const id = await f.create()
@@ -2608,9 +2939,16 @@ it.concurrent('release never removes a registered checkout whose .git file is br
   const workspace = (await f.service.get(id, context))!
   await writeFile(join(workspace.path, 'precious.txt'), 'keep me')
   await writeFile(join(workspace.path, '.git'), 'gitdir: /nowhere\n')
-  await expect(f.service.release([id], context)).rejects.toThrow(
-    /not a git repository|gitfile does not point to a valid repository/,
-  )
+  expect(await f.service.release([id], context)).toEqual([
+    {
+      id,
+      uncommitted: 0,
+      unlanded: 0,
+      reason: expect.stringMatching(
+        /not a git repository|gitfile does not point to a valid repository/,
+      ),
+    },
+  ])
   expect((await f.service.get(id, context))!).toMatchObject({
     state: 'ready',
     path: workspace.path,

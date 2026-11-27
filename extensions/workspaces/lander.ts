@@ -19,16 +19,19 @@ import { git } from '../../lib/git.ts'
 import { readWorktreeSetup } from '../../lib/worktree-setup.ts'
 import { overshadowed, retriedLater, settled } from '../../lib/errors.ts'
 import { needsRestart as restartNeeded } from '../../lib/layers.ts'
+import { formatDuration } from '../../lib/format.ts'
 import { runGroup, sweepPidFiles } from '../../lib/process-group.ts'
 import { landingWeight } from '../../lib/token-weight.ts'
 import type { ExtensionHost } from '../../server/extensions.ts'
 import { CheckRan, SubmissionFailed, SubmissionLanded } from './api.ts'
 import { setup } from './setup.ts'
+import { continuationTask, resolveContinuations } from './continuation.ts'
 import type { DeliverySettings } from './delivery-settings.ts'
 import {
   askedUnderStanding,
   authorize,
   BRANCH_WAKES,
+  matchingRefStandingWithdrawn,
   MAX_REBUILDS,
   needsSlot,
   needsUser,
@@ -36,9 +39,12 @@ import {
   pick,
   POLL_MS,
   standingAsk,
+  spent,
   waits,
 } from './delivery.ts'
 import { advanceDelivery, closePull, deliveryRuntime, github } from './advance.ts'
+import { readCandidateChanges } from './candidate-changes.ts'
+import type { Delivery } from './delivery.ts'
 import { addCheckout, treePath } from './tree.ts'
 import type { Landed, LanderEntry, LanderOutcome, QueueEntry, WorkspaceIndex } from './types.ts'
 import { LanderLog } from './entries.ts'
@@ -46,6 +52,19 @@ import { LanderReportEntry } from './refs.ts'
 
 const recentSubmitCardOutcomeLimit = 50
 const maxCloseTries = 3
+
+export function pruneLanderResults(index: Pick<WorkspaceIndex, 'results' | 'instructionFloor'>) {
+  for (const old of Object.keys(index.results).slice(0, -recentSubmitCardOutcomeLimit)) {
+    for (const { instruction } of spent(index.results[old]))
+      if (
+        instruction !== undefined &&
+        index.instructionFloor !== undefined &&
+        instruction > index.instructionFloor
+      )
+        index.instructionFloor = instruction
+    delete index.results[old]
+  }
+}
 export async function landerPath(home: string, source: string, settings: JsonObject) {
   const configured = await treePath(settings, landerName(source))
   if (configured) return configured
@@ -131,6 +150,8 @@ const starterLine = (
 
 type Host = Pick<
   ExtensionHost,
+  | 'need'
+  | 'want'
   | 'home'
   | 'userHome'
   | 'ultimateRoot'
@@ -157,7 +178,8 @@ export const limitsFor = (check: Check, limits: CheckLimits): CheckLimits =>
     ? limits
     : { stall: Math.min(limits.stall, check.timeout), total: check.timeout }
 const vitestFailureLine = /^\s*(FAIL|×|✗)\s/
-const seconds = (value: number) => (value < 60 ? `${value} s` : `${+(value / 60).toFixed(1)} min`)
+const verifyPhaseLine =
+  /^Verification phase: (install|install-deepwiki|install-public-docs|check|fast|e2e|cursor-runner|cursor-tests|deepwiki|public-docs)$/
 
 export const checkPids = (home: string) => join(home, 'lander-checks')
 export const sweepChecks = async (home: string) => {
@@ -180,12 +202,16 @@ export async function runLanderCheck(
   pids: string,
   temp: string,
   limits: CheckLimits = defaultCheckLimitsSeconds,
+  base?: string,
 ): Promise<CheckRun> {
   const tmp = createTempBeforeWatchdog(temp)
   let output = ''
   let partial = ''
   const failed = new Set<string>()
   let stopped: string | undefined
+  const trackVerifyPhase = command.trim() === 'pnpm verify'
+  let verifyPhase: { name: string; started: number } | undefined
+  let phaseAtCutoff: string | undefined
   const watchdog = new AbortController()
   const signal = AbortSignal.any([
     watchdog.signal,
@@ -194,13 +220,18 @@ export async function runLanderCheck(
   const stop = (reason: string) => {
     if (signal.aborted) return
     stopped = reason
+    if (verifyPhase) {
+      const elapsed = Math.round(performance.now() - verifyPhase.started)
+      phaseAtCutoff = `Verify phase at cutoff: ${verifyPhase.name} (${elapsed} ms elapsed)`
+    }
     watchdog.abort()
   }
-  const stalled = () => stop(`Stalled: no output for ${seconds(limits.stall)}, stopped`)
+  const stalled = () =>
+    stop(`Stalled: no output for ${formatDuration(limits.stall * 1000)}, stopped`)
   const stallDeadline = debounce(limits.stall * 1000, stalled)
   stallDeadline()
   const cancelTotal = deadline(limits.total * 1000, () =>
-    stop(`Timed out after ${seconds(limits.total)}`),
+    stop(`Timed out after ${formatDuration(limits.total * 1000)}`),
   )
   const report = (reason: string, heading: string) => {
     const tests = [...failed].slice(-20)
@@ -208,7 +239,14 @@ export async function runLanderCheck(
       .filter((test) => test.startsWith('FAIL'))
       .map((test) => test.slice('FAIL'.length).replace(/\s+/g, ' ').trim())
     return {
-      failure: [reason, ...(tests.length ? [heading, ...tests] : []), output].join('\n').trim(),
+      failure: [
+        reason,
+        ...(phaseAtCutoff ? [phaseAtCutoff] : []),
+        ...(tests.length ? [heading, ...tests] : []),
+        output,
+      ]
+        .join('\n')
+        .trim(),
       cause: [reason, ...failedFiles.slice(0, 5)].join(': '),
     }
   }
@@ -218,6 +256,8 @@ export async function runLanderCheck(
     partial = split.pop()!.slice(-1000)
     for (const line of split) {
       const plain = stripVTControlCharacters(line).trim()
+      const phase = trackVerifyPhase && !stopped && verifyPhaseLine.exec(plain)?.[1]
+      if (phase) verifyPhase = { name: phase, started: performance.now() }
       if (vitestFailureLine.test(plain)) failed.add(plain.slice(0, 300))
     }
     stallDeadline()
@@ -227,7 +267,12 @@ export async function runLanderCheck(
     try {
       exit = await runGroup('/bin/bash', ['-c', command], {
         cwd: path,
-        env: { ...process.env, TMPDIR: tmp },
+        env: {
+          ...process.env,
+          TMPDIR: tmp,
+          ...(base && { ULTIMATE_LANDER_BASE: base }),
+          ...(trackVerifyPhase ? { ULTIMATE_VERIFY_PHASES: '1' } : {}),
+        },
         pidFile: join(pids, `${process.pid}-${randomUUID()}.pid`),
         signal,
         grace: 2000,
@@ -235,7 +280,10 @@ export async function runLanderCheck(
       })
     } catch (error) {
       context.abortSignal?.throwIfAborted()
-      return { failure: `${output}\n${String(error)}`.trim(), cause: String(error) }
+      return {
+        failure: [phaseAtCutoff, output, String(error)].filter(Boolean).join('\n').trim(),
+        cause: String(error),
+      }
     }
     context.abortSignal?.throwIfAborted()
     if (stopped) return { ...report(stopped, 'Failed tests so far:'), timedOut: true }
@@ -297,7 +345,7 @@ export const landerSettings = async (host: Pick<Host, 'projectSettings'>): Promi
   }
 }
 export const contains = (cwd: string, ancestor: string, descendant: string) =>
-  git(cwd, 'merge-base', '--is-ancestor', ancestor, descendant).then(
+  git(cwd, '--no-replace-objects', 'merge-base', '--is-ancestor', ancestor, descendant).then(
     () => true,
     () => false,
   )
@@ -312,7 +360,7 @@ export async function fastForwardOnlyTargetBranch(
     .map((record) => record.split('\n'))
     .find((record) => record.includes(`branch refs/heads/${target}`))?.[0]
     .slice('worktree '.length)
-  if (worktree) await git(worktree, 'merge', '-q', '--ff-only', integrated)
+  if (worktree) await git(worktree, '--no-replace-objects', 'merge', '-q', '--ff-only', integrated)
   else await git(source, 'update-ref', `refs/heads/${target}`, integrated, base)
 }
 const lines = (text: string) => text.split('\n').filter(Boolean)
@@ -324,6 +372,59 @@ const failure = (error: unknown) => {
 }
 const remote = (cwd: string, signal: AbortSignal, ...args: string[]) =>
   git({ cwd, signal, timeout: 300000 }, ...args)
+
+export async function mergedDeliveryOutcome(
+  source: string,
+  target: string,
+  delivery: Delivery,
+): Promise<LanderOutcome & { sha: string; base: string }> {
+  const sha = delivery.merged!
+  const base = delivery.observedMerge?.parent ?? delivery.baseline
+  return {
+    outcome: 'landed',
+    delivery,
+    sha,
+    base,
+    commits: lines(
+      await git(source, '--no-replace-objects', 'log', '--oneline', `${base}..${sha}`),
+    ),
+    paths: lines(await git(source, '--no-replace-objects', 'diff', '--name-only', base, sha)),
+    flaky: [],
+    ...(delivery.observedMerge ? {} : { pushed: `${delivery.settings.remote}/${target}` }),
+    pr: delivery.url,
+  }
+}
+
+export async function emitLanding(
+  host: Pick<Host, 'emit' | 'metadata'>,
+  tx: Tx,
+  id: string,
+  conversationId: ConversationId,
+  result: WorkspaceIndex['results'][string],
+) {
+  const subject = result.subject ?? {}
+  const commits = (result.commits ?? []).map((commit) => {
+    const space = commit.indexOf(' ')
+    return { sha: commit.slice(0, space), subject: commit.slice(space + 1) }
+  })
+  await host.emit(tx, SubmissionLanded, {
+    submission: id,
+    conversationId,
+    at: result.at,
+    sha: result.sha!,
+    base: result.base!,
+    target: result.target,
+    lander: result.lander,
+    divergence: result.divergence,
+    title: subject.title ?? (await tx.doc(host.metadata, conversationId)).title ?? '',
+    ...(subject.summary ? { summary: subject.summary } : {}),
+    ...(subject.feature ? { feature: subject.feature } : {}),
+    commits: commits.slice(0, 10),
+    commitCount: commits.length,
+    paths: (result.paths ?? []).slice(0, 8),
+    ...(result.pushed ? { pushed: result.pushed } : {}),
+  })
+}
 
 type CheckedIntegration = {
   checkedAt: number
@@ -364,7 +465,7 @@ type UnderwayReportPhase = {
 
 type State =
   | { phase: 'next' }
-  | { phase: 'land'; id: string; attempt: number; pushRetried?: boolean }
+  | { phase: 'land'; id: string; attempt: number; pushRetried?: boolean; runtimeOnly?: true }
   | UnderwayReportPhase
   | CommittedDeliveryDecision
   | { phase: 'card-failed'; error: string }
@@ -497,7 +598,9 @@ export async function reportBlocked(
       ? `Needs the user: ${wake.why}.`
       : wake.to === 'ultimate'
         ? `Its branch already had ${BRANCH_WAKES} repair attempts; decide for it: recheck, stop, or ask the user.`
-        : 'Diagnose and repair it: recheck or stop it, or resubmit a repaired candidate.'
+        : delivery.cause === 'runtime'
+          ? 'Resubmit this delivery with fresh local verification.'
+          : 'Diagnose and repair it: recheck or stop it, or resubmit a repaired candidate.'
   const card = {
     kind: LanderReportEntry.kind,
     data: {
@@ -568,6 +671,7 @@ export function createLander(
   },
   limits: CheckLimits = defaultCheckLimitsSeconds,
 ) {
+  const continuation = continuationTask(host, Workspaces)
   async function resetTrackedIntegration(source: string, tip: string) {
     const path = await landerCheckout(host.home, source, await host.projectSettings(), tip)
     await git(path, 'reset', '--hard', '-q')
@@ -642,7 +746,16 @@ export function createLander(
           const index = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
           const mine = index.queue.filter((item) => item.source === source)
           for (const item of mine) park(item)
-          const choice = pick(index.queue, runtime.now(), (item) => item.source === source)
+          const outdated = index.queue.findIndex((item) => {
+            const d = item.delivery
+            if (item.source !== source || !d || d.runtime === env.runtime) return false
+            const wait = waits(d)?.on
+            return wait === 'publish' || wait === 'merge'
+          })
+          const choice =
+            outdated >= 0
+              ? { ready: outdated }
+              : pick(index.queue, runtime.now(), (item) => item.source === source)
           const pending =
             !asked ||
             index.closing?.some((item) => item.source === source) ||
@@ -661,17 +774,28 @@ export function createLander(
             return { status: 'sleeping', until: choice.until, checkpoint: { phase: 'next' } }
           const entry = index.queue[choice.ready]
           entry.state = 'landing'
-          if (entry.delivery) entry.delivery.slot = true
-          else await log(tx, runtime.conversationId, entry, { step: 'started' })
-          return { status: 'running', checkpoint: { phase: 'land', id: entry.id, attempt: 1 } }
+          if (!entry.delivery) await log(tx, runtime.conversationId, entry, { step: 'started' })
+          else if (outdated < 0) entry.delivery.slot = true
+          return {
+            status: 'running',
+            checkpoint: {
+              phase: 'land',
+              id: entry.id,
+              attempt: 1,
+              ...(outdated >= 0 ? { runtimeOnly: true } : {}),
+            },
+          }
         }, context)
       },
       land: async (task, runtime, context) => {
-        const { id, attempt, pushRetried } = task.state.checkpoint
+        const { id, attempt, pushRetried, runtimeOnly } = task.state.checkpoint
         const { signal } = runtime
         const index = (await runtime.snapshot(Workspaces, ROOT_CONVERSATION_ID, context))!
         const entry = index.queue.find((item) => item.id === id)
-        if (!entry)
+        if (
+          !entry ||
+          (runtimeOnly && (!entry.delivery || entry.delivery.runtime === deliveryRuntime()))
+        )
           return runtime.commit(
             () => ({ status: 'running', checkpoint: { phase: 'next' } }),
             context,
@@ -777,9 +901,9 @@ export function createLander(
               ...(entry.subject ? { subject: entry.subject } : {}),
               ...(entry.approvals ? { approvals: entry.approvals } : {}),
             }
-            for (const old of Object.keys(draft.results).slice(0, -recentSubmitCardOutcomeLimit))
-              delete draft.results[old]
+            pruneLanderResults(draft)
             await log(tx, runtime.conversationId, entry, outcome)
+            await resolveContinuations(tx, draft, id, continuation, true)
             if (outcome.outcome === 'failed')
               await host.emit(tx, SubmissionFailed, {
                 submission: id,
@@ -787,31 +911,8 @@ export function createLander(
                 target: entry.target,
                 reason: outcome.reason ?? '',
               })
-            if (outcome.outcome === 'landed') {
-              const subject = entry.subject ?? {}
-              const commits = (outcome.commits ?? []).map((commit) => {
-                const space = commit.indexOf(' ')
-                return { sha: commit.slice(0, space), subject: commit.slice(space + 1) }
-              })
-              await host.emit(tx, SubmissionLanded, {
-                submission: id,
-                conversationId: entry.conversationId,
-                at: entry.at,
-                sha: outcome.sha!,
-                base: outcome.base!,
-                target: entry.target,
-                lander: runtime.conversationId,
-                divergence: entry.divergence,
-                title:
-                  subject.title ?? (await tx.doc(host.metadata, entry.conversationId)).title ?? '',
-                ...(subject.summary ? { summary: subject.summary } : {}),
-                ...(subject.feature ? { feature: subject.feature } : {}),
-                commits: commits.slice(0, 10),
-                commitCount: commits.length,
-                paths: (outcome.paths ?? []).slice(0, 8),
-                ...(outcome.pushed ? { pushed: outcome.pushed } : {}),
-              })
-            }
+            if (outcome.outcome === 'landed')
+              await emitLanding(host, tx, id, entry.conversationId, draft.results[id])
             return {
               status: 'running',
               checkpoint: {
@@ -922,11 +1023,12 @@ export function createLander(
                 : await landerSettings(host)
           if (entry.delivery) {
             const previous = entry.delivery
+            if (target !== previous.settings.base)
+              throw new Error('Delivery PR base differs from the local target')
             const save = (delivery: NonNullable<QueueEntry['delivery']>) =>
               runtime.commit(async (tx) => {
-                const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
-                  (item) => item.id === id,
-                )
+                const draft = await tx.doc(Workspaces, ROOT_CONVERSATION_ID)
+                const saved = draft.queue.find((item) => item.id === id)
                 if (!saved) throw new Error('Delivery was withdrawn while the lander advanced it')
                 const current = saved.delivery
                 if (
@@ -937,10 +1039,11 @@ export function createLander(
                 )
                   throw new Error('Merge approval was withdrawn; approve again to merge')
                 if (
-                  delivery.publishIntent &&
-                  !current?.publishIntent &&
                   delivery.risk === 'high' &&
-                  !current?.publishApproved
+                  !current?.publishIntent &&
+                  (delivery.publishIntent || (delivery.createIntent && !current?.createIntent)) &&
+                  (!current?.publishApproved ||
+                    matchingRefStandingWithdrawn(current, draft.standing))
                 )
                   throw new Error('Publish approval was withdrawn; approve again to publish')
                 const {
@@ -973,40 +1076,49 @@ export function createLander(
               }, context)
             if (delivery.stage !== previous.stage || delivery.reason !== previous.reason)
               await step(
-                delivery.reason
+                delivery.stage === 'blocked'
                   ? `delivery blocked: ${delivery.reason}`
                   : `delivery: ${delivery.stage}`,
               )
-            if (delivery.stage === 'merged') {
-              await remote(
-                source,
-                signal,
-                'fetch',
-                '--no-tags',
-                delivery.settings.remote,
-                `refs/heads/${delivery.settings.base}`,
-              )
-              const sha = delivery.merged!
-              if ((await git(source, 'rev-parse', `${sha}^{tree}`)) !== delivery.tree)
-                throw new Error('GitHub merge tree differs from the verified candidate')
-              await serializeSourceWrites(source, async () => {
-                const current = await git(source, 'rev-parse', `refs/heads/${target}`)
-                if (!(await contains(source, current, sha)))
-                  throw new Error('Local target advanced outside the merged delivery')
-                await fastForwardOnlyTargetBranch(source, target, current, sha)
-              })
-              return commitLandingOutcome(`merged as ${sha.slice(0, 7)} through ${delivery.url}.`, {
-                outcome: 'landed',
+            if (delivery.stage === 'closed')
+              return commitLandingOutcome(`was not landed: ${delivery.reason}`, {
+                outcome: 'failed',
                 delivery,
-                sha,
-                base: delivery.baseline,
-                commits: lines(
-                  await git(source, 'log', '--oneline', `${delivery.baseline}..${sha}`),
-                ),
-                paths: lines(await git(source, 'diff', '--name-only', delivery.baseline, sha)),
-                flaky: [],
-                pushed: `${delivery.settings.remote}/${target}`,
+                reason: delivery.reason,
                 pr: delivery.url,
+              })
+            if (delivery.stage === 'merged') {
+              if (!delivery.observedMerge)
+                await remote(
+                  source,
+                  signal,
+                  'fetch',
+                  '--no-tags',
+                  delivery.settings.remote,
+                  `refs/heads/${delivery.settings.base}`,
+                )
+              const outcome = await mergedDeliveryOutcome(source, target, delivery)
+              const { sha } = outcome
+              if (
+                (await git(source, '--no-replace-objects', 'rev-parse', `${sha}^{tree}`)) !==
+                delivery.tree
+              )
+                throw new Error('GitHub merge tree differs from the verified candidate')
+              return await serializeSourceWrites(source, async () => {
+                const current = await git(source, 'rev-parse', `refs/heads/${target}`)
+                if (!(await contains(source, sha, current))) {
+                  if (!(await contains(source, current, sha)))
+                    throw new Error('Local target diverges from the merged delivery')
+                  await fastForwardOnlyTargetBranch(source, target, current, sha)
+                }
+                if (!(await contains(source, sha, `refs/heads/${target}`)))
+                  throw new Error('Local target does not contain the merged delivery')
+                const how =
+                  delivery.observedMerge && !delivery.mergeIntent ? 'manually merged' : 'merged'
+                return commitLandingOutcome(
+                  `${how} as ${sha.slice(0, 7)} through ${delivery.url}.`,
+                  outcome,
+                )
               })
             }
             if (delivery.stage === 'blocked' && delivery.cause === 'stale')
@@ -1118,6 +1230,7 @@ export function createLander(
                   checkPids(host.home),
                   checkTemp(host.home),
                   limitsFor(members[member], limits),
+                  base,
                 )
               const runCheckWithOneDurableRerun = async (command: string, member: number) => {
                 const attemptMemoKey = `check:${id}:${round}:${Array.isArray(group) ? `${position}.${member}` : position}`
@@ -1252,6 +1365,12 @@ export function createLander(
               since: Date.now(),
               ...(entry.approvals ? { approvals: entry.approvals } : {}),
             }
+            const changes = await readCandidateChanges(source, record, signal).catch(() => {
+              signal.throwIfAborted()
+              host.notice(`Could not summarize the changes for delivery ${id}`)
+              return undefined
+            })
+            if (changes) record.changes = changes
             await runtime.commit(async (tx) => {
               const saved = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).queue.find(
                 (item) => item.id === id,
@@ -1344,9 +1463,14 @@ export function createLander(
               saved.delivery = {
                 ...current,
                 stage: 'blocked',
-                cause: 'github',
+                cause: current.stage === 'merged' ? 'safety' : 'github',
                 resumeStage: current.stage === 'blocked' ? current.resumeStage : current.stage,
-                reason: 'Delivery recovery failed; inspect the lander log',
+                reason:
+                  current.stage === 'merged'
+                    ? error instanceof Error
+                      ? error.message.split('\n')[0].slice(0, 240)
+                      : 'Could not settle the merged delivery'
+                    : 'Delivery recovery failed; inspect the lander log',
               }
               park(saved)
             }, context)
@@ -1363,7 +1487,7 @@ export function createLander(
         const entry = { kind: LanderReportEntry.kind, data: { id, outcome } }
         const next = { status: 'running', checkpoint: { phase: 'next' } } as const
         if (outcome.outcome === 'failed') {
-          await (
+          const receipt = await (
             await runtime.conversation(branch, context)
           )?.submit(
             {
@@ -1375,7 +1499,23 @@ export function createLander(
             },
             context,
           )
-          await runtime.commit(() => next, context)
+          await runtime.commit(async (tx) => {
+            const current = (await tx.doc(Workspaces, ROOT_CONVERSATION_ID)).items[String(branch)]
+              ?.continuation
+            if (receipt && current?.submission === id && current.state === 'needs-action')
+              await tx.createTask(
+                continuation,
+                {
+                  owner: branch,
+                  key: current.key,
+                  submission: id,
+                  result: 'failed',
+                  admitted: receipt.id,
+                },
+                { conversationId: branch, ownership: { kind: 'conversation' }, background: true },
+              )
+            return next
+          }, context)
           return
         }
         await (

@@ -43,7 +43,7 @@ it('orders facets by source so a project bash tool and renderer win regardless o
   ]) {
     const folder = join(root, '.ultimate/extensions', name)
     await mkdir(folder, { recursive: true })
-    await writeFile(join(folder, 'web.tsx'), 'export default { tools: { bash: () => null } }')
+    await writeFile(join(folder, 'web.solid.tsx'), 'export default { tools: { bash: () => null } }')
     await writeFile(
       join(folder, 'server.ts'),
       `
@@ -204,14 +204,15 @@ it('refuses a tool name another extension of the same layer already provides', a
       name: 'clash_tool', description: '${name}${version}', parameters: obj({}),
       execute: async () => ({})
     })] })`
+  const info = (name: string) => server.extensions.info().find((e) => e.name === name)
   const files: Record<string, string> = {}
   for (const name of ['aaa-clash', 'bbb-clash']) {
     const folder = join(projectRoot, '.ultimate/extensions', name)
     await mkdir(folder, { recursive: true })
     files[name] = join(folder, 'server.ts')
     await writeFile(files[name], facet(name))
+    if (name === 'aaa-clash') await until(() => !!info(name)?.server?.loadedAt)
   }
-  const info = (name: string) => server.extensions.info().find((e) => e.name === name)
   const clash = async () =>
     (await server.root.agent(context)).tools.find((tool) => tool.name === 'clash_tool')?.description
   await until(() => !!info('bbb-clash')?.server)
@@ -251,8 +252,10 @@ it('layers settings live, installs and uninstalls tools and web facets, and noti
   await writeFile(settings, JSON.stringify({ extensions: { disable: ['browser'] } }))
   await until(async () => !(await tools(server)).includes('browser'))
   await until(async () => !(await web(server)).some((path) => path.includes('/browser/')))
-  await until(() => server.host.build().id !== initialBuild)
-  expect(server.host.build().extensions.browser).toBeUndefined()
+  await until(() => {
+    const build = server.host.build()
+    return build.id !== initialBuild && build.extensions.browser === undefined
+  })
   expect(server.extensions.info().find((entry) => entry.name === 'prompt')?.server?.loadedAt).toBe(
     promptLoaded,
   )

@@ -5,8 +5,10 @@ work, and changes its own code while you talk to it.
 
 Every built-in is already on; this setup adds how the repository is landed and reviewed:
 
-- `settings.json`: each worktree isolate installs its dependencies, and the lander runs `pnpm check`, then
-  `pnpm test` and `pnpm test:e2e` in parallel, and pushes to `origin`.
+- `settings.json`: when project resources are enabled, worktree isolates install dependencies and the legacy lander
+  runs the configured `pnpm check`, `pnpm test` and `pnpm test:e2e` checks, with `origin` as its push remote.
+  If project trust is declined, these tracked settings do not apply. Personal PR delivery has separate settings and
+  verifies the exact candidate before publication. See [verification and push permission](../AGENTS.md#push-permission).
 - `agents/reviewer-*.md`: optional correctness, simplicity and architecture specialists. One `reviewer` owns
   the verdict and calls a specialist only for a named uncovered hazard.
 
