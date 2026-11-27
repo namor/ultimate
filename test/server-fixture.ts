@@ -1,5 +1,5 @@
 import { fauxProvider } from '@earendil-works/pi-ai/providers/faux'
-import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join, resolve as resolvePath } from 'node:path'
 import { afterEach, vi } from 'vitest'
 import {
@@ -27,7 +27,7 @@ afterEach(async () => {
 export async function fixture(extra = false, sources?: Record<string, string>, empty = false) {
   const directory = await temp()
   directories.push(directory)
-  const ultimateRoot = join(directory, 'repo')
+  const ultimateRoot = join(directory, 'setup')
   await mkdir(join(ultimateRoot, 'extensions', 'prompt'), { recursive: true })
   await cp(resolvePath('extensions/coding-tools'), join(ultimateRoot, 'extensions/coding-tools'), {
     recursive: true,
@@ -85,10 +85,13 @@ export async function fixture(extra = false, sources?: Record<string, string>, e
       },
     }),
   )
+  const repo = join(directory, 'repo')
+  // Publish the completed tree at a new path so the watcher cannot replay writes from setup.
+  await rename(ultimateRoot, repo)
   const options = {
-    ultimateRoot,
+    ultimateRoot: repo,
     // Explicit, so an inherited ULTIMATE_PROJECT (tests run from inside Ultimate) cannot add its project's extensions.
-    projectRoot: ultimateRoot,
+    projectRoot: repo,
     userHome: directory,
     home: join(directory, 'home'),
     faux: fauxProvider(),
