@@ -39,8 +39,8 @@ return {
   build: {
     generation: sys.build.generation,
     at: sys.build.at,
-    error: sys.build.error,
-    left: sys.build.left,
+    error: sys.web.error,
+    left: sys.web.left,
   },
   extensionErrors: ext.filter((e) => e.server?.error).map((e) => `${e.name}: ${e.server.error}`),
 }
