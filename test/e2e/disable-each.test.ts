@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { expect, it, vi } from 'vitest'
+import { expect, inject, it, vi } from 'vitest'
 import { context } from '../../server/harness.ts'
 import { extensionGraph } from '../../scripts/deps.ts'
 import { fauxServer, removeTemp, temp } from '../helpers.ts'
@@ -14,8 +14,6 @@ const core = [...graph].filter(([, entry]) => entry.core).map(([name]) => name)
 
 /** A faux server on the built-ins with `disable` in the user's settings, and what it reports. */
 async function boot(disable: string[]) {
-  // Each home holds a full source copy (about 1,000 files): it goes when its case ends, since deleting all of them in
-  // one afterAll took over its 10 s timeout under load.
   const home = await temp('ultimate-disable-each-')
   await mkdir(join(home, 'project'))
   await mkdir(join(home, '.ultimate'))
@@ -24,7 +22,7 @@ async function boot(disable: string[]) {
     JSON.stringify({ extensions: { disable } }),
   )
   const server = await fauxServer({
-    ultimateRoot: resolve('.'),
+    ultimateRoot: inject('prebuiltWeb').root,
     projectRoot: join(home, 'project'),
     userHome: home,
     home: join(home, 'state'),
